@@ -1,11 +1,11 @@
-package gota
+package core
 
 import (
 	"testing"
 )
 
 func TestRouterStaticAndParams(t *testing.T) {
-	r := newRouter()
+	r := NewRouter()
 
 	r.Add("GET", "/users", func(ctx *Context) error {
 		return ctx.Send("list users")
@@ -24,13 +24,13 @@ func TestRouterStaticAndParams(t *testing.T) {
 	})
 
 	// Match static
-	h, params, ok := r.Match("GET", "/users")
+	h, _, ok := r.Match("GET", "/users")
 	if !ok || h == nil {
 		t.Fatalf("expected to match /users")
 	}
 
 	// Match param
-	h, params, ok = r.Match("GET", "/users/42")
+	h, params, ok := r.Match("GET", "/users/42")
 	if !ok || h == nil {
 		t.Fatalf("expected to match /users/42")
 	}
@@ -58,10 +58,10 @@ func TestRouterStaticAndParams(t *testing.T) {
 }
 
 func TestRouterURLFor(t *testing.T) {
-	r := newRouter()
+	r := NewRouter()
 
 	node := r.Add("GET", "/users/:id/orders/:orderId", func(ctx *Context) error { return nil })
-	r.setName("users.orders.show", node)
+	r.SetName("users.orders.show", node)
 
 	url, err := r.URLFor("users.orders.show", map[string]string{
 		"id":      "100",

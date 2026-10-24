@@ -1,4 +1,4 @@
-package gota
+package core
 
 import (
 	"fmt"
@@ -9,33 +9,33 @@ import (
 // HandlerFunc defines the standard handler signature for Gota.
 type HandlerFunc func(ctx *Context) error
 
-// node represents a path segment in Gota's Trie routing tree.
-type node struct {
-	segment     string
-	children    []*node
-	handler     HandlerFunc
-	isParam     bool
-	isWild      bool
-	paramKey    string
-	rawHandler  HandlerFunc
-	middlewares []MiddlewareFunc
-	method      string
-	fullPath    string
-	name        string
-	doc         *RouteDoc
+// Node represents a path segment in Gota's Trie routing tree.
+type Node struct {
+	Segment     string
+	Children    []*Node
+	Handler     HandlerFunc
+	IsParam     bool
+	IsWild      bool
+	ParamKey    string
+	RawHandler  HandlerFunc
+	Middlewares []MiddlewareFunc
+	Method      string
+	FullPath    string
+	Name        string
+	Doc         *RouteDoc
 }
 
 // Router maps HTTP methods to Trie routing trees and stores named routes.
 type Router struct {
-	trees map[string]*node
-	names map[string]*node
+	trees map[string]*Node
+	names map[string]*Node
 }
 
-// newRouter initializes a new Router instance.
-func newRouter() *Router {
+// NewRouter initializes a new Router instance.
+func NewRouter() *Router {
 	return &Router{
-		trees: make(map[string]*node),
-		names: make(map[string]*node),
+		trees: make(map[string]*Node),
+		names: make(map[string]*Node),
 	}
 }
 
@@ -52,10 +52,10 @@ func splitPath(path string) []string {
 }
 
 // Add registers a route into the Trie for the given HTTP method.
-func (r *Router) Add(method, path string, handler HandlerFunc) *node {
+func (r *Router) Add(method, path string, handler HandlerFunc) *Node {
 	root, ok := r.trees[method]
 	if !ok {
-		root = &node{segment: "/"}
+		root = &Node{Segment: "/"}
 		r.trees[method] = root
 	}
 
@@ -63,35 +63,35 @@ func (r *Router) Add(method, path string, handler HandlerFunc) *node {
 	current := root
 
 	for _, seg := range segments {
-		var child *node
-		for _, c := range current.children {
-			if c.segment == seg {
+		var child *Node
+		for _, c := range current.Children {
+			if c.Segment == seg {
 				child = c
 				break
 			}
 		}
 		if child == nil {
-			child = &node{segment: seg}
+			child = &Node{Segment: seg}
 			if strings.HasPrefix(seg, ":") {
-				child.isParam = true
-				child.paramKey = seg[1:]
+				child.IsParam = true
+				child.ParamKey = seg[1:]
 			} else if seg == "*" || strings.HasPrefix(seg, "*") {
-				child.isWild = true
+				child.IsWild = true
 				if len(seg) > 1 {
-					child.paramKey = seg[1:]
+					child.ParamKey = seg[1:]
 				} else {
-					child.paramKey = "*"
+					child.ParamKey = "*"
 				}
 			}
-			current.children = append(current.children, child)
+			current.Children = append(current.Children, child)
 		}
 		current = child
 	}
 
-	current.handler = handler
-	current.rawHandler = handler
-	current.method = method
-	current.fullPath = path
+	current.Handler = handler
+	current.RawHandler = handler
+	current.Method = method
+	current.FullPath = path
 	return current
 }
 
@@ -105,11 +105,11 @@ func (r *Router) Match(method, path string) (HandlerFunc, map[string]string, boo
 	segments := splitPath(path)
 	params := make(map[string]string)
 
-	var search func(n *node, segIdx int) (HandlerFunc, bool)
-	search = func(n *node, segIdx int) (HandlerFunc, bool) {
+	var search func(n *Node, segIdx int) (HandlerFunc, bool)
+	search = func(n *Node, segIdx int) (HandlerFunc, bool) {
 		if segIdx == len(segments) {
-			if n.handler != nil {
-				return n.handler, true
+			if n.Handler != nil {
+				return n.Handler, true
 			}
 			return nil, false
 		}
@@ -117,8 +117,8 @@ func (r *Router) Match(method, path string) (HandlerFunc, map[string]string, boo
 		seg := segments[segIdx]
 
 		// 1. Try exact match first
-		for _, child := range n.children {
-			if !child.isParam && !child.isWild && child.segment == seg {
+		for _, child := range n.Children {
+			if !child.IsParam && !child.IsWild && child.Segment == seg {
 				if h, found := search(child, segIdx+1); found {
 					return h, true
 				}
@@ -126,25 +126,25 @@ func (r *Router) Match(method, path string) (HandlerFunc, map[string]string, boo
 		}
 
 		// 2. Try named parameter match (:id)
-		for _, child := range n.children {
-			if child.isParam {
-				params[child.paramKey] = seg
+		for _, child := range n.Children {
+			if child.IsParam {
+				params[child.ParamKey] = seg
 				if h, found := search(child, segIdx+1); found {
 					return h, true
 				}
-				delete(params, child.paramKey)
+				delete(params, child.ParamKey)
 			}
 		}
 
 		// 3. Try wildcard match (*)
-		for _, child := range n.children {
-			if child.isWild {
+		for _, child := range n.Children {
+			if child.IsWild {
 				wildVal := strings.Join(segments[segIdx:], "/")
-				params[child.paramKey] = wildVal
-				if child.handler != nil {
-					return child.handler, true
+				params[child.ParamKey] = wildVal
+				if child.Handler != nil {
+					return child.Handler, true
 				}
-				delete(params, child.paramKey)
+				delete(params, child.ParamKey)
 			}
 		}
 
@@ -153,8 +153,8 @@ func (r *Router) Match(method, path string) (HandlerFunc, map[string]string, boo
 
 	// Root path "/"
 	if len(segments) == 0 {
-		if root.handler != nil {
-			return root.handler, params, true
+		if root.Handler != nil {
+			return root.Handler, params, true
 		}
 		return nil, nil, false
 	}
@@ -163,8 +163,8 @@ func (r *Router) Match(method, path string) (HandlerFunc, map[string]string, boo
 	return handler, params, found
 }
 
-// setName stores a named route pointer for reverse URL lookups.
-func (r *Router) setName(name string, n *node) {
+// SetName stores a named route pointer for reverse URL lookups.
+func (r *Router) SetName(name string, n *Node) {
 	r.names[name] = n
 }
 
@@ -176,7 +176,7 @@ func (r *Router) URLFor(name string, params map[string]string) (string, error) {
 	}
 
 	used := make(map[string]bool)
-	segments := splitPath(target.fullPath)
+	segments := splitPath(target.FullPath)
 	resolved := make([]string, len(segments))
 
 	for i, seg := range segments {
@@ -221,14 +221,14 @@ func (r *Router) URLFor(name string, params map[string]string) (string, error) {
 }
 
 // Routes returns all registered route leaf nodes for OpenAPI generation.
-func (r *Router) Routes() []*node {
-	var all []*node
-	var collect func(n *node)
-	collect = func(n *node) {
-		if n.handler != nil {
+func (r *Router) Routes() []*Node {
+	var all []*Node
+	var collect func(n *Node)
+	collect = func(n *Node) {
+		if n.Handler != nil {
 			all = append(all, n)
 		}
-		for _, c := range n.children {
+		for _, c := range n.Children {
 			collect(c)
 		}
 	}

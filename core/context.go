@@ -1,4 +1,4 @@
-package gota
+package core
 
 import (
 	"encoding/json"
@@ -10,11 +10,10 @@ import (
 	"sync"
 )
 
-// Map is a convenient alias for map[string]any, matching Kite's syntax.
+// Map is a convenient alias for map[string]any.
 type Map map[string]any
 
-// Context encapsulates both the incoming HTTP request and response writer,
-// providing chainable methods for request inspection and response emission.
+// Context encapsulates both the incoming HTTP request and response writer.
 type Context struct {
 	ResponseWriter http.ResponseWriter
 	Request        *http.Request
@@ -29,8 +28,8 @@ type Context struct {
 	store map[string]any
 }
 
-// newContext creates a fresh Context wrapping http.ResponseWriter and *http.Request.
-func newContext(w http.ResponseWriter, r *http.Request, params map[string]string) *Context {
+// NewContext creates a fresh Context wrapping http.ResponseWriter and *http.Request.
+func NewContext(w http.ResponseWriter, r *http.Request, params map[string]string) *Context {
 	if params == nil {
 		params = make(map[string]string)
 	}

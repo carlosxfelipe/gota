@@ -1,4 +1,4 @@
-package gota
+package core
 
 import (
 	"log"
@@ -11,8 +11,8 @@ import (
 // MiddlewareFunc defines a function that wraps a HandlerFunc.
 type MiddlewareFunc func(next HandlerFunc) HandlerFunc
 
-// chain wraps the final handler with the provided slice of middlewares.
-func chain(final HandlerFunc, mws []MiddlewareFunc) HandlerFunc {
+// Chain wraps the final handler with the provided slice of middlewares.
+func Chain(final HandlerFunc, mws []MiddlewareFunc) HandlerFunc {
 	if len(mws) == 0 {
 		return final
 	}

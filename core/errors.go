@@ -1,11 +1,11 @@
-package gota
+package core
 
 import (
 	"fmt"
 	"net/http"
 )
 
-// ErrorResponse encapsulates standard JSON error responses, identical to Kite.
+// ErrorResponse encapsulates standard JSON error responses.
 type ErrorResponse struct {
 	Error  string `json:"error"`
 	Status int    `json:"status"`

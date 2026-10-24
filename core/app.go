@@ -1,4 +1,4 @@
-package gota
+package core
 
 import (
 	"fmt"
@@ -58,12 +58,12 @@ func New(configs ...Config) *App {
 		cfg.ScalarTheme = ThemeLaserwave
 	}
 	if cfg.ScalarLayout == "" {
-		cfg.ScalarLayout = "classic" // Default: classic layout (Scalar/Swagger style)
+		cfg.ScalarLayout = "classic"
 	}
 
 	app := &App{
 		config: cfg,
-		router: newRouter(),
+		router: NewRouter(),
 	}
 	app.NotFoundHandler = defaultNotFoundHandler
 	app.ErrorHandler = defaultErrorHandler
@@ -88,10 +88,6 @@ func defaultErrorHandler(ctx *Context, err error) {
 			Error:  httpErr.Message,
 			Status: httpErr.Status,
 		})
-		return
-	}
-	if valErr, ok := err.(*ValidationError); ok {
-		_ = ctx.Status(valErr.Status).Json(valErr)
 		return
 	}
 
@@ -119,38 +115,39 @@ func (a *App) Config() Config {
 
 // Get registers an HTTP GET route.
 func (a *App) Get(path string, h HandlerFunc) *Route {
-	return a.register(http.MethodGet, path, h)
+	return a.RegisterRoute(http.MethodGet, path, h)
 }
 
 // Post registers an HTTP POST route.
 func (a *App) Post(path string, h HandlerFunc) *Route {
-	return a.register(http.MethodPost, path, h)
+	return a.RegisterRoute(http.MethodPost, path, h)
 }
 
 // Put registers an HTTP PUT route.
 func (a *App) Put(path string, h HandlerFunc) *Route {
-	return a.register(http.MethodPut, path, h)
+	return a.RegisterRoute(http.MethodPut, path, h)
 }
 
 // Delete registers an HTTP DELETE route.
 func (a *App) Delete(path string, h HandlerFunc) *Route {
-	return a.register(http.MethodDelete, path, h)
+	return a.RegisterRoute(http.MethodDelete, path, h)
 }
 
 // Patch registers an HTTP PATCH route.
 func (a *App) Patch(path string, h HandlerFunc) *Route {
-	return a.register(http.MethodPatch, path, h)
+	return a.RegisterRoute(http.MethodPatch, path, h)
 }
 
-func (a *App) register(method, path string, h HandlerFunc) *Route {
+// RegisterRoute internally binds an HTTP method and path with the global middleware chain.
+func (a *App) RegisterRoute(method, path string, h HandlerFunc) *Route {
 	base := make([]MiddlewareFunc, len(a.middlewares))
 	copy(base, a.middlewares)
 
-	n := a.router.Add(method, path, chain(h, base))
-	n.rawHandler = h
+	n := a.router.Add(method, path, Chain(h, base))
+	n.RawHandler = h
 
 	registerAutoOptions(a.router, method, path, base)
-	return &Route{node: n, router: a.router, base: base}
+	return &Route{Node: n, router: a.router, base: base}
 }
 
 func registerAutoOptions(router *Router, method, path string, base []MiddlewareFunc) {
@@ -160,7 +157,7 @@ func registerAutoOptions(router *Router, method, path string, base []MiddlewareF
 	optionsHandler := func(ctx *Context) error {
 		return ctx.NoContent()
 	}
-	router.Add(http.MethodOptions, path, chain(optionsHandler, base))
+	router.Add(http.MethodOptions, path, Chain(optionsHandler, base))
 }
 
 // URLFor generates a URL for a previously named route.
@@ -212,7 +209,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	handler, params, ok := a.router.Match(r.Method, r.URL.Path)
-	ctx := newContext(w, r, params)
+	ctx := NewContext(w, r, params)
 
 	if !ok {
 		_ = a.NotFoundHandler(ctx)
@@ -235,40 +232,40 @@ func (a *App) Listen(addr string) error {
 
 // Route represents a registered endpoint, allowing fluent OpenAPI and middleware chaining.
 type Route struct {
-	node   *node
+	Node   *Node
 	router *Router
 	base   []MiddlewareFunc
 }
 
 // Middleware appends route-specific middlewares executed before the handler.
 func (rt *Route) Middleware(mw ...MiddlewareFunc) *Route {
-	rt.node.middlewares = append(rt.node.middlewares, mw...)
+	rt.Node.Middlewares = append(rt.Node.Middlewares, mw...)
 
-	full := make([]MiddlewareFunc, 0, len(rt.base)+len(rt.node.middlewares))
+	full := make([]MiddlewareFunc, 0, len(rt.base)+len(rt.Node.Middlewares))
 	full = append(full, rt.base...)
-	full = append(full, rt.node.middlewares...)
+	full = append(full, rt.Node.Middlewares...)
 
-	rt.node.handler = chain(rt.node.rawHandler, full)
+	rt.Node.Handler = Chain(rt.Node.RawHandler, full)
 	return rt
 }
 
 // Name assigns a name to this route for reverse URL lookup.
 func (rt *Route) Name(name string) *Route {
-	rt.node.name = name
-	rt.router.setName(name, rt.node)
+	rt.Node.Name = name
+	rt.router.SetName(name, rt.Node)
 	return rt
 }
 
 func (rt *Route) ensureDoc() *RouteDoc {
-	if rt.node.doc == nil {
-		rt.node.doc = &RouteDoc{
+	if rt.Node.Doc == nil {
+		rt.Node.Doc = &RouteDoc{
 			Responses: make(map[int]*ResponseDoc),
 		}
 	}
-	if rt.node.doc.Responses == nil {
-		rt.node.doc.Responses = make(map[int]*ResponseDoc)
+	if rt.Node.Doc.Responses == nil {
+		rt.Node.Doc.Responses = make(map[int]*ResponseDoc)
 	}
-	return rt.node.doc
+	return rt.Node.Doc
 }
 
 // Summary sets a short summary for the OpenAPI operation.
@@ -385,39 +382,40 @@ func (g *RouteGroup) Use(mw MiddlewareFunc) {
 
 // Get registers a scoped HTTP GET route.
 func (g *RouteGroup) Get(path string, h HandlerFunc) *Route {
-	return g.register(http.MethodGet, path, h)
+	return g.RegisterRoute(http.MethodGet, path, h)
 }
 
 // Post registers a scoped HTTP POST route.
 func (g *RouteGroup) Post(path string, h HandlerFunc) *Route {
-	return g.register(http.MethodPost, path, h)
+	return g.RegisterRoute(http.MethodPost, path, h)
 }
 
 // Put registers a scoped HTTP PUT route.
 func (g *RouteGroup) Put(path string, h HandlerFunc) *Route {
-	return g.register(http.MethodPut, path, h)
+	return g.RegisterRoute(http.MethodPut, path, h)
 }
 
 // Delete registers a scoped HTTP DELETE route.
 func (g *RouteGroup) Delete(path string, h HandlerFunc) *Route {
-	return g.register(http.MethodDelete, path, h)
+	return g.RegisterRoute(http.MethodDelete, path, h)
 }
 
 // Patch registers a scoped HTTP PATCH route.
 func (g *RouteGroup) Patch(path string, h HandlerFunc) *Route {
-	return g.register(http.MethodPatch, path, h)
+	return g.RegisterRoute(http.MethodPatch, path, h)
 }
 
-func (g *RouteGroup) register(method, path string, h HandlerFunc) *Route {
+// RegisterRoute registers a scoped route under this group prefix.
+func (g *RouteGroup) RegisterRoute(method, path string, h HandlerFunc) *Route {
 	full := joinPrefix(g.prefix, path)
 	base := make([]MiddlewareFunc, len(g.middlewares))
 	copy(base, g.middlewares)
 
-	n := g.app.router.Add(method, full, chain(h, base))
-	n.rawHandler = h
+	n := g.app.router.Add(method, full, Chain(h, base))
+	n.RawHandler = h
 
 	registerAutoOptions(g.app.router, method, full, base)
-	return &Route{node: n, router: g.app.router, base: base}
+	return &Route{Node: n, router: g.app.router, base: base}
 }
 
 // Group nests a new RouteGroup under this group's prefix.

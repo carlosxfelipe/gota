@@ -1,4 +1,4 @@
-package gota
+package binding
 
 import (
 	"encoding/json"
@@ -6,10 +6,12 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+
+	"github.com/carlosxfelipe/gota/core"
 )
 
-// BindRequest binds parameters, query strings, headers, and JSON body to a target pointer.
-func BindRequest(ctx *Context, target any) error {
+// BindRequest binds parameters, query strings, headers, and JSON body from core.Context to a target pointer.
+func BindRequest(ctx *core.Context, target any) error {
 	val := reflect.ValueOf(target)
 	if val.Kind() != reflect.Pointer || val.IsNil() {
 		return fmt.Errorf("gota: bind target must be a non-nil pointer, got %T", target)
@@ -17,7 +19,6 @@ func BindRequest(ctx *Context, target any) error {
 
 	elem := val.Elem()
 	if elem.Kind() != reflect.Struct {
-		// Non-struct pointer (e.g. *string, *map, etc.): try JSON unmarshal directly
 		body, err := ctx.Body()
 		if err == nil && len(body) > 0 {
 			return json.Unmarshal(body, target)

@@ -1,4 +1,4 @@
-package gota
+package core
 
 import (
 	"fmt"
@@ -121,7 +121,7 @@ func NewOpenAPIGenerator(cfg Config) *OpenAPIGenerator {
 	}
 }
 
-func (g *OpenAPIGenerator) Generate(routes []*node) *OpenAPISpec {
+func (g *OpenAPIGenerator) Generate(routes []*Node) *OpenAPISpec {
 	spec := &OpenAPISpec{
 		OpenAPI: "3.1.0",
 		Info: OpenAPIInfo{
@@ -137,17 +137,17 @@ func (g *OpenAPIGenerator) Generate(routes []*node) *OpenAPISpec {
 	}
 
 	for _, rt := range routes {
-		if rt.doc != nil && rt.doc.Hidden {
+		if rt.Doc != nil && rt.Doc.Hidden {
 			continue
 		}
 
-		openAPIPath := toOpenAPIPath(rt.fullPath)
+		openAPIPath := toOpenAPIPath(rt.FullPath)
 		if _, exists := spec.Paths[openAPIPath]; !exists {
 			spec.Paths[openAPIPath] = make(map[string]OpenAPIOp)
 		}
 
 		op := g.buildOperation(rt)
-		methodLower := strings.ToLower(rt.method)
+		methodLower := strings.ToLower(rt.Method)
 		spec.Paths[openAPIPath][methodLower] = op
 	}
 
@@ -180,8 +180,8 @@ func toOpenAPIPath(path string) string {
 	return res
 }
 
-func (g *OpenAPIGenerator) buildOperation(rt *node) OpenAPIOp {
-	doc := rt.doc
+func (g *OpenAPIGenerator) buildOperation(rt *Node) OpenAPIOp {
+	doc := rt.Doc
 	if doc == nil {
 		doc = &RouteDoc{Responses: make(map[int]*ResponseDoc)}
 	}
@@ -195,7 +195,7 @@ func (g *OpenAPIGenerator) buildOperation(rt *node) OpenAPIOp {
 	}
 
 	// 1. Path parameters from route URL (:id)
-	pathParams := extractPathParams(rt.fullPath)
+	pathParams := extractPathParams(rt.FullPath)
 	documentedParams := make(map[string]bool)
 
 	for _, p := range doc.Parameters {
@@ -314,7 +314,6 @@ func (g *OpenAPIGenerator) registerOrRef(model any) map[string]any {
 
 	typeName := t.Name()
 	if typeName == "" || strings.HasPrefix(typeName, "struct {") {
-		// Anonymous struct: embed inline
 		return g.structToSchema(t)
 	}
 

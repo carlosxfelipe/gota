@@ -1,4 +1,4 @@
-package gota
+package validation
 
 import (
 	"fmt"
@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/carlosxfelipe/gota/core"
 )
 
 // Validator is an interface that structs can implement for custom validation logic.
@@ -17,7 +19,7 @@ type Validator interface {
 
 // ContextValidator is an interface that structs can implement for validation with Context access.
 type ContextValidator interface {
-	Validate(ctx *Context) error
+	Validate(ctx *core.Context) error
 }
 
 // ValidationError holds structured field validation errors.
@@ -36,7 +38,7 @@ func (v *ValidationError) Error() string {
 }
 
 // ValidateStruct validates a struct instance using both its validate tags and Validator interface.
-func ValidateStruct(ctx *Context, target any) *ValidationError {
+func ValidateStruct(ctx *core.Context, target any) *ValidationError {
 	val := reflect.ValueOf(target)
 	if val.Kind() == reflect.Pointer {
 		if val.IsNil() {
@@ -58,7 +60,6 @@ func ValidateStruct(ctx *Context, target any) *ValidationError {
 				continue
 			}
 
-			// Determine JSON/field name for error reporting
 			fieldName := field.Name
 			if jsonTag := field.Tag.Get("json"); jsonTag != "" && jsonTag != "-" {
 				parts := strings.Split(jsonTag, ",")

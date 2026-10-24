@@ -1,4 +1,4 @@
-package gota
+package core
 
 import (
 	"encoding/json"
@@ -54,7 +54,7 @@ func RenderScalarHTML(cfg ScalarConfig) (string, error) {
 
 	layout := cfg.Layout
 	if layout == "" {
-		layout = "classic" // Default: classic layout
+		layout = "classic"
 	}
 
 	scalarOptions := map[string]any{

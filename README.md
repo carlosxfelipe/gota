@@ -114,6 +114,7 @@ Following the [**REPR Design Pattern**](https://deviq.com/design-patterns/repr-d
    }
    ```
 2. **Endpoint**: Encapsulates business logic for that specific operation:
+
    ```go
    type GetUserEndpoint struct{}
 
@@ -121,6 +122,7 @@ Following the [**REPR Design Pattern**](https://deviq.com/design-patterns/repr-d
        return UserResponse{ID: req.ID, Name: "Jane Doe"}, nil
    }
    ```
+
 3. **Response**: Defines the output contract and generates documentation schemas automatically.
 
 ---
@@ -146,18 +148,26 @@ app := gota.New(gota.Config{
 
 ```
 gota/
-├── app.go           # Core engine, application lifecycle, and route chaining
-├── binder.go        # Automatic binding for JSON, path params, query, and headers
-├── context.go       # Unified Context abstraction (Req + Res)
-├── endpoint.go      # Generic REPR endpoint engine (Request-Endpoint-Response)
-├── errors.go        # Standardized HTTP error types and constructors
-├── middleware.go    # Middleware pipeline (CORS, Recover, Logger)
-├── openapi.go       # OpenAPI 3.1 generator with type reflection
-├── router.go        # Trie-based router with :params, *wildcard, and reverse URLs
-├── scalar.go        # Scalar UI HTML renderer (classic layout by default)
-├── validator.go     # Declarative tag-based and interface-based validation
+├── binding/         # Automated model binding (param, query, header, json)
+│   ├── binder.go
+│   └── binder_test.go
+├── core/            # Core HTTP engine (app, context, router, middleware, openapi, scalar)
+│   ├── app.go
+│   ├── context.go
+│   ├── errors.go
+│   ├── middleware.go
+│   ├── openapi.go
+│   ├── router.go
+│   ├── router_test.go
+│   └── scalar.go
 ├── examples/        # Showcase example application
 │   └── main.go
+├── validation/      # Input validation engine and declarative rules
+│   ├── validator.go
+│   └── validator_test.go
+├── endpoint.go      # First-class REPR generic endpoint engine
+├── endpoint_test.go # End-to-end test suite
+├── gota.go          # Clean public entry point (facade)
 ├── go.mod
 ├── logo.svg
 ├── LICENSE
@@ -189,6 +199,7 @@ go run examples/main.go
 ```
 
 Then visit:
+
 - **Scalar UI**: [http://localhost:3000/docs](http://localhost:3000/docs)
 - **OpenAPI 3.1 Spec**: [http://localhost:3000/openapi.json](http://localhost:3000/openapi.json)
 
