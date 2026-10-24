@@ -8,16 +8,16 @@ import (
 
 // AddItemRequest defines the route parameters and body to add an item to an order.
 type AddItemRequest struct {
-	OrderId     string  `param:"orderId" doc:"ID do pedido" example:"b1a2c3d4-0001-4000-8000-000000000001" validate:"required"`
-	ProductName string  `json:"productName" doc:"Nome do item" example:"Coca-Cola Lata 350ml" validate:"required"`
-	Price       float64 `json:"price" doc:"Preço unitário" example:"5.50" validate:"required,min=0.01"`
-	Quantity    int     `json:"quantity" doc:"Quantidade" example:"2" validate:"required,min=1"`
+	OrderId     string  `param:"orderId" doc:"Order ID" example:"b1a2c3d4-0001-4000-8000-000000000001" validate:"required"`
+	ProductName string  `json:"productName" doc:"Item name" example:"Coca-Cola Can 350ml" validate:"required"`
+	Price       float64 `json:"price" doc:"Unit price" example:"5.50" validate:"required,min=0.01"`
+	Quantity    int     `json:"quantity" doc:"Quantity" example:"2" validate:"required,min=1"`
 }
 
 // AddItemResponse defines the result of adding an item.
 type AddItemResponse struct {
-	Message string `json:"message" doc:"Mensagem de status" example:"Item adicionado ao pedido com sucesso!"`
-	ItemId  string `json:"itemId" doc:"ID do item adicionado" example:"item_1"`
+	Message string `json:"message" doc:"Status message" example:"Item added to order successfully!"`
+	ItemId  string `json:"itemId" doc:"Added item ID" example:"item_1"`
 }
 
 // AddItemEndpoint handles adding items to an open order.
@@ -29,11 +29,11 @@ type AddItemEndpoint struct {
 func (e *AddItemEndpoint) Handle(ctx *gota.Context, req AddItemRequest) (AddItemResponse, error) {
 	order, ok := e.Store.GetOrder(req.OrderId)
 	if !ok {
-		return AddItemResponse{}, gota.NotFound("Pedido não encontrado")
+		return AddItemResponse{}, gota.NotFound("Order not found")
 	}
 
 	if order.Status != domain.StatusCreated {
-		return AddItemResponse{}, gota.BadRequest("Não é possível adicionar itens. O pedido não está no estado inicial.")
+		return AddItemResponse{}, gota.BadRequest("Cannot add items. Order is not in initial state.")
 	}
 
 	item := domain.OrderItem{
@@ -47,7 +47,7 @@ func (e *AddItemEndpoint) Handle(ctx *gota.Context, req AddItemRequest) (AddItem
 	e.Store.SaveOrder(order)
 
 	return AddItemResponse{
-		Message: "Item adicionado ao pedido com sucesso!",
+		Message: "Item added to order successfully!",
 		ItemId:  item.ID,
 	}, nil
 }

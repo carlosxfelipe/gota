@@ -57,7 +57,7 @@ func doRequest(app *gota.App, method, path, token string, body any) *httptest.Re
 func TestOrderFlowEndToEnd(t *testing.T) {
 	app, _ := setupTestApp()
 
-	// 1. Login Carlos (Cliente)
+	// 1. Login Carlos (Customer)
 	loginRes := doRequest(app, http.MethodPost, "/api/auth/login", "", map[string]string{
 		"username": "carlos",
 		"password": "carlos123",
@@ -106,7 +106,7 @@ func TestOrderFlowEndToEnd(t *testing.T) {
 
 	// 5. Add Item
 	addItemRes := doRequest(app, http.MethodPost, "/api/orders/"+orderID+"/items", carlosToken, map[string]any{
-		"ProductName": "Coca-Cola Lata 350ml",
+		"ProductName": "Coca-Cola Can 350ml",
 		"Price":       5.50,
 		"Quantity":    2,
 	})
@@ -123,7 +123,7 @@ func TestOrderFlowEndToEnd(t *testing.T) {
 
 	// Add second item so we can remove one and still have items
 	doRequest(app, http.MethodPost, "/api/orders/"+orderID+"/items", carlosToken, map[string]any{
-		"ProductName": "Hambúrguer",
+		"ProductName": "Burger",
 		"Price":       25.00,
 		"Quantity":    1,
 	})

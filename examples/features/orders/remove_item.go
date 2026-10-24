@@ -8,13 +8,13 @@ import (
 
 // RemoveItemRequest defines the path parameters to delete an item.
 type RemoveItemRequest struct {
-	OrderId string `param:"orderId" doc:"ID do pedido" example:"b1a2c3d4-0001-4000-8000-000000000001" validate:"required"`
-	ItemId  string `param:"itemId" doc:"ID do item a remover" example:"item_101" validate:"required"`
+	OrderId string `param:"orderId" doc:"Order ID" example:"b1a2c3d4-0001-4000-8000-000000000001" validate:"required"`
+	ItemId  string `param:"itemId" doc:"Item ID to remove" example:"item_101" validate:"required"`
 }
 
 // RemoveItemResponse defines the result of removing an item.
 type RemoveItemResponse struct {
-	Message string `json:"message" doc:"Mensagem de status" example:"Item removido com sucesso!"`
+	Message string `json:"message" doc:"Status message" example:"Item removed successfully!"`
 }
 
 // RemoveItemEndpoint handles item removal.
@@ -26,11 +26,11 @@ type RemoveItemEndpoint struct {
 func (e *RemoveItemEndpoint) Handle(ctx *gota.Context, req RemoveItemRequest) (RemoveItemResponse, error) {
 	order, ok := e.Store.GetOrder(req.OrderId)
 	if !ok {
-		return RemoveItemResponse{}, gota.NotFound("Pedido não encontrado")
+		return RemoveItemResponse{}, gota.NotFound("Order not found")
 	}
 
 	if order.Status != domain.StatusCreated {
-		return RemoveItemResponse{}, gota.BadRequest("Não é possível remover itens. O pedido não está mais em estado de criação.")
+		return RemoveItemResponse{}, gota.BadRequest("Cannot remove items. Order is no longer in created state.")
 	}
 
 	foundIdx := -1
@@ -42,13 +42,13 @@ func (e *RemoveItemEndpoint) Handle(ctx *gota.Context, req RemoveItemRequest) (R
 	}
 
 	if foundIdx == -1 {
-		return RemoveItemResponse{}, gota.NotFound("Item não encontrado no pedido")
+		return RemoveItemResponse{}, gota.NotFound("Item not found in order")
 	}
 
 	order.Items = append(order.Items[:foundIdx], order.Items[foundIdx+1:]...)
 	e.Store.SaveOrder(order)
 
 	return RemoveItemResponse{
-		Message: "Item removido com sucesso!",
+		Message: "Item removed successfully!",
 	}, nil
 }

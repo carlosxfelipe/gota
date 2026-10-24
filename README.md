@@ -238,7 +238,7 @@ The showcase is pre-seeded with users for testing role-based workflows:
 A pre-configured [Bruno](https://www.usebruno.com/) collection is ready to use in [`examples/bruno/`](examples/bruno):
 
 1. Open the `examples/bruno` folder in the Bruno app.
-2. Run **`10. Login (Cliente)`** or **`9. Login (Admin)`** — the response script automatically stores `jwt_token`.
+2. Run **`10. Login (Customer)`** or **`9. Login (Admin)`** — the response script automatically stores `jwt_token`.
 3. Execute any of the order lifecycle requests (**`Create Order`**, **`Add Item`**, **`Pay Order`**, **`Ship Order`**, etc.).
 
 ---

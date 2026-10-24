@@ -44,8 +44,8 @@ func (s *Store) seed() {
 			CustomerName: "Carlos Felipe",
 			Status:       domain.StatusCreated,
 			Items: []domain.OrderItem{
-				{ID: "item_101", ProductName: "Coca-Cola Lata 350ml", Price: 5.50, Quantity: 2},
-				{ID: "item_102", ProductName: "Hambúrguer Clássico", Price: 25.00, Quantity: 1},
+				{ID: "item_101", ProductName: "Coca-Cola Can 350ml", Price: 5.50, Quantity: 2},
+				{ID: "item_102", ProductName: "Classic Burger", Price: 25.00, Quantity: 1},
 			},
 		},
 		{
@@ -55,7 +55,7 @@ func (s *Store) seed() {
 			Status:       domain.StatusPaid,
 			Items: []domain.OrderItem{
 				{ID: "item_201", ProductName: "Coca-Cola 2L", Price: 12.00, Quantity: 1},
-				{ID: "item_202", ProductName: "Pizza de Calabresa", Price: 45.00, Quantity: 1},
+				{ID: "item_202", ProductName: "Pepperoni Pizza", Price: 45.00, Quantity: 1},
 			},
 		},
 		{
@@ -64,7 +64,7 @@ func (s *Store) seed() {
 			CustomerName: "Luís Felipe",
 			Status:       domain.StatusShipped,
 			Items: []domain.OrderItem{
-				{ID: "item_301", ProductName: "Coca-Cola Zero Lata", Price: 5.50, Quantity: 1},
+				{ID: "item_301", ProductName: "Coca-Cola Zero Can", Price: 5.50, Quantity: 1},
 			},
 		},
 	}

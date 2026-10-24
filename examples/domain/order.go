@@ -17,19 +17,19 @@ const (
 
 // OrderItem represents a line item within an order.
 type OrderItem struct {
-	ID          string  `json:"id" doc:"Identificador único do item" example:"item_1"`
-	ProductName string  `json:"productName" doc:"Nome do produto" example:"Coca-Cola Lata 350ml"`
-	Price       float64 `json:"price" doc:"Preço unitário do produto" example:"5.50"`
-	Quantity    int     `json:"quantity" doc:"Quantidade adquirida" example:"2"`
+	ID          string  `json:"id" doc:"Unique item identifier" example:"item_1"`
+	ProductName string  `json:"productName" doc:"Product name" example:"Coca-Cola Can 350ml"`
+	Price       float64 `json:"price" doc:"Unit price" example:"5.50"`
+	Quantity    int     `json:"quantity" doc:"Quantity purchased" example:"2"`
 }
 
 // Order represents an order in the system.
 type Order struct {
-	ID           string      `json:"id" doc:"Identificador único do pedido" example:"b1a2c3d4-0001-4000-8000-000000000001"`
-	UserID       int         `json:"userId" doc:"ID do usuário proprietário do pedido" example:"2"`
-	CustomerName string      `json:"customerName" doc:"Nome do cliente" example:"Carlos Felipe"`
-	Status       OrderStatus `json:"status" doc:"Estado atual do pedido" example:"Created"`
-	Items        []OrderItem `json:"items" doc:"Lista de itens do pedido"`
+	ID           string      `json:"id" doc:"Unique order identifier" example:"b1a2c3d4-0001-4000-8000-000000000001"`
+	UserID       int         `json:"userId" doc:"ID of the user who owns the order" example:"2"`
+	CustomerName string      `json:"customerName" doc:"Customer name" example:"Carlos Felipe"`
+	Status       OrderStatus `json:"status" doc:"Current status of the order" example:"Created"`
+	Items        []OrderItem `json:"items" doc:"List of order items"`
 }
 
 // TotalAmount calculates the sum of price * quantity for all items in the order.

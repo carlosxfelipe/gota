@@ -129,13 +129,13 @@ func CurrentUser(ctx *gota.Context) (*Claims, bool) {
 
 // LoginRequest defines credentials for authentication.
 type LoginRequest struct {
-	Username string `json:"username" doc:"Nome de usuário" example:"carlos" validate:"required"`
-	Password string `json:"password" doc:"Senha do usuário" example:"carlos123" validate:"required"`
+	Username string `json:"username" doc:"Username" example:"carlos" validate:"required"`
+	Password string `json:"password" doc:"User password" example:"carlos123" validate:"required"`
 }
 
 // LoginResponse returns the generated JWT Bearer token.
 type LoginResponse struct {
-	Token string `json:"token" doc:"Token JWT Bearer" example:"eyJhbGciOi..."`
+	Token string `json:"token" doc:"JWT Bearer token" example:"eyJhbGciOi..."`
 }
 
 // LoginEndpoint handles authentication.

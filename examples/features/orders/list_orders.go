@@ -8,15 +8,15 @@ import (
 
 // OrderSummary provides a high-level summary of an order in the listing.
 type OrderSummary struct {
-	Id           string  `json:"id" doc:"ID do pedido" example:"b1a2c3d4-0001-4000-8000-000000000001"`
-	CustomerName string  `json:"customerName" doc:"Nome do cliente" example:"Carlos Felipe"`
-	Status       string  `json:"status" doc:"Status do pedido" example:"Created"`
-	TotalAmount  float64 `json:"totalAmount" doc:"Valor total do pedido" example:"36.00"`
+	Id           string  `json:"id" doc:"Order ID" example:"b1a2c3d4-0001-4000-8000-000000000001"`
+	CustomerName string  `json:"customerName" doc:"Customer name" example:"Carlos Felipe"`
+	Status       string  `json:"status" doc:"Order status" example:"Created"`
+	TotalAmount  float64 `json:"totalAmount" doc:"Total order amount" example:"36.00"`
 }
 
 // ListOrdersResponse returns a list of order summaries.
 type ListOrdersResponse struct {
-	Orders []OrderSummary `json:"orders" doc:"Lista de pedidos"`
+	Orders []OrderSummary `json:"orders" doc:"List of orders"`
 }
 
 // ListOrdersEndpoint lists orders.
