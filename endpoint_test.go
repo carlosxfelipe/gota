@@ -228,7 +228,7 @@ type SearchRequest struct {
 }
 
 func TestRequiredQueryParamDocumentedWithMultipleRules(t *testing.T) {
-	app := New()
+	app := New(Config{})
 	Get(app, "/search", func(ctx *Context, req SearchRequest) (Empty, error) { return Empty{}, nil })
 
 	w := httptest.NewRecorder()
@@ -277,7 +277,7 @@ func TestValidationErrorReturnedFromHandlerIs422(t *testing.T) {
 }
 
 func TestRouteStatusChangesResponseAndDocs(t *testing.T) {
-	app := New()
+	app := New(Config{})
 	Post(app, "/jobs", func(ctx *Context, req Empty) (ItemResponse, error) {
 		return ItemResponse{ID: "job_1"}, nil
 	}).Status(http.StatusAccepted)
@@ -326,7 +326,7 @@ func TestMethodNotAllowed(t *testing.T) {
 }
 
 func TestSamePathMultipleMethodsAndOptions(t *testing.T) {
-	app := New()
+	app := New(Config{})
 	Get(app, "/multi", func(ctx *Context, req Empty) (ItemResponse, error) { return ItemResponse{ID: "g"}, nil })
 	Post(app, "/multi", func(ctx *Context, req Empty) (ItemResponse, error) { return ItemResponse{ID: "p"}, nil })
 	Put(app, "/multi", func(ctx *Context, req Empty) (ItemResponse, error) { return ItemResponse{ID: "u"}, nil })

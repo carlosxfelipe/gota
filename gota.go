@@ -44,8 +44,8 @@ const (
 )
 
 // New initializes and returns a new Gota application instance.
-func New(configs ...Config) *App {
-	return core.New(configs...)
+func New(cfg Config) *App {
+	return core.New(cfg)
 }
 
 // Built-in Middleware helpers

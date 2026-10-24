@@ -48,11 +48,7 @@ type App struct {
 }
 
 // New creates and configures a new Gota application instance.
-func New(configs ...Config) *App {
-	var cfg Config
-	if len(configs) > 0 {
-		cfg = configs[0]
-	}
+func New(cfg Config) *App {
 	if cfg.Title == "" {
 		cfg.Title = "Gota API"
 	}
