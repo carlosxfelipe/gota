@@ -14,9 +14,9 @@
 
 </div>
 
-**Gota** is a minimalist, high-performance web micro-framework for Go with **zero external dependencies**, built around the [**REPR Design Pattern (Request-Endpoint-Response)**](https://deviq.com/design-patterns/repr-design-pattern/) and featuring native interactive API documentation powered by **Scalar** (configured with the `classic` layout by default).
+**Gota** is a minimalist, high-performance web micro-framework for Go with **zero external dependencies**, built around the [REPR Design Pattern (Request-Endpoint-Response)](https://deviq.com/design-patterns/repr-design-pattern/) and featuring native interactive API documentation powered by **Scalar** (configured with the `classic` layout by default).
 
-Inspired by the ergonomic fluency of [Kite](https://github.com/claudiovictors/kite) and the cohesive endpoint architecture popularized by **FastEndpoints**.
+Inspired by the ergonomic fluency of [Kite](https://github.com/claudiovictors/kite) and the cohesive endpoint architecture popularized by [FastEndpoints](https://fast-endpoints.com/).
 
 ---
 
@@ -103,7 +103,7 @@ func main() {
 
 In traditional MVC or generic `(w, r)` handlers, controllers accumulate multiple actions and require repetitive manual parsing and validation for each route.
 
-Following the [**REPR Design Pattern**](https://deviq.com/design-patterns/repr-design-pattern/) and the philosophy of **FastEndpoints**, Gota organizes every route into a cohesive unit of three components:
+Following the [REPR Design Pattern](https://deviq.com/design-patterns/repr-design-pattern/) and the philosophy of [FastEndpoints](https://fast-endpoints.com/), Gota organizes every route into a cohesive unit of three components:
 
 1. **Request**: Defines the input contract (body, route params, query string, headers):
    ```go
