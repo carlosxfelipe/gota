@@ -161,8 +161,12 @@ gota/
 │   ├── router.go
 │   ├── router_test.go
 │   └── scalar.go
-├── examples/        # Showcase example application
-│   └── main.go
+├── examples/        # Order Flow showcase (FastEndpoints / REPR architecture)
+│   ├── bruno/       # Bruno API collection
+│   ├── data/        # In-memory store and seed data
+│   ├── domain/      # Domain models (Order, OrderItem, User)
+│   ├── features/    # Vertical slice features (Auth, Orders)
+│   └── main.go      # Application bootstrap
 ├── validation/      # Input validation engine and declarative rules
 │   ├── validator.go
 │   └── validator_test.go
@@ -201,8 +205,41 @@ go run examples/main.go
 
 Then visit:
 
-- **Scalar UI**: [http://localhost:3000/docs](http://localhost:3000/docs)
+- **Scalar UI**: [http://localhost:3000/docs](http://localhost:3000/docs) (or open [http://localhost:3000](http://localhost:3000) which redirects to `/docs`)
 - **OpenAPI 3.1 Spec**: [http://localhost:3000/openapi.json](http://localhost:3000/openapi.json)
+
+### 👥 Seed Users & Credentials
+
+The showcase is pre-seeded with users for testing role-based workflows:
+
+| Username | Password    | Role       | Permissions                                  |
+| -------- | ----------- | ---------- | -------------------------------------------- |
+| `admin`  | `admin123`  | `Admin`    | Full access (views all orders in the system) |
+| `carlos` | `carlos123` | `Customer` | Scoped to own orders (seed `Created` order)  |
+| `maria`  | `maria123`  | `Customer` | Scoped to own orders (seed `Paid` order)     |
+| `luis`   | `luis123`   | `Customer` | Scoped to own orders (seed `Shipped` order)  |
+
+### 🛣️ Showcase API Routes (Order Flow)
+
+| Method   | Endpoint                             | Auth   | Description                                                     |
+| -------- | ------------------------------------ | ------ | --------------------------------------------------------------- |
+| `POST`   | `/api/auth/login`                    | Public | Authenticates credentials and returns a signed JWT Bearer token |
+| `GET`    | `/api/orders`                        | Bearer | Lists orders (scoped by Customer, or full list for Admin)       |
+| `POST`   | `/api/orders`                        | Bearer | Creates a new order in `Created` state                          |
+| `GET`    | `/api/orders/:orderId`               | Bearer | Retrieves order details, items, and calculated `totalAmount`    |
+| `POST`   | `/api/orders/:orderId/items`         | Bearer | Adds a line item to an order still in `Created` state           |
+| `DELETE` | `/api/orders/:orderId/items/:itemId` | Bearer | Removes a line item from an open `Created` order                |
+| `POST`   | `/api/orders/:orderId/pay`           | Bearer | Pays order with items and transitions status to `Paid`          |
+| `POST`   | `/api/orders/:orderId/ship`          | Bearer | Ships paid order and transitions status to `Shipped`            |
+| `POST`   | `/api/orders/:orderId/cancel`        | Bearer | Cancels order unless it was already `Shipped`                   |
+
+### 🟠 Testing with Bruno
+
+A pre-configured [Bruno](https://www.usebruno.com/) collection is ready to use in [`examples/bruno/`](examples/bruno):
+
+1. Open the `examples/bruno` folder in the Bruno app.
+2. Run **`10. Login (Cliente)`** or **`9. Login (Admin)`** — the response script automatically stores `jwt_token`.
+3. Execute any of the order lifecycle requests (**`Create Order`**, **`Add Item`**, **`Pay Order`**, **`Ship Order`**, etc.).
 
 ---
 

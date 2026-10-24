@@ -1,0 +1,23 @@
+meta {
+  name: Add Item
+  type: http
+  seq: 4
+}
+
+post {
+  url: http://localhost:3000/api/orders/{{orderId}}/items
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{jwt_token}}
+}
+
+body:json {
+  {
+    "ProductName": "Coca-Cola Lata 350ml",
+    "Price": 5.50,
+    "Quantity": 2
+  }
+}
