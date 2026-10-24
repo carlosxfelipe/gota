@@ -41,21 +41,18 @@ func RegisterRoutes(target gota.RouterTarget, store *data.Store) {
 
 	// 6. Pay Order
 	gota.HandleEndpoint(target, http.MethodPost, "/api/orders/:orderId/pay", &PayOrderEndpoint{Store: store}).
-		Status(http.StatusOK).
 		Summary("Pay order").
 		Description("Transitions an order with items from 'Created' to 'Paid' state.").
 		Tags("Orders")
 
 	// 7. Ship Order
 	gota.HandleEndpoint(target, http.MethodPost, "/api/orders/:orderId/ship", &ShipOrderEndpoint{Store: store}).
-		Status(http.StatusOK).
 		Summary("Ship order").
 		Description("Transitions a 'Paid' order to 'Shipped' state.").
 		Tags("Orders")
 
 	// 8. Cancel Order
 	gota.HandleEndpoint(target, http.MethodPost, "/api/orders/:orderId/cancel", &CancelOrderEndpoint{Store: store}).
-		Status(http.StatusOK).
 		Summary("Cancel order").
 		Description("Cancels an order unless it was already shipped.").
 		Tags("Orders")

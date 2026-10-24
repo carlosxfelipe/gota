@@ -58,15 +58,15 @@ func TestREPREndpoints(t *testing.T) {
 		Summary("Get Item by ID").
 		Tags("Items")
 
-	// Test Successful POST (returns 201 Created by default for Post)
+	// Test Successful POST (returns 200 OK by default)
 	body := []byte(`{"title":"Keyboard","price":5000}`)
 	req := httptest.NewRequest("POST", "/items", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	app.ServeHTTP(w, req)
 
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected status 201, got %d. Body: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d. Body: %s", w.Code, w.Body.String())
 	}
 
 	var res ItemResponse
@@ -298,8 +298,8 @@ func TestRouteStatusChangesResponseAndDocs(t *testing.T) {
 	if _, ok := responses["202"]; !ok {
 		t.Errorf("expected 202 documented, got %v", responses)
 	}
-	if _, ok := responses["201"]; ok {
-		t.Errorf("did not expect default 201 to remain documented, got %v", responses)
+	if _, ok := responses["200"]; ok {
+		t.Errorf("did not expect default 200 to remain documented, got %v", responses)
 	}
 }
 
@@ -331,7 +331,7 @@ func TestSamePathMultipleMethodsAndOptions(t *testing.T) {
 	Post(app, "/multi", func(ctx *Context, req Empty) (ItemResponse, error) { return ItemResponse{ID: "p"}, nil })
 	Put(app, "/multi", func(ctx *Context, req Empty) (ItemResponse, error) { return ItemResponse{ID: "u"}, nil })
 
-	for method, want := range map[string]int{"GET": 200, "POST": 201, "PUT": 200, "OPTIONS": 204} {
+	for method, want := range map[string]int{"GET": 200, "POST": 200, "PUT": 200, "OPTIONS": 204} {
 		w := httptest.NewRecorder()
 		app.ServeHTTP(w, httptest.NewRequest(method, "/multi", nil))
 		if w.Code != want {
@@ -395,8 +395,8 @@ func TestRequestBodyTooLargeReturns413(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	app.ServeHTTP(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("small body: expected 201, got %d. Body: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("small body: expected 200, got %d. Body: %s", w.Code, w.Body.String())
 	}
 
 	big := `{"title":"` + strings.Repeat("a", 100) + `","price":10}`
@@ -420,8 +420,8 @@ func TestRequestBodyLimitCanBeDisabled(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	app.ServeHTTP(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201 with limit disabled, got %d", w.Code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 with limit disabled, got %d", w.Code)
 	}
 }
 
@@ -455,4 +455,17 @@ func TestInvalidValidateTagPanicsAtRegistration(t *testing.T) {
 	mustPanic("invalid rule parameter", func() {
 		Post(app, "/b", func(ctx *Context, req badParamRequest) (Empty, error) { return Empty{}, nil })
 	})
+}
+
+func TestPostCanExplicitlySet201Created(t *testing.T) {
+	app := New(Config{DisableDocs: true})
+	Post(app, "/users", func(ctx *Context, req Empty) (ItemResponse, error) {
+		return ItemResponse{ID: "u_1", Title: "User"}, nil
+	}).Status(http.StatusCreated)
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest("POST", "/users", nil))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", w.Code)
+	}
 }

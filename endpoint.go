@@ -207,7 +207,7 @@ func introspectEndpoint[Req any, Res any](defaultStatus int) *core.RouteDoc {
 
 // Get registers an HTTP GET REPR endpoint on App or RouteGroup.
 func Get[Req any, Res any](target RouterTarget, path string, handler EndpointFunc[Req, Res]) *core.Route {
-	h, doc := WrapEndpoint[Req, Res](handler, http.StatusOK)
+	h, doc := WrapEndpoint(handler, http.StatusOK)
 	route := target.RegisterRoute(http.MethodGet, path, h)
 	route.Doc(*doc)
 	return route
@@ -215,7 +215,7 @@ func Get[Req any, Res any](target RouterTarget, path string, handler EndpointFun
 
 // Post registers an HTTP POST REPR endpoint on App or RouteGroup.
 func Post[Req any, Res any](target RouterTarget, path string, handler EndpointFunc[Req, Res]) *core.Route {
-	h, doc := WrapEndpoint[Req, Res](handler, http.StatusCreated)
+	h, doc := WrapEndpoint(handler, http.StatusOK)
 	route := target.RegisterRoute(http.MethodPost, path, h)
 	route.Doc(*doc)
 	return route
@@ -223,7 +223,7 @@ func Post[Req any, Res any](target RouterTarget, path string, handler EndpointFu
 
 // Put registers an HTTP PUT REPR endpoint on App or RouteGroup.
 func Put[Req any, Res any](target RouterTarget, path string, handler EndpointFunc[Req, Res]) *core.Route {
-	h, doc := WrapEndpoint[Req, Res](handler, http.StatusOK)
+	h, doc := WrapEndpoint(handler, http.StatusOK)
 	route := target.RegisterRoute(http.MethodPut, path, h)
 	route.Doc(*doc)
 	return route
@@ -231,7 +231,7 @@ func Put[Req any, Res any](target RouterTarget, path string, handler EndpointFun
 
 // Delete registers an HTTP DELETE REPR endpoint on App or RouteGroup.
 func Delete[Req any, Res any](target RouterTarget, path string, handler EndpointFunc[Req, Res]) *core.Route {
-	h, doc := WrapEndpoint[Req, Res](handler, http.StatusOK)
+	h, doc := WrapEndpoint(handler, http.StatusOK)
 	route := target.RegisterRoute(http.MethodDelete, path, h)
 	route.Doc(*doc)
 	return route
@@ -239,7 +239,7 @@ func Delete[Req any, Res any](target RouterTarget, path string, handler Endpoint
 
 // Patch registers an HTTP PATCH REPR endpoint on App or RouteGroup.
 func Patch[Req any, Res any](target RouterTarget, path string, handler EndpointFunc[Req, Res]) *core.Route {
-	h, doc := WrapEndpoint[Req, Res](handler, http.StatusOK)
+	h, doc := WrapEndpoint(handler, http.StatusOK)
 	route := target.RegisterRoute(http.MethodPatch, path, h)
 	route.Doc(*doc)
 	return route
@@ -247,11 +247,7 @@ func Patch[Req any, Res any](target RouterTarget, path string, handler EndpointF
 
 // HandleEndpoint registers a struct-based REPR endpoint implementing Endpoint[Req, Res].
 func HandleEndpoint[Req any, Res any](target RouterTarget, method, path string, ep Endpoint[Req, Res]) *core.Route {
-	status := http.StatusOK
-	if method == http.MethodPost {
-		status = http.StatusCreated
-	}
-	h, doc := WrapEndpoint[Req, Res](ep.Handle, status)
+	h, doc := WrapEndpoint(ep.Handle, http.StatusOK)
 	route := target.RegisterRoute(method, path, h)
 	route.Doc(*doc)
 	return route

@@ -25,7 +25,7 @@ Inspired by the ergonomic fluency of [Kite](https://github.com/claudiovictors/ki
 - **First-Class REPR Design Pattern**:
   - **Request**: Automatic binding across route params, query string, headers, and JSON body (`param`, `query`, `header`, `json` tags) with declarative validation (`validate:"required,min=3,email"` or custom `Validator` interface).
   - **Endpoint**: Single Responsibility Principle per operation, implemented via generic functions (`gota.Get`, `gota.Post`, etc.) or struct-based endpoints (`Endpoint[Req, Res]`).
-  - **Response**: Automatic JSON serialization with semantic HTTP status codes (200 OK, 201 Created for POST, 204 No Content for `gota.Empty`).
+  - **Response**: Automatic JSON serialization with sensible HTTP status codes (200 OK by default, 204 No Content for `gota.Empty`, or explicitly configured via `.Status(code)`).
 - **Zero External Dependencies**: Built entirely on top of the Go standard library (`net/http`, `reflect`, `encoding/json`, `sync`, etc.).
 - **Interactive Documentation with Scalar**:
   - Automatic **OpenAPI 3.1** specification generation derived directly from `Req` and `Res` types.
@@ -85,7 +85,7 @@ func main() {
 			Name:  req.Name,
 			Email: req.Email,
 		}
-		return created, nil // Automatically serialized and returned as 201 Created
+		return created, nil // Automatically serialized and returned as 200 OK (use .Status(201) when preferred)
 	}).
 		Summary("Register user").
 		Tags("Users")
