@@ -6,7 +6,7 @@
 
 <div align="center">
 
-[![Go Version](https://img.shields.io/badge/go-1.24%2B-00ADD8?logo=go&logoColor=white)](go.mod)
+[![Go Version](https://img.shields.io/badge/go-1.26%2B-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Pattern](https://img.shields.io/badge/pattern-REPR-blue)](https://deviq.com/design-patterns/repr-design-pattern/)
 [![OpenAPI](https://img.shields.io/badge/OpenAPI-3.1-6BA539)](http://localhost:3000/openapi.json)
@@ -42,7 +42,7 @@ Inspired by the ergonomic fluency of [Kite](https://github.com/claudiovictors/ki
 go get github.com/carlosxfelipe/gota
 ```
 
-Requires Go 1.24 or newer.
+Requires Go 1.26 or newer.
 
 ---
 
@@ -166,6 +166,7 @@ gota/
 │   ├── data/        # In-memory store and seed data
 │   ├── domain/      # Domain models (Order, OrderItem, User)
 │   ├── features/    # Vertical slice features (Auth, Orders)
+│   ├── examples_test.go # End-to-end integration test suite
 │   └── main.go      # Application bootstrap
 ├── validation/      # Input validation engine and declarative rules
 │   ├── validator.go

@@ -15,7 +15,7 @@ func main() {
 	app := gota.New(gota.Config{
 		Title:        "Order Flow API",
 		Version:      "1.0.0",
-		Description:  "Order management API built with Go and Gota (REPR pattern) - inspired by FastEndpoints.",
+		Description:  "Order management API (REPR pattern).",
 		ScalarTheme:  gota.ThemeDefault,
 		ScalarLayout: "classic",
 		MaxBodyBytes: 10 << 20, // 10MB request body protection
