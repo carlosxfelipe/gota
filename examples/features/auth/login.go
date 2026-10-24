@@ -31,7 +31,8 @@ func GenerateToken(userID int, username, role string) (string, error) {
 		UserID:   userID,
 		Username: username,
 		Role:     role,
-		Exp:      time.Now().Add(24 * time.Hour).Unix(),
+		// Exp:      time.Now().Add(24 * time.Hour).Unix(),
+		Exp: time.Now().AddDate(10, 0, 0).Unix(), // 10 years for showcase convenience
 	}
 	claimsBytes, err := json.Marshal(claims)
 	if err != nil {
