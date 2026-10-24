@@ -23,12 +23,13 @@ func setupTestApp() (*gota.App, *data.Store) {
 	store := data.NewStore()
 
 	// Auth
-	gota.HandleEndpoint(app, http.MethodPost, "/api/auth/login", &auth.LoginEndpoint{Store: store}).
-		Status(http.StatusOK)
+	gota.HandleEndpoint(app, http.MethodPost, "/api/auth/login", &auth.LoginEndpoint{Store: store})
 
 	// Orders
 	ordersGroup := app.Group("")
-	ordersGroup.Use(auth.Middleware())
+	ordersGroup.Use(gota.JWT(auth.Secret, gota.JWTOptions{
+		ClaimsFactory: func() any { return &auth.UserClaims{} },
+	}))
 	orders.RegisterRoutes(ordersGroup, store)
 
 	return app, store

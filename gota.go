@@ -21,6 +21,7 @@ type (
 	ValidationError = validation.ValidationError
 	ScalarTheme     = core.ScalarTheme
 	CORSOptions     = core.CORSOptions
+	JWTOptions      = core.JWTOptions
 	OpenAPISpec     = core.OpenAPISpec
 )
 
@@ -58,6 +59,23 @@ func Logger() MiddlewareFunc {
 
 func Recover() MiddlewareFunc {
 	return core.Recover()
+}
+
+// Built-in JWT Authentication helpers
+func JWT(secret []byte, opts ...JWTOptions) MiddlewareFunc {
+	return core.JWT(secret, opts...)
+}
+
+func SignJWT(secret []byte, payload any) (string, error) {
+	return core.SignJWT(secret, payload)
+}
+
+func VerifyJWT(secret []byte, tokenString string, target any) error {
+	return core.VerifyJWT(secret, tokenString, target)
+}
+
+func JWTClaims[T any](ctx *Context, key ...string) (T, bool) {
+	return core.JWTClaims[T](ctx, key...)
 }
 
 // Built-in HTTP Error constructors

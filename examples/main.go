@@ -40,9 +40,11 @@ func main() {
 		Description("Validates user credentials and returns a JWT Bearer token.").
 		Tags("Auth")
 
-	// 2. Protected Orders Endpoints (Secured with Bearer Token middleware)
+	// 2. Protected Orders Endpoints (Secured with built-in gota.JWT middleware)
 	ordersGroup := app.Group("")
-	ordersGroup.Use(auth.Middleware())
+	ordersGroup.Use(gota.JWT(auth.Secret, gota.JWTOptions{
+		ClaimsFactory: func() any { return &auth.UserClaims{} },
+	}))
 	orders.RegisterRoutes(ordersGroup, store)
 
 	log.Println("💧 Gota Order Flow server starting...")

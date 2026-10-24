@@ -32,7 +32,7 @@ Inspired by the ergonomic fluency of [Kite](https://github.com/claudiovictors/ki
   - Interactive **Scalar** UI served at `/docs` with **`classic` layout enabled by default** (Swagger-style).
   - OpenAPI 3.1 JSON schema exposed at `/openapi.json` out of the box.
 - **Fluent Kite-like Ergonomics**: Chainable metadata methods (`.Summary()`, `.Description()`, `.Tags()`, `.Middleware()`), route groups (`app.Group("/api")`), and path parameter matching (`:id`, `*wildcard`).
-- **Built-in Middlewares**: Production-ready CORS with automatic `OPTIONS` preflight handling, panic `Recover` with stacktrace logging, and request `Logger`.
+- **Built-in Middlewares & Security**: Zero-dependency HS256 JWT authentication (`gota.JWT`, `gota.SignJWT`, `gota.VerifyJWT`, `gota.JWTClaims[T]`), production-ready CORS with automatic `OPTIONS` preflight handling, panic `Recover` with stacktrace logging, and request `Logger`.
 
 ---
 
@@ -156,6 +156,8 @@ gota/
 │   ├── app.go
 │   ├── context.go
 │   ├── errors.go
+│   ├── jwt.go
+│   ├── jwt_test.go
 │   ├── middleware.go
 │   ├── openapi.go
 │   ├── router.go
