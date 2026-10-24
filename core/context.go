@@ -20,6 +20,7 @@ type Context struct {
 	Params         map[string]string
 
 	statusCode int
+	statusSet  bool
 	written    bool
 	bodyBytes  []byte
 	bodyRead   bool
@@ -176,7 +177,13 @@ func (c *Context) SetCookie(cookie *http.Cookie) *Context {
 // Status sets the HTTP status code for the response. Chainable.
 func (c *Context) Status(code int) *Context {
 	c.statusCode = code
+	c.statusSet = true
 	return c
+}
+
+// StatusExplicit reports whether a status code was explicitly set via Status.
+func (c *Context) StatusExplicit() bool {
+	return c.statusSet
 }
 
 // StatusCode returns the currently configured HTTP status code.

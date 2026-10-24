@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 )
 
@@ -23,6 +24,9 @@ type Node struct {
 	FullPath    string
 	Name        string
 	Doc         *RouteDoc
+
+	// auto marks handlers registered implicitly (e.g. automatic OPTIONS).
+	auto bool
 }
 
 // Router maps HTTP methods to Trie routing trees and stores named routes.
@@ -52,7 +56,55 @@ func splitPath(path string) []string {
 }
 
 // Add registers a route into the Trie for the given HTTP method.
+// It panics if the same method and path were already registered explicitly,
+// or if a parameter/wildcard name conflicts with an existing sibling.
 func (r *Router) Add(method, path string, handler HandlerFunc) *Node {
+	current := r.insert(method, path)
+	if current.Handler != nil && !current.auto {
+		panic(fmt.Sprintf("gota: route %s %s is already registered", method, path))
+	}
+	if current.auto {
+		// An explicit route replaces an automatic one.
+		current.auto = false
+		current.Doc = nil
+	}
+
+	current.Handler = handler
+	current.RawHandler = handler
+	current.Method = method
+	current.FullPath = path
+	return current
+}
+
+// addAuto registers an implicit route unless one already exists.
+// Implicit routes are hidden from the generated documentation.
+func (r *Router) addAuto(method, path string, handler HandlerFunc) {
+	current := r.insert(method, path)
+	if current.Handler != nil {
+		return
+	}
+	current.auto = true
+	current.Handler = handler
+	current.RawHandler = handler
+	current.Method = method
+	current.FullPath = path
+	current.Doc = &RouteDoc{Hidden: true, Responses: make(map[int]*ResponseDoc)}
+}
+
+// Allowed returns the sorted HTTP methods that have a handler matching path.
+func (r *Router) Allowed(path string) []string {
+	var methods []string
+	for method := range r.trees {
+		if _, _, ok := r.Match(method, path); ok {
+			methods = append(methods, method)
+		}
+	}
+	sort.Strings(methods)
+	return methods
+}
+
+// insert finds or creates the Trie node for method and path.
+func (r *Router) insert(method, path string) *Node {
 	root, ok := r.trees[method]
 	if !ok {
 		root = &Node{Segment: "/"}
@@ -68,6 +120,9 @@ func (r *Router) Add(method, path string, handler HandlerFunc) *Node {
 			if c.Segment == seg {
 				child = c
 				break
+			}
+			if (c.IsParam && strings.HasPrefix(seg, ":")) || (c.IsWild && strings.HasPrefix(seg, "*")) {
+				panic(fmt.Sprintf("gota: route %s %s: %q conflicts with existing %q", method, path, seg, c.Segment))
 			}
 		}
 		if child == nil {
@@ -88,10 +143,6 @@ func (r *Router) Add(method, path string, handler HandlerFunc) *Node {
 		current = child
 	}
 
-	current.Handler = handler
-	current.RawHandler = handler
-	current.Method = method
-	current.FullPath = path
 	return current
 }
 

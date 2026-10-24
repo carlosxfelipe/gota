@@ -46,3 +46,31 @@ func TestBinder(t *testing.T) {
 		t.Errorf("expected Email=alex@example.com, got %s", dto.Email)
 	}
 }
+
+type TestBoolDTO struct {
+	Active bool `query:"active"`
+}
+
+func TestBinderBool(t *testing.T) {
+	bind := func(query string) (TestBoolDTO, error) {
+		req := httptest.NewRequest("GET", "/x?active="+query, nil)
+		ctx := core.NewContext(httptest.NewRecorder(), req, nil)
+		var dto TestBoolDTO
+		err := BindRequest(ctx, &dto)
+		return dto, err
+	}
+
+	for _, v := range []string{"true", "1", "yes"} {
+		if dto, err := bind(v); err != nil || !dto.Active {
+			t.Errorf("%q: expected true, got %v (err=%v)", v, dto.Active, err)
+		}
+	}
+	for _, v := range []string{"false", "0", "no"} {
+		if dto, err := bind(v); err != nil || dto.Active {
+			t.Errorf("%q: expected false, got %v (err=%v)", v, dto.Active, err)
+		}
+	}
+	if _, err := bind("banana"); err == nil {
+		t.Errorf("expected error for invalid boolean value")
+	}
+}

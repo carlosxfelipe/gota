@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -89,7 +90,7 @@ func CORS(opts ...CORSOptions) MiddlewareFunc {
 					w.Header().Set("Access-Control-Allow-Headers", headersStr)
 				}
 				if cfg.MaxAge > 0 {
-					w.Header().Set("Access-Control-Max-Age", time.Duration(cfg.MaxAge).String())
+					w.Header().Set("Access-Control-Max-Age", strconv.Itoa(cfg.MaxAge))
 				}
 				return ctx.NoContent()
 			}
@@ -126,7 +127,12 @@ func Logger() MiddlewareFunc {
 			start := time.Now()
 			err := next(ctx)
 			duration := time.Since(start)
-			log.Printf("gota: %s %s [%d] %s", ctx.Request.Method, ctx.Request.URL.Path, ctx.StatusCode(), duration)
+			status := ctx.StatusCode()
+			if err != nil && !ctx.Written() {
+				// The error handler runs after this middleware, so resolve the status it will use.
+				status = statusFromError(err)
+			}
+			log.Printf("gota: %s %s [%d] %s", ctx.Request.Method, ctx.Request.URL.Path, status, duration)
 			return err
 		}
 	}

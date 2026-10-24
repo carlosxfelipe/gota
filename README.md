@@ -139,6 +139,7 @@ app := gota.New(gota.Config{
     OpenAPIURL:   "/openapi.json", // default
     ScalarLayout: "classic",      // default: "classic" (or "modern")
     ScalarTheme:  gota.ThemeLaserwave,
+    MaxBodyBytes: 10 << 20,       // default: 10MB (negative value to disable)
 })
 ```
 

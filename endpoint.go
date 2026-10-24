@@ -1,13 +1,26 @@
 package gota
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"reflect"
+	"strings"
 
 	"github.com/carlosxfelipe/gota/binding"
 	"github.com/carlosxfelipe/gota/core"
 	"github.com/carlosxfelipe/gota/validation"
 )
+
+// hasRequiredRule reports whether a validate tag contains the `required` rule.
+func hasRequiredRule(tag string) bool {
+	for _, rule := range strings.Split(tag, ",") {
+		if strings.TrimSpace(rule) == "required" {
+			return true
+		}
+	}
+	return false
+}
 
 // RouterTarget represents any entity capable of registering routes (App or RouteGroup).
 type RouterTarget interface {
@@ -42,6 +55,11 @@ type ConfigurableEndpoint interface {
 // WrapEndpoint converts a generic REPR handler into a standard Gota HandlerFunc
 // with automatic parameter binding, validation, and OpenAPI documentation.
 func WrapEndpoint[Req any, Res any](handler EndpointFunc[Req, Res], defaultStatus int) (core.HandlerFunc, *core.RouteDoc) {
+	// Fail fast: a typo in a `validate` tag would otherwise silently disable the rule.
+	if err := validation.CheckTags(reflect.TypeOf(*new(Req))); err != nil {
+		panic(fmt.Sprintf("gota: invalid validate tag in %T: %v", *new(Req), err))
+	}
+
 	doc := introspectEndpoint[Req, Res](defaultStatus)
 
 	handlerFunc := func(ctx *core.Context) error {
@@ -51,6 +69,13 @@ func WrapEndpoint[Req any, Res any](handler EndpointFunc[Req, Res], defaultStatu
 		// Perform auto-binding and validation if Req is not Empty
 		if reqType != reflect.TypeOf(Empty{}) && reqType != reflect.TypeOf(struct{}{}) {
 			if err := binding.BindRequest(ctx, &req); err != nil {
+				var tooLarge *http.MaxBytesError
+				if errors.As(err, &tooLarge) {
+					return ctx.Status(http.StatusRequestEntityTooLarge).Json(ErrorResponse{
+						Error:  "request body too large",
+						Status: http.StatusRequestEntityTooLarge,
+					})
+				}
 				return ctx.Status(http.StatusBadRequest).Json(ErrorResponse{
 					Error:  "invalid request: " + err.Error(),
 					Status: http.StatusBadRequest,
@@ -72,7 +97,11 @@ func WrapEndpoint[Req any, Res any](handler EndpointFunc[Req, Res], defaultStatu
 			if resType == reflect.TypeOf(Empty{}) || resType == reflect.TypeOf(struct{}{}) {
 				return ctx.NoContent()
 			}
-			return ctx.Status(defaultStatus).Json(res)
+			status := defaultStatus
+			if ctx.StatusExplicit() {
+				status = ctx.StatusCode()
+			}
+			return ctx.Status(status).Json(res)
 		}
 		return nil
 	}
@@ -117,7 +146,7 @@ func introspectEndpoint[Req any, Res any](defaultStatus int) *core.RouteDoc {
 					Name:        queryTag,
 					Model:       reflect.New(field.Type).Elem().Interface(),
 					Description: field.Tag.Get("doc"),
-					Required:    field.Tag.Get("validate") == "required",
+					Required:    hasRequiredRule(field.Tag.Get("validate")),
 				})
 				continue
 			}
@@ -129,7 +158,7 @@ func introspectEndpoint[Req any, Res any](defaultStatus int) *core.RouteDoc {
 					Name:        headerTag,
 					Model:       reflect.New(field.Type).Elem().Interface(),
 					Description: field.Tag.Get("doc"),
-					Required:    field.Tag.Get("validate") == "required",
+					Required:    hasRequiredRule(field.Tag.Get("validate")),
 				})
 				continue
 			}

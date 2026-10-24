@@ -20,7 +20,10 @@ func BindRequest(ctx *core.Context, target any) error {
 	elem := val.Elem()
 	if elem.Kind() != reflect.Struct {
 		body, err := ctx.Body()
-		if err == nil && len(body) > 0 {
+		if err != nil {
+			return fmt.Errorf("failed to read body: %w", err)
+		}
+		if len(body) > 0 {
 			return json.Unmarshal(body, target)
 		}
 		return nil
@@ -31,7 +34,10 @@ func BindRequest(ctx *core.Context, target any) error {
 	hasBody := ctx.Request.ContentLength != 0
 	if strings.Contains(contentType, "application/json") || hasBody {
 		body, err := ctx.Body()
-		if err == nil && len(body) > 0 {
+		if err != nil {
+			return fmt.Errorf("failed to read body: %w", err)
+		}
+		if len(body) > 0 {
 			if err := json.Unmarshal(body, target); err != nil {
 				return fmt.Errorf("invalid json body: %w", err)
 			}
@@ -103,9 +109,14 @@ func setFieldValue(val reflect.Value, strVal string) error {
 		}
 		val.SetFloat(floatVal)
 	case reflect.Bool:
-		lower := strings.ToLower(strVal)
-		b := lower == "true" || lower == "1" || lower == "t" || lower == "yes" || lower == "y"
-		val.SetBool(b)
+		switch strings.ToLower(strVal) {
+		case "true", "1", "t", "yes", "y":
+			val.SetBool(true)
+		case "false", "0", "f", "no", "n":
+			val.SetBool(false)
+		default:
+			return fmt.Errorf("invalid boolean value %q", strVal)
+		}
 	case reflect.Slice:
 		if val.Type().Elem().Kind() == reflect.String {
 			parts := strings.Split(strVal, ",")

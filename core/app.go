@@ -1,10 +1,14 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"runtime/debug"
+	"strings"
+	"time"
 )
 
 // ServerConfig defines metadata for OpenAPI server endpoints.
@@ -24,7 +28,14 @@ type Config struct {
 	ScalarLayout string         `json:"scalarLayout,omitempty"` // Default: "classic"
 	DisableDocs  bool           `json:"disableDocs,omitempty"`
 	Servers      []ServerConfig `json:"servers,omitempty"`
+
+	// MaxBodyBytes limits the size of request bodies. Default: 10 MiB.
+	// Use a negative value to disable the limit.
+	MaxBodyBytes int64 `json:"maxBodyBytes,omitempty"`
 }
+
+// DefaultMaxBodyBytes is the request body limit used when Config.MaxBodyBytes is 0.
+const DefaultMaxBodyBytes int64 = 10 << 20
 
 // App represents the core engine of Gota, managing routing, middlewares, and docs.
 type App struct {
@@ -60,6 +71,9 @@ func New(configs ...Config) *App {
 	if cfg.ScalarLayout == "" {
 		cfg.ScalarLayout = "classic"
 	}
+	if cfg.MaxBodyBytes == 0 {
+		cfg.MaxBodyBytes = DefaultMaxBodyBytes
+	}
 
 	app := &App{
 		config: cfg,
@@ -82,12 +96,38 @@ func defaultNotFoundHandler(ctx *Context) error {
 	})
 }
 
+// statusError is implemented by errors that carry their own HTTP status and
+// are rendered as the JSON body themselves (e.g. validation.ValidationError).
+type statusError interface {
+	HTTPStatus() int
+}
+
+// statusFromError resolves the HTTP status the default error handler will use.
+func statusFromError(err error) int {
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.Status
+	}
+	var se statusError
+	if errors.As(err, &se) {
+		return se.HTTPStatus()
+	}
+	return http.StatusInternalServerError
+}
+
 func defaultErrorHandler(ctx *Context, err error) {
-	if httpErr, ok := err.(*HTTPError); ok {
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) {
 		_ = ctx.Status(httpErr.Status).Json(ErrorResponse{
 			Error:  httpErr.Message,
 			Status: httpErr.Status,
 		})
+		return
+	}
+
+	var se statusError
+	if errors.As(err, &se) {
+		_ = ctx.Status(se.HTTPStatus()).Json(se)
 		return
 	}
 
@@ -157,7 +197,7 @@ func registerAutoOptions(router *Router, method, path string, base []MiddlewareF
 	optionsHandler := func(ctx *Context) error {
 		return ctx.NoContent()
 	}
-	router.Add(http.MethodOptions, path, Chain(optionsHandler, base))
+	router.addAuto(http.MethodOptions, path, Chain(optionsHandler, base))
 }
 
 // URLFor generates a URL for a previously named route.
@@ -204,15 +244,36 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if err := recover(); err != nil {
 			log.Printf("gota: recovered panic in %s %s: %v\n%s", r.Method, r.URL.Path, err, debug.Stack())
-			http.Error(w, `{"error":"internal server error","status":500}`, http.StatusInternalServerError)
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"internal server error","status":500}` + "\n"))
 		}
 	}()
+
+	if a.config.MaxBodyBytes > 0 && r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, a.config.MaxBodyBytes)
+	}
 
 	handler, params, ok := a.router.Match(r.Method, r.URL.Path)
 	ctx := NewContext(w, r, params)
 
 	if !ok {
-		_ = a.NotFoundHandler(ctx)
+		// A path that exists for other methods is 405, otherwise 404.
+		fallback := a.NotFoundHandler
+		if allowed := a.router.Allowed(r.URL.Path); len(allowed) > 0 {
+			fallback = func(ctx *Context) error {
+				ctx.SetHeader("Allow", strings.Join(allowed, ", "))
+				return ctx.Status(http.StatusMethodNotAllowed).Json(ErrorResponse{
+					Error:  fmt.Sprintf("method not allowed: %s %s", ctx.Request.Method, ctx.Request.URL.Path),
+					Status: http.StatusMethodNotAllowed,
+				})
+			}
+		}
+
+		// Run global middlewares (CORS, Logger, ...) for unmatched routes too.
+		if err := Chain(fallback, a.middlewares)(ctx); err != nil {
+			a.ErrorHandler(ctx, err)
+		}
 		return
 	}
 
@@ -221,13 +282,35 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// displayAddr normalizes a listen address into the address to bind and a
+// host:port that can be opened in a browser. Accepts ":3000", "3000" or "host:3000".
+func displayAddr(addr string) (listen string, display string) {
+	if !strings.Contains(addr, ":") {
+		addr = ":" + addr
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr, addr
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "localhost"
+	}
+	return addr, net.JoinHostPort(host, port)
+}
+
 // Listen starts an HTTP server listening on the specified address.
 func (a *App) Listen(addr string) error {
-	log.Printf("💧 Gota server listening on %s", addr)
+	listen, display := displayAddr(addr)
+	log.Printf("💧 Gota server listening on %s", listen)
 	if !a.config.DisableDocs {
-		log.Printf("📖 Scalar docs available at http://localhost%s%s (classic layout)", addr, a.config.DocsURL)
+		log.Printf("📖 Scalar docs available at http://%s%s (classic layout)", display, a.config.DocsURL)
 	}
-	return http.ListenAndServe(addr, a)
+	srv := &http.Server{
+		Addr:              listen,
+		Handler:           a,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	return srv.ListenAndServe()
 }
 
 // Route represents a registered endpoint, allowing fluent OpenAPI and middleware chaining.
@@ -240,13 +323,17 @@ type Route struct {
 // Middleware appends route-specific middlewares executed before the handler.
 func (rt *Route) Middleware(mw ...MiddlewareFunc) *Route {
 	rt.Node.Middlewares = append(rt.Node.Middlewares, mw...)
+	rt.rebuild()
+	return rt
+}
 
+// rebuild recomputes the full middleware chain around the raw handler.
+func (rt *Route) rebuild() {
 	full := make([]MiddlewareFunc, 0, len(rt.base)+len(rt.Node.Middlewares))
 	full = append(full, rt.base...)
 	full = append(full, rt.Node.Middlewares...)
 
 	rt.Node.Handler = Chain(rt.Node.RawHandler, full)
-	return rt
 }
 
 // Name assigns a name to this route for reverse URL lookup.
@@ -355,9 +442,31 @@ func (rt *Route) Response(statusCode int, model any, description ...string) *Rou
 	return rt
 }
 
-// Status specifies the default HTTP status code when returning a response.
+// Status specifies the HTTP status code of the response and moves the
+// documented success response to that status.
 func (rt *Route) Status(code int) *Route {
-	rt.Response(code, nil)
+	prev := rt.Node.RawHandler
+	rt.Node.RawHandler = func(ctx *Context) error {
+		ctx.Status(code)
+		return prev(ctx)
+	}
+	rt.rebuild()
+
+	doc := rt.ensureDoc()
+	if _, exists := doc.Responses[code]; exists {
+		return rt
+	}
+	for status, resp := range doc.Responses {
+		if status >= 200 && status < 300 && status != http.StatusNoContent {
+			delete(doc.Responses, status)
+			doc.Responses[code] = resp
+			if resp.Description == http.StatusText(status) {
+				resp.Description = http.StatusText(code)
+			}
+			return rt
+		}
+	}
+	doc.Responses[code] = &ResponseDoc{Description: http.StatusText(code)}
 	return rt
 }
 
