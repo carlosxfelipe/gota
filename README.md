@@ -176,6 +176,8 @@ gota/
 │   ├── router.go
 │   ├── router_test.go
 │   └── scalar.go
+├── docs/            # Developer & AI Assistant guides
+│   └── GOTA_AI_GUIDE.md
 ├── examples/        # Order Flow showcase (FastEndpoints / REPR architecture)
 │   ├── bruno/       # Bruno API collection
 │   ├── data/        # In-memory store and seed data (store.go)
