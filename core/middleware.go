@@ -1,7 +1,10 @@
 package core
 
 import (
+	"crypto/rand"
+	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"runtime/debug"
 	"strconv"
@@ -133,6 +136,98 @@ func Logger() MiddlewareFunc {
 				status = statusFromError(err)
 			}
 			log.Printf("gota: %s %s [%d] %s", ctx.Request.Method, ctx.Request.URL.Path, status, duration)
+			return err
+		}
+	}
+}
+
+// RequestIDOptions configures the RequestID middleware.
+type RequestIDOptions struct {
+	Header    string
+	Generator func() string
+}
+
+func defaultUUIDv4() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	b[6] = (b[6] & 0x0f) | 0x40 // Version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // RFC 4122 variant
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// RequestID adds a unique identifier to each request via response header and context store.
+func RequestID(opts ...RequestIDOptions) MiddlewareFunc {
+	headerName := "X-Request-ID"
+	generator := defaultUUIDv4
+
+	if len(opts) > 0 {
+		if opts[0].Header != "" {
+			headerName = opts[0].Header
+		}
+		if opts[0].Generator != nil {
+			generator = opts[0].Generator
+		}
+	}
+
+	return func(next HandlerFunc) HandlerFunc {
+		return func(ctx *Context) error {
+			id := ctx.Header(headerName)
+			if id == "" {
+				id = generator()
+			}
+			ctx.Set("request_id", id)
+			ctx.SetHeader(headerName, id)
+			return next(ctx)
+		}
+	}
+}
+
+// SlogLoggerOptions configures the structured SlogLogger middleware.
+type SlogLoggerOptions struct {
+	Logger *slog.Logger
+}
+
+// SlogLogger logs each request using Go standard library's log/slog.
+func SlogLogger(opts ...SlogLoggerOptions) MiddlewareFunc {
+	logger := slog.Default()
+	if len(opts) > 0 && opts[0].Logger != nil {
+		logger = opts[0].Logger
+	}
+
+	return func(next HandlerFunc) HandlerFunc {
+		return func(ctx *Context) error {
+			start := time.Now()
+			err := next(ctx)
+			duration := time.Since(start)
+
+			status := ctx.StatusCode()
+			if err != nil && !ctx.Written() {
+				status = statusFromError(err)
+			}
+
+			attrs := []any{
+				slog.String("method", ctx.Request.Method),
+				slog.String("path", ctx.Request.URL.Path),
+				slog.Int("status", status),
+				slog.Duration("duration", duration),
+				slog.String("ip", ctx.ClientIP()),
+			}
+			if reqID := ctx.RequestID(); reqID != "" {
+				attrs = append(attrs, slog.String("request_id", reqID))
+			}
+			if err != nil {
+				attrs = append(attrs, slog.String("error", err.Error()))
+			}
+
+			if status >= http.StatusInternalServerError {
+				logger.ErrorContext(ctx.Request.Context(), "HTTP request", attrs...)
+			} else if status >= http.StatusBadRequest {
+				logger.WarnContext(ctx.Request.Context(), "HTTP request", attrs...)
+			} else {
+				logger.InfoContext(ctx.Request.Context(), "HTTP request", attrs...)
+			}
+
 			return err
 		}
 	}

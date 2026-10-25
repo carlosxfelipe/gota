@@ -119,10 +119,136 @@ func TestCheckTags(t *testing.T) {
 		"max bad param": struct {
 			A int `validate:"max=x"`
 		}{},
+		"len without param": struct {
+			A string `validate:"len"`
+		}{},
+		"len bad param": struct {
+			A string `validate:"len=xyz"`
+		}{},
+		"oneof without param": struct {
+			A string `validate:"oneof"`
+		}{},
+		"nested struct bad tag": struct {
+			Child struct {
+				A string `validate:"bad_rule"`
+			}
+		}{},
 	}
 	for name, v := range cases {
 		if err := CheckTags(reflect.TypeOf(v)); err == nil {
 			t.Errorf("%s: expected error", name)
 		}
+	}
+}
+
+type TestOneOfAndLenDTO struct {
+	Role   string   `json:"role" validate:"required,oneof=Admin,Customer,Guest"`
+	Code   string   `json:"code" validate:"len=6"`
+	Tags   []string `json:"tags" validate:"len=2"`
+	Status string   `json:"status" validate:"oneof=active inactive"`
+}
+
+func TestValidatorOneOfAndLen(t *testing.T) {
+	ctx := &core.Context{}
+
+	// Valid case
+	valid := TestOneOfAndLenDTO{
+		Role:   "Admin",
+		Code:   "123456",
+		Tags:   []string{"go", "api"},
+		Status: "active",
+	}
+	if err := ValidateStruct(ctx, &valid); err != nil {
+		t.Fatalf("expected valid DTO to pass, got: %v", err)
+	}
+
+	// Invalid case
+	invalid := TestOneOfAndLenDTO{
+		Role:   "Superuser",
+		Code:   "123",
+		Tags:   []string{"single"},
+		Status: "deleted",
+	}
+	valErr := ValidateStruct(ctx, &invalid)
+	if valErr == nil {
+		t.Fatal("expected validation errors, got none")
+	}
+	if len(valErr.Errors["role"]) == 0 {
+		t.Errorf("expected error on role")
+	}
+	if len(valErr.Errors["code"]) == 0 {
+		t.Errorf("expected error on code")
+	}
+	if len(valErr.Errors["tags"]) == 0 {
+		t.Errorf("expected error on tags")
+	}
+	if len(valErr.Errors["status"]) == 0 {
+		t.Errorf("expected error on status")
+	}
+}
+
+type AddressDTO struct {
+	Street string `json:"street" validate:"required,min=3"`
+	City   string `json:"city" validate:"required"`
+}
+
+type ItemDTO struct {
+	Name  string  `json:"name" validate:"required"`
+	Price float64 `json:"price" validate:"min=0.01"`
+}
+
+type OrderDTO struct {
+	Customer string     `json:"customer" validate:"required"`
+	Address  AddressDTO `json:"address"`
+	Items    []ItemDTO  `json:"items" validate:"min=1"`
+}
+
+func TestValidatorNestedAndSlices(t *testing.T) {
+	ctx := &core.Context{}
+
+	valid := OrderDTO{
+		Customer: "Carlos",
+		Address: AddressDTO{
+			Street: "Rua das Flores, 123",
+			City:   "Porto Alegre",
+		},
+		Items: []ItemDTO{
+			{Name: "Item 1", Price: 19.99},
+			{Name: "Item 2", Price: 5.50},
+		},
+	}
+	if err := ValidateStruct(ctx, &valid); err != nil {
+		t.Fatalf("expected valid OrderDTO to pass, got: %v", err)
+	}
+
+	invalid := OrderDTO{
+		Customer: "",
+		Address: AddressDTO{
+			Street: "R",
+			City:   "",
+		},
+		Items: []ItemDTO{
+			{Name: "Item 1", Price: 10.0},
+			{Name: "", Price: 0.0},
+		},
+	}
+	valErr := ValidateStruct(ctx, &invalid)
+	if valErr == nil {
+		t.Fatal("expected validation errors, got none")
+	}
+	if len(valErr.Errors["customer"]) == 0 {
+		t.Errorf("expected error on customer")
+	}
+	if len(valErr.Errors["address.street"]) == 0 {
+		t.Errorf("expected error on address.street")
+	}
+	if len(valErr.Errors["address.city"]) == 0 {
+		t.Errorf("expected error on address.city")
+	}
+	if len(valErr.Errors["items[1].name"]) == 0 {
+		t.Errorf("expected error on items[1].name")
+	}
+	if len(valErr.Errors["items[1].price"]) == 0 {
+		t.Errorf("expected error on items[1].price")
 	}
 }

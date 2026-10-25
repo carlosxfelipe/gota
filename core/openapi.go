@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"reflect"
 	"sort"
@@ -337,12 +338,25 @@ func (g *OpenAPIGenerator) structToSchema(t reflect.Type) map[string]any {
 		}
 
 		jsonTag := field.Tag.Get("json")
-		if jsonTag == "-" {
+		formTag := field.Tag.Get("form")
+		if jsonTag == "-" || formTag == "-" {
+			continue
+		}
+
+		paramTag := field.Tag.Get("param")
+		queryTag := field.Tag.Get("query")
+		headerTag := field.Tag.Get("header")
+		if (paramTag != "" || queryTag != "" || headerTag != "") && jsonTag == "" && formTag == "" {
 			continue
 		}
 
 		name := field.Name
-		if jsonTag != "" {
+		if formTag != "" {
+			parts := strings.Split(formTag, ",")
+			if parts[0] != "" {
+				name = parts[0]
+			}
+		} else if jsonTag != "" {
 			parts := strings.Split(jsonTag, ",")
 			if parts[0] != "" {
 				name = parts[0]
@@ -394,6 +408,9 @@ func (g *OpenAPIGenerator) schemaForType(t reflect.Type) map[string]any {
 
 	if t == reflect.TypeOf(time.Time{}) {
 		return map[string]any{"type": "string", "format": "date-time"}
+	}
+	if t == reflect.TypeOf(multipart.FileHeader{}) {
+		return map[string]any{"type": "string", "format": "binary"}
 	}
 
 	switch t.Kind() {

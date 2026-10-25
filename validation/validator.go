@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/carlosxfelipe/gota/core"
@@ -46,8 +47,17 @@ func (v *ValidationError) HTTPStatus() int {
 	return v.Status
 }
 
+// isStdLibStruct reports whether a type is a standard library struct that should not be recursed into.
+func isStdLibStruct(t reflect.Type) bool {
+	if t == reflect.TypeOf(time.Time{}) {
+		return true
+	}
+	pkg := t.PkgPath()
+	return strings.HasPrefix(pkg, "mime/") || strings.HasPrefix(pkg, "net/") || strings.HasPrefix(pkg, "io")
+}
+
 // CheckTags verifies that every `validate` tag on the struct type t only uses
-// known rules with valid parameters. Non-struct types are ignored.
+// known rules with valid parameters, recursing into nested structs and slices.
 // It is meant to run once at route registration so typos fail fast
 // instead of silently disabling a rule.
 func CheckTags(t reflect.Type) error {
@@ -60,38 +70,72 @@ func CheckTags(t reflect.Type) error {
 	if t.Kind() != reflect.Struct {
 		return nil
 	}
+	if isStdLibStruct(t) {
+		return nil
+	}
 
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		tag := field.Tag.Get("validate")
-		if tag == "" {
-			continue
-		}
 
 		name := field.Name
-		if jsonTag := field.Tag.Get("json"); jsonTag != "" && jsonTag != "-" {
+		if formTag := field.Tag.Get("form"); formTag != "" && formTag != "-" {
+			if n := strings.Split(formTag, ",")[0]; n != "" {
+				name = n
+			}
+		} else if jsonTag := field.Tag.Get("json"); jsonTag != "" && jsonTag != "-" {
 			if n := strings.Split(jsonTag, ",")[0]; n != "" {
 				name = n
 			}
 		}
 
-		for _, rule := range strings.Split(tag, ",") {
-			rule = strings.TrimSpace(rule)
-			if rule == "" {
-				continue
+		if tag != "" {
+			for _, rule := range strings.Split(tag, ",") {
+				rule = strings.TrimSpace(rule)
+				if rule == "" {
+					continue
+				}
+				parts := strings.SplitN(rule, "=", 2)
+				switch parts[0] {
+				case "required", "email", "url", "uuid":
+				case "min", "max":
+					if len(parts) < 2 || parts[1] == "" {
+						return fmt.Errorf("field %q: rule %q requires a numeric parameter (e.g. %s=3)", name, parts[0], parts[0])
+					}
+					if _, err := strconv.ParseFloat(parts[1], 64); err != nil {
+						return fmt.Errorf("field %q: rule %q has an invalid numeric parameter %q", name, parts[0], parts[1])
+					}
+				case "len":
+					if len(parts) < 2 || parts[1] == "" {
+						return fmt.Errorf("field %q: rule %q requires an integer parameter (e.g. len=5)", name, parts[0])
+					}
+					if _, err := strconv.Atoi(parts[1]); err != nil {
+						return fmt.Errorf("field %q: rule %q has an invalid integer parameter %q", name, parts[0], parts[1])
+					}
+				case "oneof":
+					if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
+						return fmt.Errorf("field %q: rule %q requires at least one choice (e.g. oneof=a,b,c)", name, parts[0])
+					}
+				default:
+					return fmt.Errorf("field %q: unknown validation rule %q", name, parts[0])
+				}
 			}
-			parts := strings.SplitN(rule, "=", 2)
-			switch parts[0] {
-			case "required", "email", "url", "uuid":
-			case "min", "max":
-				if len(parts) < 2 || parts[1] == "" {
-					return fmt.Errorf("field %q: rule %q requires a numeric parameter (e.g. %s=3)", name, parts[0], parts[0])
-				}
-				if _, err := strconv.ParseFloat(parts[1], 64); err != nil {
-					return fmt.Errorf("field %q: rule %q has an invalid numeric parameter %q", name, parts[0], parts[1])
-				}
-			default:
-				return fmt.Errorf("field %q: unknown validation rule %q", name, parts[0])
+		}
+
+		// Recurse into nested struct or slice of structs
+		ft := field.Type
+		if ft.Kind() == reflect.Pointer {
+			ft = ft.Elem()
+		}
+		if ft.Kind() == reflect.Slice {
+			ft = ft.Elem()
+			if ft.Kind() == reflect.Pointer {
+				ft = ft.Elem()
+			}
+		}
+		if ft.Kind() == reflect.Struct && !isStdLibStruct(ft) {
+			if err := CheckTags(ft); err != nil {
+				return err
 			}
 		}
 	}
@@ -110,37 +154,8 @@ func ValidateStruct(ctx *core.Context, target any) *ValidationError {
 
 	errMap := make(map[string][]string)
 
-	// 1. Tag-based validation
 	if val.Kind() == reflect.Struct {
-		typ := val.Type()
-		for i := 0; i < typ.NumField(); i++ {
-			field := typ.Field(i)
-			fieldVal := val.Field(i)
-			validateTag := field.Tag.Get("validate")
-			if validateTag == "" {
-				continue
-			}
-
-			fieldName := field.Name
-			if jsonTag := field.Tag.Get("json"); jsonTag != "" && jsonTag != "-" {
-				parts := strings.Split(jsonTag, ",")
-				if parts[0] != "" {
-					fieldName = parts[0]
-				}
-			}
-
-			rules := strings.Split(validateTag, ",")
-			for _, rule := range rules {
-				rule = strings.TrimSpace(rule)
-				if rule == "" {
-					continue
-				}
-
-				if err := applyValidationRule(fieldName, fieldVal, rule); err != "" {
-					errMap[fieldName] = append(errMap[fieldName], err)
-				}
-			}
-		}
+		validateStructRecursive(ctx, val, "", errMap)
 	}
 
 	// 2. Custom Validator interface
@@ -168,6 +183,98 @@ func ValidateStruct(ctx *core.Context, target any) *ValidationError {
 	return nil
 }
 
+func validateStructRecursive(ctx *core.Context, val reflect.Value, prefix string, errMap map[string][]string) {
+	if val.Kind() == reflect.Pointer {
+		if val.IsNil() {
+			return
+		}
+		val = val.Elem()
+	}
+	if val.Kind() != reflect.Struct || isStdLibStruct(val.Type()) {
+		return
+	}
+
+	typ := val.Type()
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		fieldVal := val.Field(i)
+
+		// Determine field name
+		fieldName := field.Name
+		if formTag := field.Tag.Get("form"); formTag != "" && formTag != "-" {
+			parts := strings.Split(formTag, ",")
+			if parts[0] != "" {
+				fieldName = parts[0]
+			}
+		} else if jsonTag := field.Tag.Get("json"); jsonTag != "" && jsonTag != "-" {
+			parts := strings.Split(jsonTag, ",")
+			if parts[0] != "" {
+				fieldName = parts[0]
+			}
+		} else if paramTag := field.Tag.Get("param"); paramTag != "" {
+			fieldName = paramTag
+		} else if queryTag := field.Tag.Get("query"); queryTag != "" {
+			fieldName = queryTag
+		}
+
+		fullName := fieldName
+		if prefix != "" {
+			fullName = prefix + "." + fieldName
+		}
+
+		validateTag := field.Tag.Get("validate")
+		if validateTag != "" {
+			rules := strings.Split(validateTag, ",")
+			for _, rule := range rules {
+				rule = strings.TrimSpace(rule)
+				if rule == "" {
+					continue
+				}
+
+				if err := applyValidationRule(fullName, fieldVal, rule); err != "" {
+					errMap[fullName] = append(errMap[fullName], err)
+				}
+			}
+		}
+
+		// Recurse into nested structs or slice of structs
+		ft := field.Type
+		if ft.Kind() == reflect.Pointer {
+			if !fieldVal.IsNil() {
+				validateStructRecursive(ctx, fieldVal.Elem(), fullName, errMap)
+			}
+		} else if ft.Kind() == reflect.Struct && !isStdLibStruct(ft) {
+			validateStructRecursive(ctx, fieldVal, fullName, errMap)
+		} else if ft.Kind() == reflect.Slice {
+			elemType := ft.Elem()
+			if elemType.Kind() == reflect.Pointer {
+				elemType = elemType.Elem()
+			}
+			if elemType.Kind() == reflect.Struct && !isStdLibStruct(elemType) {
+				for idx := 0; idx < fieldVal.Len(); idx++ {
+					item := fieldVal.Index(idx)
+					itemPrefix := fmt.Sprintf("%s[%d]", fullName, idx)
+					validateStructRecursive(ctx, item, itemPrefix, errMap)
+				}
+			}
+		}
+	}
+
+	// If the struct itself implements Validator or ContextValidator
+	if val.CanAddr() {
+		if v, ok := val.Addr().Interface().(Validator); ok && prefix != "" {
+			if err := v.Validate(); err != nil {
+				errMap[prefix] = append(errMap[prefix], err.Error())
+			}
+		}
+		if cv, ok := val.Addr().Interface().(ContextValidator); ok && prefix != "" {
+			if err := cv.Validate(ctx); err != nil {
+				errMap[prefix] = append(errMap[prefix], err.Error())
+			}
+		}
+	}
+}
+
 func applyValidationRule(field string, val reflect.Value, rule string) string {
 	parts := strings.SplitN(rule, "=", 2)
 	ruleName := parts[0]
@@ -184,6 +291,9 @@ func applyValidationRule(field string, val reflect.Value, rule string) string {
 
 	case "min":
 		if ruleParam == "" {
+			return ""
+		}
+		if (val.Kind() == reflect.Pointer || val.Kind() == reflect.Interface) && val.IsNil() {
 			return ""
 		}
 		minVal, err := strconv.ParseFloat(ruleParam, 64)
@@ -217,6 +327,9 @@ func applyValidationRule(field string, val reflect.Value, rule string) string {
 		if ruleParam == "" {
 			return ""
 		}
+		if (val.Kind() == reflect.Pointer || val.Kind() == reflect.Interface) && val.IsNil() {
+			return ""
+		}
 		maxVal, err := strconv.ParseFloat(ruleParam, 64)
 		if err != nil {
 			return ""
@@ -242,6 +355,60 @@ func applyValidationRule(field string, val reflect.Value, rule string) string {
 			if float64(val.Len()) > maxVal {
 				return fmt.Sprintf("field %s must not contain more than %v items", field, maxVal)
 			}
+		}
+
+	case "len":
+		if ruleParam == "" {
+			return ""
+		}
+		if (val.Kind() == reflect.Pointer || val.Kind() == reflect.Interface) && val.IsNil() {
+			return ""
+		}
+		targetLen, err := strconv.Atoi(ruleParam)
+		if err != nil {
+			return ""
+		}
+		switch val.Kind() {
+		case reflect.String:
+			if utf8.RuneCountInString(val.String()) != targetLen {
+				return fmt.Sprintf("field %s must be exactly %d characters", field, targetLen)
+			}
+		case reflect.Slice, reflect.Array, reflect.Map:
+			if val.Len() != targetLen {
+				return fmt.Sprintf("field %s must contain exactly %d items", field, targetLen)
+			}
+		}
+
+	case "oneof":
+		if ruleParam == "" {
+			return ""
+		}
+		if (val.Kind() == reflect.Pointer || val.Kind() == reflect.Interface) && val.IsNil() {
+			return ""
+		}
+		if val.Kind() == reflect.String && val.String() == "" {
+			return ""
+		}
+		var validOptions []string
+		if strings.Contains(ruleParam, ",") {
+			validOptions = strings.Split(ruleParam, ",")
+		} else {
+			validOptions = strings.Fields(ruleParam)
+		}
+		for i := range validOptions {
+			validOptions[i] = strings.TrimSpace(validOptions[i])
+		}
+
+		actualVal := fmt.Sprintf("%v", val.Interface())
+		found := false
+		for _, opt := range validOptions {
+			if opt == actualVal {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Sprintf("field %s must be one of [%s]", field, strings.Join(validOptions, ", "))
 		}
 
 	case "email":

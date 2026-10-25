@@ -37,18 +37,22 @@ func main() {
 		Description:  "REST API built with Gota REPR pattern",
 		DocsURL:      "/docs",         // Default: /docs
 		OpenAPIURL:   "/openapi.json", // Default: /openapi.json
-		ScalarTheme:  gota.ThemeDefault, // Themes: ThemeDefault, ThemeMoon, ThemeLaserwave, etc. (default: ThemeLaserwave)
-		ScalarLayout: "classic",      // "classic" (Swagger-style) or "modern" (default: "classic")
+		ScalarTheme:  gota.ThemeDefault, // Themes: ThemeDefault, ThemeMoon, ThemeLaserwave, etc.
+		ScalarLayout: "classic",      // "classic" (Swagger-style) or "modern"
 		MaxBodyBytes: 10 << 20,       // 10MB limit (default: 10MB, negative to disable)
+		ReadTimeout:  30 * time.Second, // Default: 30s
+		WriteTimeout: 30 * time.Second, // Default: 30s
+		IdleTimeout:  120 * time.Second, // Default: 120s
 	})
 
 	// Global Middlewares
-	app.Use(gota.Logger())
-	app.Use(gota.Recover())
-	app.Use(gota.CORS())
+	app.Use(gota.RequestID())  // RFC 4122 UUID v4 correlation ID
+	app.Use(gota.SlogLogger()) // Structured log/slog logging
+	app.Use(gota.Recover())    // Panic recovery
+	app.Use(gota.CORS())       // Cross-Origin Resource Sharing
 
-	// Start server (logs http://localhost:3000, /docs, and /openapi.json)
-	log.Fatal(app.Listen(":3000"))
+	// Start server with Graceful Shutdown (catches SIGINT/SIGTERM)
+	log.Fatal(app.ListenGraceful(":3000"))
 }
 ```
 
@@ -64,30 +68,37 @@ Instead of monolithic controllers with manual parsing, Gota organizes every rout
 
 ### 3.1 Request Struct Tags
 
-Gota automatically binds fields from four sources using struct tags:
+Gota automatically binds fields from five sources using struct tags:
 
-| Tag                 | Source                                  | Example                                   |
-| :------------------ | :-------------------------------------- | :---------------------------------------- |
-| `param:"name"`      | Path parameter (`:name` or `*wildcard`) | `ID string \`param:"id"\``                |
-| `query:"name"`      | Query string parameter (`?name=...`)    | `Page int \`query:"page"\``               |
-| `header:"Name"`     | HTTP Request Header                     | `Token string \`header:"Authorization"\`` |
-| `json:"name"`       | JSON Request Body                       | `Title string \`json:"title"\``           |
-| `validate:"rules"`  | Validation rules (comma-separated)      | `validate:"required,min=3,email"`         |
-| `doc:"description"` | OpenAPI parameter/field description     | `doc:"User email address"`                |
-| `example:"val"`     | OpenAPI example value                   | `example:"jane@example.com"`              |
-| `format:"fmt"`      | OpenAPI schema format hint              | `format:"date-time"`                      |
-| `default:"val"`     | OpenAPI default value                   | `default:"10"`                            |
+| Tag                 | Source                                           | Example                                          |
+| :------------------ | :----------------------------------------------- | :----------------------------------------------- |
+| `param:"name"`      | Path parameter (`:name` or `*wildcard`)          | `ID string \`param:"id"\``                       |
+| `query:"name"`      | Query string parameter (`?name=...`)             | `Page int \`query:"page"\``                      |
+| `header:"Name"`     | HTTP Request Header                              | `Token string \`header:"Authorization"\``        |
+| `form:"name"`       | Form field or file upload (multipart/urlencoded) | `Avatar *multipart.FileHeader \`form:"avatar"\`` |
+| `json:"name"`       | JSON Request Body                                | `Title string \`json:"title"\``                  |
+| `validate:"rules"`  | Validation rules (comma-separated)               | `validate:"required,min=3,email"`                |
+| `doc:"description"` | OpenAPI parameter/field description              | `doc:"User email address"`                       |
+| `example:"val"`     | OpenAPI example value                            | `example:"jane@example.com"`                     |
+| `format:"fmt"`      | OpenAPI schema format hint                       | `format:"date-time"`                             |
+| `default:"val"`     | OpenAPI default value                            | `default:"10"`                                   |
 
 #### Supported `validate` Rules:
 
-- `required`: Field must not be zero-value or empty string.
-- `min=N`: Minimum string length, slice length, or numeric value (e.g. `min=3`, `min=10.5`).
-- `max=N`: Maximum string length, slice length, or numeric value (e.g. `max=100`).
+- `required`: Field must not be zero-value, empty string, or nil file header.
+- `min=N`: Minimum string length (runes), slice length, or numeric value (e.g. `min=3`, `min=10.5`).
+- `max=N`: Maximum string length (runes), slice length, or numeric value (e.g. `max=100`).
+- `len=N`: Exact string rune count or slice/array/map item count (e.g. `len=6`).
+- `oneof=A,B,C`: Value must match one of the allowed choices (comma- or space-separated).
 - `email`: Valid email format via `mail.ParseAddress`.
 - `url`: Valid URL format via `url.ParseRequestURI`.
 - `uuid`: Valid UUID format (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`).
 
-> **Fail-Fast Tag Verification**: Gota verifies all `validate` tags at startup during route registration via `validation.CheckTags`. If a rule name is misspelled (e.g. `validate:"requried"`) or a numeric parameter is missing or invalid (e.g. `min=abc`), Gota **panics immediately** upon registration to prevent silent security regressions.
+#### Recursive Struct & Slice Validation:
+
+Nested struct fields (e.g. `Address AddressDTO`) and slices of structs (e.g. `Items []ItemDTO`) are validated automatically and recursively. Validation errors preserve property hierarchy paths (e.g. `address.street` and `items[0].price`).
+
+> **Fail-Fast Tag Verification**: Gota verifies all `validate` tags at startup during route registration via `validation.CheckTags`, recursing into nested structs. If a rule name is misspelled (e.g. `validate:"requried"`) or a numeric parameter is missing or invalid (e.g. `min=abc`), Gota **panics immediately** upon registration to prevent silent security regressions.
 
 #### Custom Struct Validation (`Validator` & `ContextValidator`):
 
@@ -115,9 +126,11 @@ func (r *CreateOrderRequest) Validate(ctx *core.Context) error {
 
 ### 3.2 Response Struct & Special Types
 
-- Any Go struct with `json` tags is automatically serialized into JSON with `HTTP 200 OK`.
+- **JSON Response**: Any Go struct with `json` tags is automatically serialized into JSON with `HTTP 200 OK`.
 - **No Content**: Use `gota.Empty{}` (or `struct{}{}`) as the Response type to automatically return `HTTP 204 No Content`.
 - **Explicit Status**: Chain `.Status(201)` on the route registration, or call `ctx.Status(http.StatusCreated)` inside the handler.
+- **Typed Streaming (`gota.StreamFunc`)**: Return a `gota.StreamFunc` to stream chunked bytes using `http.Flusher`. Documented in OpenAPI as `application/octet-stream`.
+- **Server-Sent Events (`gota.SSEStream`)**: Return a `gota.SSEStream` with an `<-chan gota.SSEvent` to stream live events. Documented in OpenAPI as `text/event-stream`.
 
 ---
 

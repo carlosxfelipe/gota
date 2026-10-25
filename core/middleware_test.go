@@ -1,0 +1,118 @@
+package core
+
+import (
+	"bytes"
+	"errors"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestRequestIDMiddleware(t *testing.T) {
+	app := New(Config{DisableDocs: true})
+	app.Use(RequestID())
+
+	var capturedReqID string
+	app.Get("/test-id", func(ctx *Context) error {
+		capturedReqID = ctx.RequestID()
+		return ctx.Send("ok")
+	})
+
+	// 1. When request doesn't provide X-Request-ID, one is generated
+	req1 := httptest.NewRequest("GET", "/test-id", nil)
+	rec1 := httptest.NewRecorder()
+	app.ServeHTTP(rec1, req1)
+
+	respID1 := rec1.Header().Get("X-Request-ID")
+	if respID1 == "" {
+		t.Fatal("expected X-Request-ID in response header")
+	}
+	if capturedReqID != respID1 {
+		t.Errorf("expected context request_id %q to match response header %q", capturedReqID, respID1)
+	}
+
+	// 2. When request provides X-Request-ID, it is preserved
+	req2 := httptest.NewRequest("GET", "/test-id", nil)
+	req2.Header.Set("X-Request-ID", "custom-trace-12345")
+	rec2 := httptest.NewRecorder()
+	app.ServeHTTP(rec2, req2)
+
+	respID2 := rec2.Header().Get("X-Request-ID")
+	if respID2 != "custom-trace-12345" {
+		t.Errorf("expected preserved request ID 'custom-trace-12345', got %q", respID2)
+	}
+	if capturedReqID != "custom-trace-12345" {
+		t.Errorf("expected captured request ID to be 'custom-trace-12345', got %q", capturedReqID)
+	}
+}
+
+func TestSlogLoggerMiddleware(t *testing.T) {
+	var buf bytes.Buffer
+	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
+	logger := slog.New(handler)
+
+	app := New(Config{DisableDocs: true})
+	app.Use(RequestID())
+	app.Use(SlogLogger(SlogLoggerOptions{Logger: logger}))
+
+	app.Get("/ok", func(ctx *Context) error {
+		return ctx.Send("success")
+	})
+	app.Get("/bad", func(ctx *Context) error {
+		return ctx.Status(http.StatusBadRequest).Send("bad request")
+	})
+	app.Get("/err", func(ctx *Context) error {
+		return errors.New("db connection failure")
+	})
+
+	// Request 200
+	req := httptest.NewRequest("GET", "/ok", nil)
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	output := buf.String()
+	if !bytes.Contains(buf.Bytes(), []byte(`"status":200`)) {
+		t.Errorf("expected log output to contain status 200, got: %s", output)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte(`"path":"/ok"`)) {
+		t.Errorf("expected log output to contain path /ok, got: %s", output)
+	}
+
+	// Request 400
+	buf.Reset()
+	req2 := httptest.NewRequest("GET", "/bad", nil)
+	rec2 := httptest.NewRecorder()
+	app.ServeHTTP(rec2, req2)
+
+	if !bytes.Contains(buf.Bytes(), []byte(`"level":"WARN"`)) {
+		t.Errorf("expected warn level for 400 status, got: %s", buf.String())
+	}
+
+	// Request 500
+	buf.Reset()
+	req3 := httptest.NewRequest("GET", "/err", nil)
+	rec3 := httptest.NewRecorder()
+	app.ServeHTTP(rec3, req3)
+
+	if !bytes.Contains(buf.Bytes(), []byte(`"level":"ERROR"`)) {
+		t.Errorf("expected error level for 500 status, got: %s", buf.String())
+	}
+}
+
+func TestContextClientIP(t *testing.T) {
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("X-Forwarded-For", "203.0.113.195, 70.41.3.18")
+	ctx := NewContext(httptest.NewRecorder(), req, nil)
+
+	if ip := ctx.ClientIP(); ip != "203.0.113.195" {
+		t.Errorf("expected 203.0.113.195 from X-Forwarded-For, got %q", ip)
+	}
+
+	req2 := httptest.NewRequest("GET", "/", nil)
+	req2.Header.Set("X-Real-IP", "198.51.100.1")
+	ctx2 := NewContext(httptest.NewRecorder(), req2, nil)
+	if ip := ctx2.ClientIP(); ip != "198.51.100.1" {
+		t.Errorf("expected 198.51.100.1 from X-Real-IP, got %q", ip)
+	}
+}

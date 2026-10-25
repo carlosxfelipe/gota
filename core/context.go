@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -109,6 +111,64 @@ func (c *Context) QueryBool(name string, def bool) bool {
 // Header returns the request header value for the given key.
 func (c *Context) Header(name string) string {
 	return c.Request.Header.Get(name)
+}
+
+// RequestID returns the request ID set by the RequestID middleware, or from X-Request-ID header.
+func (c *Context) RequestID() string {
+	if id, ok := c.Get("request_id"); ok {
+		if s, ok := id.(string); ok && s != "" {
+			return s
+		}
+	}
+	return c.Header("X-Request-ID")
+}
+
+// ClientIP returns the client IP address from X-Forwarded-For, X-Real-IP, or RemoteAddr.
+func (c *Context) ClientIP() string {
+	if xff := c.Header("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		if len(parts) > 0 {
+			return strings.TrimSpace(parts[0])
+		}
+	}
+	if xrip := c.Header("X-Real-IP"); xrip != "" {
+		return strings.TrimSpace(xrip)
+	}
+	host, _, err := net.SplitHostPort(c.Request.RemoteAddr)
+	if err == nil {
+		return host
+	}
+	return c.Request.RemoteAddr
+}
+
+// Form returns the form value from POST/PUT body or query string.
+func (c *Context) Form(name string) string {
+	return c.Request.FormValue(name)
+}
+
+// FormFile returns the first file for the provided form key.
+func (c *Context) FormFile(name string) (*multipart.FileHeader, error) {
+	if c.Request.MultipartForm == nil {
+		if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
+			return nil, err
+		}
+	}
+	file, header, err := c.Request.FormFile(name)
+	if err != nil {
+		return nil, err
+	}
+	_ = file.Close()
+	return header, nil
+}
+
+// MultipartForm returns the parsed multipart form, including values and file headers.
+func (c *Context) MultipartForm() (*multipart.Form, error) {
+	if c.Request.MultipartForm == nil {
+		if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
+			return nil, err
+		}
+	}
+	return c.Request.MultipartForm, nil
 }
 
 // Body reads and caches the raw HTTP request body bytes.
@@ -248,6 +308,74 @@ func (c *Context) Redirect(targetURL string, code ...int) error {
 	}
 	http.Redirect(c.ResponseWriter, c.Request, targetURL, status)
 	c.written = true
+	return nil
+}
+
+// Stream sends a streaming chunked response using http.Flusher.
+// The callback `step` is invoked repeatedly until it returns false or the client disconnects.
+func (c *Context) Stream(step func(w io.Writer) bool) error {
+	flusher, ok := c.ResponseWriter.(http.Flusher)
+	if !ok {
+		return fmt.Errorf("gota: streaming unsupported by response writer")
+	}
+
+	c.writeHeaderOnce()
+	ctx := c.Request.Context()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			if !step(c.ResponseWriter) {
+				flusher.Flush()
+				return nil
+			}
+			flusher.Flush()
+		}
+	}
+}
+
+// SSEvent sends a Server-Sent Event formatted frame and flushes it immediately.
+func (c *Context) SSEvent(event string, data any) error {
+	if !c.written {
+		c.SetHeader("Content-Type", "text/event-stream")
+		c.SetHeader("Cache-Control", "no-cache")
+		c.SetHeader("Connection", "keep-alive")
+		c.writeHeaderOnce()
+	}
+
+	flusher, ok := c.ResponseWriter.(http.Flusher)
+	if !ok {
+		return fmt.Errorf("gota: streaming unsupported by response writer")
+	}
+
+	var sb strings.Builder
+	if event != "" {
+		sb.WriteString("event: ")
+		sb.WriteString(event)
+		sb.WriteByte('\n')
+	}
+
+	sb.WriteString("data: ")
+	switch d := data.(type) {
+	case string:
+		sb.WriteString(d)
+	case []byte:
+		sb.Write(d)
+	default:
+		bytes, err := json.Marshal(d)
+		if err != nil {
+			return err
+		}
+		sb.Write(bytes)
+	}
+	sb.WriteString("\n\n")
+
+	if _, err := c.ResponseWriter.Write([]byte(sb.String())); err != nil {
+		return err
+	}
+	flusher.Flush()
 	return nil
 }
 

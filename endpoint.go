@@ -3,6 +3,7 @@ package gota
 import (
 	"errors"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"reflect"
 	"strings"
@@ -11,6 +12,40 @@ import (
 	"github.com/carlosxfelipe/gota/core"
 	"github.com/carlosxfelipe/gota/validation"
 )
+
+// Streamer defines the contract for streaming responses in REPR endpoints.
+type Streamer interface {
+	Stream(ctx *core.Context) error
+}
+
+// StreamFunc adapts a function to the Streamer interface.
+type StreamFunc func(ctx *core.Context) error
+
+// Stream executes the stream function.
+func (f StreamFunc) Stream(ctx *core.Context) error {
+	return f(ctx)
+}
+
+// SSEvent represents a Server-Sent Event item.
+type SSEvent struct {
+	Event string
+	Data  any
+}
+
+// SSEStream streams Server-Sent Events from a channel.
+type SSEStream struct {
+	Events <-chan SSEvent
+}
+
+// Stream sends each event in the channel and flushes it immediately.
+func (s SSEStream) Stream(ctx *core.Context) error {
+	for evt := range s.Events {
+		if err := ctx.SSEvent(evt.Event, evt.Data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // hasRequiredRule reports whether a validate tag contains the `required` rule.
 func hasRequiredRule(tag string) bool {
@@ -92,6 +127,10 @@ func WrapEndpoint[Req any, Res any](handler EndpointFunc[Req, Res], defaultStatu
 			return err
 		}
 
+		if streamer, ok := any(res).(Streamer); ok {
+			return streamer.Stream(ctx)
+		}
+
 		if !ctx.Written() {
 			resType := reflect.TypeOf(res)
 			if resType == reflect.TypeOf(Empty{}) || resType == reflect.TypeOf(struct{}{}) {
@@ -122,6 +161,8 @@ func introspectEndpoint[Req any, Res any](defaultStatus int) *core.RouteDoc {
 	}
 
 	hasBodyFields := false
+	hasFormFields := false
+	hasFileFields := false
 
 	if reqType != nil && reqType != reflect.TypeOf(Empty{}) && reqType != reflect.TypeOf(struct{}{}) && reqType.Kind() == reflect.Struct {
 		for i := 0; i < reqType.NumField(); i++ {
@@ -163,26 +204,51 @@ func introspectEndpoint[Req any, Res any](defaultStatus int) *core.RouteDoc {
 				continue
 			}
 
+			if formTag := field.Tag.Get("form"); formTag != "" {
+				hasFormFields = true
+				if field.Type == reflect.TypeOf((*multipart.FileHeader)(nil)) || field.Type == reflect.TypeOf(([]*multipart.FileHeader)(nil)) {
+					hasFileFields = true
+				}
+			}
+
 			if field.IsExported() {
 				hasBodyFields = true
 			}
 		}
 
 		if hasBodyFields {
+			contentType := "application/json"
+			if hasFileFields {
+				contentType = "multipart/form-data"
+			} else if hasFormFields {
+				contentType = "application/x-www-form-urlencoded"
+			}
+
 			doc.RequestBody = &core.BodyDoc{
 				Model:       *new(Req),
 				Description: "Request body payload",
 				Required:    true,
-				ContentType: "application/json",
+				ContentType: contentType,
 			}
 		}
 	}
 
 	var res Res
 	resType := reflect.TypeOf(res)
+	streamerType := reflect.TypeOf((*Streamer)(nil)).Elem()
+
 	if resType == reflect.TypeOf(Empty{}) || resType == reflect.TypeOf(struct{}{}) {
 		doc.Responses[http.StatusNoContent] = &core.ResponseDoc{
 			Description: "No Content",
+		}
+	} else if resType != nil && (resType.Implements(streamerType) || reflect.PointerTo(resType).Implements(streamerType)) {
+		cType := "application/octet-stream"
+		if resType == reflect.TypeOf(SSEStream{}) || resType == reflect.TypeOf(&SSEStream{}) {
+			cType = "text/event-stream"
+		}
+		doc.Responses[defaultStatus] = &core.ResponseDoc{
+			Description: http.StatusText(defaultStatus),
+			ContentType: cType,
 		}
 	} else {
 		doc.Responses[defaultStatus] = &core.ResponseDoc{

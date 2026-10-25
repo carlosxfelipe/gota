@@ -7,22 +7,24 @@ import (
 
 // Re-exported Core Types
 type (
-	App             = core.App
-	Context         = core.Context
-	Config          = core.Config
-	Route           = core.Route
-	RouteGroup      = core.RouteGroup
-	HandlerFunc     = core.HandlerFunc
-	MiddlewareFunc  = core.MiddlewareFunc
-	Map             = core.Map
-	Empty           = core.Empty
-	HTTPError       = core.HTTPError
-	ErrorResponse   = core.ErrorResponse
-	ValidationError = validation.ValidationError
-	ScalarTheme     = core.ScalarTheme
-	CORSOptions     = core.CORSOptions
-	JWTOptions      = core.JWTOptions
-	OpenAPISpec     = core.OpenAPISpec
+	App               = core.App
+	Context           = core.Context
+	Config            = core.Config
+	Route             = core.Route
+	RouteGroup        = core.RouteGroup
+	HandlerFunc       = core.HandlerFunc
+	MiddlewareFunc    = core.MiddlewareFunc
+	Map               = core.Map
+	Empty             = core.Empty
+	HTTPError         = core.HTTPError
+	ErrorResponse     = core.ErrorResponse
+	ValidationError   = validation.ValidationError
+	ScalarTheme       = core.ScalarTheme
+	CORSOptions       = core.CORSOptions
+	JWTOptions        = core.JWTOptions
+	OpenAPISpec       = core.OpenAPISpec
+	RequestIDOptions  = core.RequestIDOptions
+	SlogLoggerOptions = core.SlogLoggerOptions
 )
 
 // Re-exported Scalar Theme Constants
@@ -59,6 +61,14 @@ func Logger() MiddlewareFunc {
 
 func Recover() MiddlewareFunc {
 	return core.Recover()
+}
+
+func RequestID(opts ...RequestIDOptions) MiddlewareFunc {
+	return core.RequestID(opts...)
+}
+
+func SlogLogger(opts ...SlogLoggerOptions) MiddlewareFunc {
+	return core.SlogLogger(opts...)
 }
 
 // Built-in JWT Authentication helpers

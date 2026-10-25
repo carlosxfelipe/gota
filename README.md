@@ -23,16 +23,18 @@ Inspired by the ergonomic fluency of [Kite](https://github.com/claudiovictors/ki
 ## ✨ Features
 
 - **First-Class REPR Design Pattern**:
-  - **Request**: Automatic binding across route params, query string, headers, and JSON body (`param`, `query`, `header`, `json` tags) with declarative validation (`validate:"required,min=3,email"` or custom `Validator` interface).
+  - **Request**: Automatic binding across route params, query string, headers, form fields, and JSON body (`param`, `query`, `header`, `form`, `json` tags) with file uploads (`*multipart.FileHeader`), nested structs, and declarative validation (`validate:"required,min=3,oneof=A,B,len=N"` or custom `Validator` interface).
   - **Endpoint**: Single Responsibility Principle per operation, implemented via generic functions (`gota.Get`, `gota.Post`, etc.) or struct-based endpoints (`Endpoint[Req, Res]`).
-  - **Response**: Automatic JSON serialization with sensible HTTP status codes (200 OK by default, 204 No Content for `gota.Empty`, or explicitly configured via `.Status(code)`).
-- **Zero External Dependencies**: Built entirely on top of the Go standard library (`net/http`, `reflect`, `encoding/json`, `sync`, etc.).
+  - **Response**: Automatic JSON serialization (200 OK by default, 204 No Content for `gota.Empty`, or `.Status(code)`), and native typed streaming (`gota.StreamFunc`, `gota.SSEStream`).
+- **Zero External Dependencies**: Built entirely on top of the Go standard library (`net/http`, `reflect`, `encoding/json`, `log/slog`, `sync`, etc.).
 - **Interactive Documentation with Scalar**:
-  - Automatic **OpenAPI 3.1** specification generation derived directly from `Req` and `Res` types.
+  - Automatic **OpenAPI 3.1** specification generation derived directly from `Req` and `Res` types (including `multipart/form-data` binary file uploads).
   - Interactive **Scalar** UI served at `/docs` with **`classic` layout enabled by default** (Swagger-style).
   - OpenAPI 3.1 JSON schema exposed at `/openapi.json` out of the box.
 - **Fluent Kite-like Ergonomics**: Chainable metadata methods (`.Summary()`, `.Description()`, `.Tags()`, `.Middleware()`), route groups (`app.Group("/api")`), and path parameter matching (`:id`, `*wildcard`).
-- **Built-in Middlewares & Security**: Zero-dependency HS256 JWT authentication (`gota.JWT`, `gota.SignJWT`, `gota.VerifyJWT`, `gota.JWTClaims[T]`), production-ready CORS with automatic `OPTIONS` preflight handling, panic `Recover` with stacktrace logging, and request `Logger`.
+- **Built-in Middlewares & Production Resilience**: Zero-dependency HS256 JWT authentication (`gota.JWT`, `gota.SignJWT`, `gota.VerifyJWT`, `gota.JWTClaims[T]`), CORS with automatic `OPTIONS` preflight, panic `Recover`, `RequestID` (UUID v4), standard `SlogLogger`, request `Logger`, server timeouts, and graceful shutdown (`app.ListenGraceful`).
+
+> 📖 Looking for in-depth patterns, validation recipes, and AI guidance? See the [Developer & AI Guide](docs/GOTA_AI_GUIDE.md).
 
 ---
 
@@ -162,16 +164,18 @@ app := gota.New(gota.Config{
 
 ```
 gota/
-├── binding/         # Automated model binding (param, query, header, json)
+├── binding/         # Automated model binding (param, query, header, form, json)
 │   ├── binder.go
 │   └── binder_test.go
 ├── core/            # Core HTTP engine (app, context, router, middleware, openapi, scalar)
 │   ├── app.go
+│   ├── app_test.go
 │   ├── context.go
 │   ├── errors.go
 │   ├── jwt.go
 │   ├── jwt_test.go
 │   ├── middleware.go
+│   ├── middleware_test.go
 │   ├── openapi.go
 │   ├── router.go
 │   ├── router_test.go

@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -467,5 +469,119 @@ func TestPostCanExplicitlySet201Created(t *testing.T) {
 	app.ServeHTTP(w, httptest.NewRequest("POST", "/users", nil))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d", w.Code)
+	}
+}
+
+type UploadAvatarRequest struct {
+	UserID string                `param:"id"`
+	File   *multipart.FileHeader `form:"file" validate:"required"`
+}
+
+type UploadAvatarResponse struct {
+	Filename string `json:"filename"`
+	Size     int64  `json:"size"`
+	UserID   string `json:"userId"`
+}
+
+func TestREPRMultipartFileUpload(t *testing.T) {
+	app := New(Config{DisableDocs: true})
+
+	Post(app, "/users/:id/avatar", func(ctx *Context, req UploadAvatarRequest) (UploadAvatarResponse, error) {
+		return UploadAvatarResponse{
+			Filename: req.File.Filename,
+			Size:     req.File.Size,
+			UserID:   req.UserID,
+		}, nil
+	})
+
+	// 1. Success case with file
+	var b bytes.Buffer
+	w := multipart.NewWriter(&b)
+	part, err := w.CreateFormFile("file", "avatar.png")
+	if err != nil {
+		t.Fatalf("failed to create form file: %v", err)
+	}
+	_, _ = part.Write([]byte("fake-png-content"))
+	_ = w.Close()
+
+	req := httptest.NewRequest("POST", "/users/usr_42/avatar", &b)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d. Body: %s", rec.Code, rec.Body.String())
+	}
+
+	var res UploadAvatarResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &res)
+	if res.Filename != "avatar.png" || res.UserID != "usr_42" || res.Size == 0 {
+		t.Errorf("unexpected response: %+v", res)
+	}
+
+	// 2. Failure case: missing required file
+	var emptyBuf bytes.Buffer
+	wEmpty := multipart.NewWriter(&emptyBuf)
+	_ = wEmpty.Close()
+
+	reqEmpty := httptest.NewRequest("POST", "/users/usr_42/avatar", &emptyBuf)
+	reqEmpty.Header.Set("Content-Type", wEmpty.FormDataContentType())
+	recEmpty := httptest.NewRecorder()
+	app.ServeHTTP(recEmpty, reqEmpty)
+
+	if recEmpty.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected status 422 for missing required file, got %d", recEmpty.Code)
+	}
+}
+
+func TestREPRStreamingAndSSE(t *testing.T) {
+	app := New(Config{DisableDocs: true})
+
+	// 1. Generic StreamFunc endpoint
+	Get(app, "/stream", func(ctx *Context, _ Empty) (StreamFunc, error) {
+		stream := func(c *Context) error {
+			return c.Stream(func(w io.Writer) bool {
+				_, _ = w.Write([]byte("chunk1-"))
+				_, _ = w.Write([]byte("chunk2"))
+				return false // finish stream
+			})
+		}
+		return stream, nil
+	})
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest("GET", "/stream", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	if rec.Body.String() != "chunk1-chunk2" {
+		t.Errorf("expected 'chunk1-chunk2', got %q", rec.Body.String())
+	}
+
+	// 2. SSEStream endpoint
+	Get(app, "/events", func(ctx *Context, _ Empty) (SSEStream, error) {
+		events := make(chan SSEvent, 2)
+		events <- SSEvent{Event: "greeting", Data: "hello"}
+		events <- SSEvent{Event: "status", Data: Map{"ready": true}}
+		close(events)
+		return SSEStream{Events: events}, nil
+	})
+
+	recSSE := httptest.NewRecorder()
+	app.ServeHTTP(recSSE, httptest.NewRequest("GET", "/events", nil))
+
+	if recSSE.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", recSSE.Code)
+	}
+	if recSSE.Header().Get("Content-Type") != "text/event-stream" {
+		t.Errorf("expected Content-Type text/event-stream, got %s", recSSE.Header().Get("Content-Type"))
+	}
+	bodyStr := recSSE.Body.String()
+	if !strings.Contains(bodyStr, "event: greeting\ndata: hello\n\n") {
+		t.Errorf("expected greeting event in SSE body: %s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "event: status\ndata: {\"ready\":true}\n\n") {
+		t.Errorf("expected status event in SSE body: %s", bodyStr)
 	}
 }

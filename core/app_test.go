@@ -1,0 +1,117 @@
+package core
+
+import (
+	"context"
+	"net/http"
+	"syscall"
+	"testing"
+	"time"
+)
+
+func TestApp_ConfigTimeouts(t *testing.T) {
+	app := New(Config{
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 20 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	})
+
+	if app.config.ReadTimeout != 15*time.Second {
+		t.Fatalf("expected ReadTimeout to be 15s, got %v", app.config.ReadTimeout)
+	}
+	if app.config.WriteTimeout != 20*time.Second {
+		t.Fatalf("expected WriteTimeout to be 20s, got %v", app.config.WriteTimeout)
+	}
+	if app.config.IdleTimeout != 60*time.Second {
+		t.Fatalf("expected IdleTimeout to be 60s, got %v", app.config.IdleTimeout)
+	}
+}
+
+func TestApp_DefaultTimeouts(t *testing.T) {
+	app := New(Config{})
+
+	if app.config.ReadTimeout != DefaultReadTimeout {
+		t.Fatalf("expected ReadTimeout to default to %v, got %v", DefaultReadTimeout, app.config.ReadTimeout)
+	}
+	if app.config.WriteTimeout != DefaultWriteTimeout {
+		t.Fatalf("expected WriteTimeout to default to %v, got %v", DefaultWriteTimeout, app.config.WriteTimeout)
+	}
+	if app.config.IdleTimeout != DefaultIdleTimeout {
+		t.Fatalf("expected IdleTimeout to default to %v, got %v", DefaultIdleTimeout, app.config.IdleTimeout)
+	}
+}
+
+func TestApp_ListenAndShutdown(t *testing.T) {
+	app := New(Config{DisableDocs: true})
+	app.Get("/ping", func(ctx *Context) error {
+		return ctx.Send("pong")
+	})
+
+	errChan := make(chan error, 1)
+	go func() {
+		// Use a high port unlikely to collide
+		errChan <- app.Listen("127.0.0.1:0")
+	}()
+
+	// Wait for server to bind
+	var srv *http.Server
+	for i := 0; i < 50; i++ {
+		time.Sleep(10 * time.Millisecond)
+		srv = app.Server()
+		if srv != nil {
+			break
+		}
+	}
+	if srv == nil {
+		t.Fatal("expected server to be initialized")
+	}
+
+	// Verify timeouts on active http.Server
+	if srv.ReadTimeout != DefaultReadTimeout {
+		t.Errorf("expected server ReadTimeout %v, got %v", DefaultReadTimeout, srv.ReadTimeout)
+	}
+
+	// Test shutdown
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := app.Shutdown(ctx); err != nil {
+		t.Fatalf("shutdown failed: %v", err)
+	}
+
+	err := <-errChan
+	if err != nil && err != http.ErrServerClosed {
+		t.Fatalf("expected ErrServerClosed, got %v", err)
+	}
+}
+
+func TestApp_ListenGraceful_Signal(t *testing.T) {
+	app := New(Config{DisableDocs: true})
+
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- app.ListenGraceful("127.0.0.1:0", syscall.SIGUSR1)
+	}()
+
+	// Wait for server to start
+	for i := 0; i < 50; i++ {
+		time.Sleep(10 * time.Millisecond)
+		if app.Server() != nil {
+			break
+		}
+	}
+	if app.Server() == nil {
+		t.Fatal("server failed to start")
+	}
+
+	// Send simulated signal
+	_ = syscall.Kill(syscall.Getpid(), syscall.SIGUSR1)
+
+	select {
+	case err := <-errChan:
+		if err != nil {
+			t.Fatalf("expected clean shutdown, got error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("ListenGraceful did not exit within timeout")
+	}
+}

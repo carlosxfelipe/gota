@@ -3,6 +3,7 @@ package binding
 import (
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"reflect"
 	"strconv"
 	"strings"
@@ -10,7 +11,7 @@ import (
 	"github.com/carlosxfelipe/gota/core"
 )
 
-// BindRequest binds parameters, query strings, headers, and JSON body from core.Context to a target pointer.
+// BindRequest binds parameters, query strings, headers, form data, and JSON body from core.Context to a target pointer.
 func BindRequest(ctx *core.Context, target any) error {
 	val := reflect.ValueOf(target)
 	if val.Kind() != reflect.Pointer || val.IsNil() {
@@ -29,10 +30,21 @@ func BindRequest(ctx *core.Context, target any) error {
 		return nil
 	}
 
-	// 1. If request has JSON body, attempt to unmarshal into target struct
 	contentType := ctx.Request.Header.Get("Content-Type")
+	isMultipart := strings.HasPrefix(contentType, "multipart/form-data")
+	isFormUrlencoded := strings.HasPrefix(contentType, "application/x-www-form-urlencoded")
 	hasBody := ctx.Request.ContentLength != 0
-	if strings.Contains(contentType, "application/json") || hasBody {
+
+	// 1. If multipart/form-data, parse multipart form
+	if isMultipart {
+		if err := ctx.Request.ParseMultipartForm(32 << 20); err != nil {
+			return fmt.Errorf("failed to parse multipart form: %w", err)
+		}
+	} else if isFormUrlencoded {
+		if err := ctx.Request.ParseForm(); err != nil {
+			return fmt.Errorf("failed to parse form: %w", err)
+		}
+	} else if strings.Contains(contentType, "application/json") || (!isMultipart && !isFormUrlencoded && hasBody) {
 		body, err := ctx.Body()
 		if err != nil {
 			return fmt.Errorf("failed to read body: %w", err)
@@ -44,7 +56,7 @@ func BindRequest(ctx *core.Context, target any) error {
 		}
 	}
 
-	// 2. Reflect on fields to bind `param`, `query`, and `header` tags
+	// 2. Reflect on fields to bind `param`, `query`, `header`, and `form` tags
 	typ := elem.Type()
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
@@ -65,9 +77,23 @@ func BindRequest(ctx *core.Context, target any) error {
 
 		// Check query tag: query:"search"
 		if queryTag := field.Tag.Get("query"); queryTag != "" {
-			if strVal := ctx.Query(queryTag); strVal != "" {
-				if err := setFieldValue(fieldVal, strVal); err != nil {
-					return fmt.Errorf("invalid query param %q: %w", queryTag, err)
+			if queryVals, ok := ctx.Request.URL.Query()[queryTag]; ok && len(queryVals) > 0 {
+				if fieldVal.Kind() == reflect.Slice && fieldVal.Type().Elem().Kind() == reflect.String {
+					if len(queryVals) > 1 {
+						sliceVal := reflect.MakeSlice(fieldVal.Type(), len(queryVals), len(queryVals))
+						for idx, qv := range queryVals {
+							sliceVal.Index(idx).SetString(qv)
+						}
+						fieldVal.Set(sliceVal)
+					} else {
+						if err := setFieldValue(fieldVal, queryVals[0]); err != nil {
+							return fmt.Errorf("invalid query param %q: %w", queryTag, err)
+						}
+					}
+				} else {
+					if err := setFieldValue(fieldVal, queryVals[0]); err != nil {
+						return fmt.Errorf("invalid query param %q: %w", queryTag, err)
+					}
 				}
 			}
 		}
@@ -77,6 +103,55 @@ func BindRequest(ctx *core.Context, target any) error {
 			if strVal := ctx.Header(headerTag); strVal != "" {
 				if err := setFieldValue(fieldVal, strVal); err != nil {
 					return fmt.Errorf("invalid header %q: %w", headerTag, err)
+				}
+			}
+		}
+
+		// Check form tag: form:"avatar" or form:"name"
+		if formTag := field.Tag.Get("form"); formTag != "" {
+			// Single file: *multipart.FileHeader
+			if field.Type == reflect.TypeOf((*multipart.FileHeader)(nil)) {
+				if ctx.Request.MultipartForm != nil && ctx.Request.MultipartForm.File != nil {
+					if files := ctx.Request.MultipartForm.File[formTag]; len(files) > 0 {
+						fieldVal.Set(reflect.ValueOf(files[0]))
+					}
+				}
+				continue
+			}
+
+			// Multiple files: []*multipart.FileHeader
+			if field.Type == reflect.TypeOf(([]*multipart.FileHeader)(nil)) {
+				if ctx.Request.MultipartForm != nil && ctx.Request.MultipartForm.File != nil {
+					if files := ctx.Request.MultipartForm.File[formTag]; len(files) > 0 {
+						fieldVal.Set(reflect.ValueOf(files))
+					}
+				}
+				continue
+			}
+
+			// Text / primitive form values
+			var formVals []string
+			if ctx.Request.MultipartForm != nil && ctx.Request.MultipartForm.Value != nil {
+				formVals = ctx.Request.MultipartForm.Value[formTag]
+			}
+			if len(formVals) == 0 && ctx.Request.PostForm != nil {
+				formVals = ctx.Request.PostForm[formTag]
+			}
+			if len(formVals) == 0 && ctx.Request.Form != nil {
+				formVals = ctx.Request.Form[formTag]
+			}
+
+			if len(formVals) > 0 {
+				if fieldVal.Kind() == reflect.Slice && fieldVal.Type().Elem().Kind() == reflect.String {
+					sliceVal := reflect.MakeSlice(fieldVal.Type(), len(formVals), len(formVals))
+					for idx, v := range formVals {
+						sliceVal.Index(idx).SetString(v)
+					}
+					fieldVal.Set(sliceVal)
+				} else {
+					if err := setFieldValue(fieldVal, formVals[0]); err != nil {
+						return fmt.Errorf("invalid form field %q: %w", formTag, err)
+					}
 				}
 			}
 		}

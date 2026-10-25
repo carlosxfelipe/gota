@@ -1,13 +1,18 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"os/signal"
 	"runtime/debug"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 )
 
@@ -32,10 +37,28 @@ type Config struct {
 	// MaxBodyBytes limits the size of request bodies. Default: 10 MiB.
 	// Use a negative value to disable the limit.
 	MaxBodyBytes int64 `json:"maxBodyBytes,omitempty"`
+
+	// ReadTimeout limits the duration for reading the entire request. Default: 30s.
+	// Use negative value to disable.
+	ReadTimeout time.Duration `json:"readTimeout,omitempty"`
+
+	// WriteTimeout limits the duration for writing the response. Default: 30s.
+	// Use negative value to disable.
+	WriteTimeout time.Duration `json:"writeTimeout,omitempty"`
+
+	// IdleTimeout is the maximum duration to wait for the next request when keep-alive is enabled. Default: 120s.
+	// Use negative value to disable.
+	IdleTimeout time.Duration `json:"idleTimeout,omitempty"`
 }
 
-// DefaultMaxBodyBytes is the request body limit used when Config.MaxBodyBytes is 0.
-const DefaultMaxBodyBytes int64 = 10 << 20
+// Default constants for server configuration.
+const (
+	DefaultMaxBodyBytes      int64         = 10 << 20
+	DefaultReadHeaderTimeout time.Duration = 10 * time.Second
+	DefaultReadTimeout       time.Duration = 30 * time.Second
+	DefaultWriteTimeout      time.Duration = 30 * time.Second
+	DefaultIdleTimeout       time.Duration = 120 * time.Second
+)
 
 // App represents the core engine of Gota, managing routing, middlewares, and docs.
 type App struct {
@@ -45,6 +68,9 @@ type App struct {
 
 	NotFoundHandler HandlerFunc
 	ErrorHandler    func(ctx *Context, err error)
+
+	mu     sync.Mutex
+	server *http.Server
 }
 
 // New creates and configures a new Gota application instance.
@@ -69,6 +95,15 @@ func New(cfg Config) *App {
 	}
 	if cfg.MaxBodyBytes == 0 {
 		cfg.MaxBodyBytes = DefaultMaxBodyBytes
+	}
+	if cfg.ReadTimeout == 0 {
+		cfg.ReadTimeout = DefaultReadTimeout
+	}
+	if cfg.WriteTimeout == 0 {
+		cfg.WriteTimeout = DefaultWriteTimeout
+	}
+	if cfg.IdleTimeout == 0 {
+		cfg.IdleTimeout = DefaultIdleTimeout
 	}
 
 	app := &App{
@@ -294,6 +329,13 @@ func displayAddr(addr string) (listen string, display string) {
 	return addr, net.JoinHostPort(host, port)
 }
 
+// Server returns the underlying *http.Server instance, if created by Listen.
+func (a *App) Server() *http.Server {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.server
+}
+
 // Listen starts an HTTP server listening on the specified address.
 func (a *App) Listen(addr string) error {
 	listen, display := displayAddr(addr)
@@ -302,12 +344,75 @@ func (a *App) Listen(addr string) error {
 		log.Printf("📖 Scalar docs: http://%s%s", display, a.config.DocsURL)
 		log.Printf("📄 OpenAPI spec: http://%s%s", display, a.config.OpenAPIURL)
 	}
+
+	readTimeout := a.config.ReadTimeout
+	if readTimeout < 0 {
+		readTimeout = 0
+	}
+	writeTimeout := a.config.WriteTimeout
+	if writeTimeout < 0 {
+		writeTimeout = 0
+	}
+	idleTimeout := a.config.IdleTimeout
+	if idleTimeout < 0 {
+		idleTimeout = 0
+	}
+
 	srv := &http.Server{
 		Addr:              listen,
 		Handler:           a,
-		ReadHeaderTimeout: 10 * time.Second,
+		ReadHeaderTimeout: DefaultReadHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
 	}
+
+	a.mu.Lock()
+	a.server = srv
+	a.mu.Unlock()
+
 	return srv.ListenAndServe()
+}
+
+// Shutdown gracefully shuts down the server without interrupting active connections.
+func (a *App) Shutdown(ctx context.Context) error {
+	a.mu.Lock()
+	srv := a.server
+	a.mu.Unlock()
+
+	if srv == nil {
+		return nil
+	}
+	return srv.Shutdown(ctx)
+}
+
+// ListenGraceful starts the server and automatically listens for shutdown signals
+// (os.Interrupt, syscall.SIGTERM by default) to perform a graceful shutdown with a 10s timeout.
+func (a *App) ListenGraceful(addr string, stopSignals ...os.Signal) error {
+	if len(stopSignals) == 0 {
+		stopSignals = []os.Signal{os.Interrupt, syscall.SIGTERM}
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), stopSignals...)
+	defer stop()
+
+	errChan := make(chan error, 1)
+	go func() {
+		if err := a.Listen(addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errChan <- err
+		}
+		close(errChan)
+	}()
+
+	select {
+	case err := <-errChan:
+		return err
+	case <-ctx.Done():
+		log.Println("💧 Gota: shutdown signal received, shutting down gracefully...")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return a.Shutdown(shutdownCtx)
+	}
 }
 
 // Route represents a registered endpoint, allowing fluent OpenAPI and middleware chaining.
