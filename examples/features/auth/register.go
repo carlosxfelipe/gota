@@ -9,7 +9,6 @@ import (
 type RegisterRequest struct {
 	Username string `json:"username" doc:"Username" example:"novousuario" validate:"required,min=3"`
 	Password string `json:"password" doc:"User password" example:"senha123" validate:"required,min=6"`
-	Role     string `json:"role,omitempty" doc:"User role (Customer or Admin)" example:"Customer" validate:"oneof=Customer,Admin"`
 }
 
 // RegisterResponse returns the created user info along with an initial JWT token.
@@ -27,12 +26,10 @@ type RegisterEndpoint struct {
 
 // Handle creates a new user account and returns a signed JWT token.
 func (e *RegisterEndpoint) Handle(ctx *gota.Context, req RegisterRequest) (RegisterResponse, error) {
-	role := req.Role
-	if role == "" {
-		role = "Customer"
-	}
+	// The initial role is always assigned by the server; clients must never choose it.
+	const defaultRole = "Customer"
 
-	user, ok := e.Store.CreateUser(req.Username, req.Password, role)
+	user, ok := e.Store.CreateUser(req.Username, req.Password, defaultRole)
 	if !ok {
 		return RegisterResponse{}, gota.BadRequest("Username is already taken.")
 	}

@@ -343,14 +343,18 @@ func TestOrderRichValidationAndObservability(t *testing.T) {
 	json.Unmarshal(res.Body.Bytes(), &loginBody)
 	token := loginBody.Token
 
-	// 2. Validate oneof rule on Role during registration (SuperHacker is rejected)
-	badRoleRes := doRequest(app, http.MethodPost, "/api/auth/register", "", map[string]string{
+	// 2. Registration must ignore any client-supplied role (no privilege escalation)
+	escalateRes := doRequest(app, http.MethodPost, "/api/auth/register", "", map[string]string{
 		"username": "hacker123",
 		"password": "password123",
-		"role":     "SuperHacker",
+		"role":     "Admin",
 	})
-	if badRoleRes.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("expected 422 for invalid oneof role, got %d: %s", badRoleRes.Code, badRoleRes.Body.String())
+	var escalateBody struct {
+		Role string `json:"role"`
+	}
+	json.Unmarshal(escalateRes.Body.Bytes(), &escalateBody)
+	if escalateBody.Role != "Customer" {
+		t.Fatalf("expected server-assigned role Customer, got %q: %s", escalateBody.Role, escalateRes.Body.String())
 	}
 
 	// 3. Validate nested struct & len=8 on ZipCode (invalid CEP length)
