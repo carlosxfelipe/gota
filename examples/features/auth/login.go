@@ -1,8 +1,6 @@
 package auth
 
 import (
-	"time"
-
 	"github.com/carlosxfelipe/gota"
 	"github.com/carlosxfelipe/gota/examples/data"
 )
@@ -30,15 +28,7 @@ func (e *LoginEndpoint) Handle(ctx *gota.Context, req LoginRequest) (LoginRespon
 		return LoginResponse{}, gota.BadRequest("Invalid username or password.")
 	}
 
-	claims := UserClaims{
-		UserID:   user.ID,
-		Username: user.Username,
-		Role:     user.Role,
-		// Exp:      time.Now().Add(24 * time.Hour).Unix(),
-		Exp: time.Now().AddDate(10, 0, 0).Unix(), // 10 years for showcase convenience
-	}
-
-	token, err := gota.SignJWT(Secret, claims)
+	token, err := GenerateToken(user)
 	if err != nil {
 		return LoginResponse{}, err
 	}

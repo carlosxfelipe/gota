@@ -1,8 +1,6 @@
 package auth
 
 import (
-	"time"
-
 	"github.com/carlosxfelipe/gota"
 	"github.com/carlosxfelipe/gota/examples/data"
 )
@@ -39,14 +37,7 @@ func (e *RegisterEndpoint) Handle(ctx *gota.Context, req RegisterRequest) (Regis
 		return RegisterResponse{}, gota.BadRequest("Username is already taken.")
 	}
 
-	claims := UserClaims{
-		UserID:   user.ID,
-		Username: user.Username,
-		Role:     user.Role,
-		Exp:      time.Now().AddDate(10, 0, 0).Unix(),
-	}
-
-	token, err := gota.SignJWT(Secret, claims)
+	token, err := GenerateToken(user)
 	if err != nil {
 		return RegisterResponse{}, err
 	}
