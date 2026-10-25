@@ -81,6 +81,44 @@ func (s *Store) GetUserByUsername(username string) (domain.User, bool) {
 	return u, ok
 }
 
+// CreateUser creates a new user if the username is not already taken.
+func (s *Store) CreateUser(username, password, role string) (domain.User, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.users[username]; exists {
+		return domain.User{}, false
+	}
+
+	maxID := 0
+	for _, u := range s.users {
+		if u.ID > maxID {
+			maxID = u.ID
+		}
+	}
+
+	newUser := domain.User{
+		ID:       maxID + 1,
+		Username: username,
+		Password: password,
+		Role:     role,
+	}
+	s.users[username] = newUser
+	return newUser, true
+}
+
+// DeleteUser removes a user from the store by username.
+func (s *Store) DeleteUser(username string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.users[username]; !exists {
+		return false
+	}
+	delete(s.users, username)
+	return true
+}
+
 // GetOrder returns an order by its ID.
 func (s *Store) GetOrder(id string) (domain.Order, bool) {
 	s.mu.RLock()

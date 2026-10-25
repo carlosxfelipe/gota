@@ -22,15 +22,16 @@ func setupTestApp() (*gota.App, *data.Store) {
 
 	store := data.NewStore()
 
-	// Auth
-	gota.HandleEndpoint(app, http.MethodPost, "/api/auth/login", &auth.LoginEndpoint{Store: store})
+	// Auth (public)
+	auth.RegisterPublicRoutes(app, store)
 
-	// Orders
-	ordersGroup := app.Group("")
-	ordersGroup.Use(gota.JWT(auth.Secret, gota.JWTOptions{
+	// Protected routes (Auth + Orders)
+	protectedGroup := app.Group("")
+	protectedGroup.Use(gota.JWT(auth.Secret, gota.JWTOptions{
 		ClaimsFactory: func() any { return &auth.UserClaims{} },
 	}))
-	orders.RegisterRoutes(ordersGroup, store)
+	auth.RegisterProtectedRoutes(protectedGroup, store)
+	orders.RegisterRoutes(protectedGroup, store)
 
 	return app, store
 }
@@ -184,5 +185,75 @@ func TestOrderFlowEndToEnd(t *testing.T) {
 	cancelSuccessRes := doRequest(app, http.MethodPost, "/api/orders/"+cancelOrderBody.OrderId+"/cancel", carlosToken, nil)
 	if cancelSuccessRes.Code != http.StatusOK {
 		t.Fatalf("expected 200 when cancelling open order, got %d", cancelSuccessRes.Code)
+	}
+}
+
+func TestAuthLifecycle(t *testing.T) {
+	app, _ := setupTestApp()
+
+	// 1. Register new user
+	regRes := doRequest(app, http.MethodPost, "/api/auth/register", "", map[string]string{
+		"username": "tester",
+		"password": "secretpassword",
+		"role":     "Customer",
+	})
+	if regRes.Code != http.StatusOK {
+		t.Fatalf("expected register 200, got %d: %s", regRes.Code, regRes.Body.String())
+	}
+
+	var regBody struct {
+		ID       int    `json:"id"`
+		Username string `json:"username"`
+		Role     string `json:"role"`
+		Token    string `json:"token"`
+	}
+	if err := json.Unmarshal(regRes.Body.Bytes(), &regBody); err != nil {
+		t.Fatalf("failed to parse register response: %v", err)
+	}
+	if regBody.Username != "tester" || regBody.Token == "" {
+		t.Fatalf("unexpected register output: %+v", regBody)
+	}
+
+	// 2. Reject duplicate username
+	dupRes := doRequest(app, http.MethodPost, "/api/auth/register", "", map[string]string{
+		"username": "tester",
+		"password": "secretpassword2",
+	})
+	if dupRes.Code != http.StatusBadRequest {
+		t.Fatalf("expected duplicate register 400, got %d", dupRes.Code)
+	}
+
+	// 3. Get profile (/api/auth/me) with token
+	meRes := doRequest(app, http.MethodGet, "/api/auth/me", regBody.Token, nil)
+	if meRes.Code != http.StatusOK {
+		t.Fatalf("expected me 200, got %d: %s", meRes.Code, meRes.Body.String())
+	}
+	var me domain.User
+	if err := json.Unmarshal(meRes.Body.Bytes(), &me); err != nil {
+		t.Fatalf("failed to parse me response: %v", err)
+	}
+	if me.Username != "tester" || me.Role != "Customer" {
+		t.Fatalf("unexpected me output: %+v", me)
+	}
+
+	// 4. Delete account (/api/auth/account)
+	delRes := doRequest(app, http.MethodDelete, "/api/auth/account", regBody.Token, nil)
+	if delRes.Code != http.StatusOK {
+		t.Fatalf("expected delete account 200, got %d: %s", delRes.Code, delRes.Body.String())
+	}
+
+	// 5. Subsequent /api/auth/me should fail with 404
+	meAfterDel := doRequest(app, http.MethodGet, "/api/auth/me", regBody.Token, nil)
+	if meAfterDel.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 after deletion, got %d", meAfterDel.Code)
+	}
+
+	// 6. Login with deleted user should fail
+	loginRes := doRequest(app, http.MethodPost, "/api/auth/login", "", map[string]string{
+		"username": "tester",
+		"password": "secretpassword",
+	})
+	if loginRes.Code != http.StatusBadRequest {
+		t.Fatalf("expected login failure 400 after deletion, got %d", loginRes.Code)
 	}
 }

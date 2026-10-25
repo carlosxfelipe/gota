@@ -162,9 +162,26 @@ gota/
 │   └── scalar.go
 ├── examples/        # Order Flow showcase (FastEndpoints / REPR architecture)
 │   ├── bruno/       # Bruno API collection
-│   ├── data/        # In-memory store and seed data
-│   ├── domain/      # Domain models (Order, OrderItem, User)
-│   ├── features/    # Vertical slice features (Auth, Orders)
+│   ├── data/        # In-memory store and seed data (store.go)
+│   ├── domain/      # Domain models (order.go, user.go)
+│   ├── features/    # Vertical slice features
+│   │   ├── auth/    # Lifecycle authentication endpoints
+│   │   │   ├── claims.go
+│   │   │   ├── delete_account.go
+│   │   │   ├── login.go
+│   │   │   ├── me.go
+│   │   │   ├── register.go
+│   │   │   └── register_routes.go
+│   │   └── orders/  # Complete order flow domain logic
+│   │       ├── add_item.go
+│   │       ├── cancel_order.go
+│   │       ├── create_order.go
+│   │       ├── get_order.go
+│   │       ├── list_orders.go
+│   │       ├── pay_order.go
+│   │       ├── register.go
+│   │       ├── remove_item.go
+│   │       └── ship_order.go
 │   ├── examples_test.go # End-to-end integration test suite
 │   └── main.go      # Application bootstrap
 ├── validation/      # Input validation engine and declarative rules
@@ -223,7 +240,10 @@ The showcase is pre-seeded with users for testing role-based workflows:
 
 | Method   | Endpoint                             | Auth   | Description                                                     |
 | -------- | ------------------------------------ | ------ | --------------------------------------------------------------- |
+| `POST`   | `/api/auth/register`                 | Public | Registers a new account and returns an initial JWT Bearer token |
 | `POST`   | `/api/auth/login`                    | Public | Authenticates credentials and returns a signed JWT Bearer token |
+| `GET`    | `/api/auth/me`                       | Bearer | Retrieves the profile of the currently authenticated user       |
+| `DELETE` | `/api/auth/account`                  | Bearer | Permanently deletes the authenticated user's account            |
 | `GET`    | `/api/orders`                        | Bearer | Lists orders (scoped by Customer, or full list for Admin)       |
 | `POST`   | `/api/orders`                        | Bearer | Creates a new order in `Created` state                          |
 | `GET`    | `/api/orders/:orderId`               | Bearer | Retrieves order details, items, and calculated `totalAmount`    |

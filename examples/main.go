@@ -2,7 +2,6 @@ package main
 
 import (
 	"log"
-	"net/http"
 
 	"github.com/carlosxfelipe/gota"
 	"github.com/carlosxfelipe/gota/examples/data"
@@ -34,18 +33,16 @@ func main() {
 		return ctx.Redirect("/docs")
 	}).Hidden()
 
-	// 1. Auth Endpoint (Anonymous)
-	gota.HandleEndpoint(app, http.MethodPost, "/api/auth/login", &auth.LoginEndpoint{Store: store}).
-		Summary("Authenticates a user").
-		Description("Validates user credentials and returns a JWT Bearer token.").
-		Tags("Auth")
+	// 1. Public Auth Endpoints (Anonymous: Login, Register)
+	auth.RegisterPublicRoutes(app, store)
 
-	// 2. Protected Orders Endpoints (Secured with built-in gota.JWT middleware)
-	ordersGroup := app.Group("")
-	ordersGroup.Use(gota.JWT(auth.Secret, gota.JWTOptions{
+	// 2. Protected Endpoints (Secured with built-in gota.JWT middleware)
+	protectedGroup := app.Group("")
+	protectedGroup.Use(gota.JWT(auth.Secret, gota.JWTOptions{
 		ClaimsFactory: func() any { return &auth.UserClaims{} },
 	}))
-	orders.RegisterRoutes(ordersGroup, store)
+	auth.RegisterProtectedRoutes(protectedGroup, store)
+	orders.RegisterRoutes(protectedGroup, store)
 
 	log.Fatal(app.Listen(":3000"))
 }
