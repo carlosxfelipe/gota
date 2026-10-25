@@ -1,0 +1,25 @@
+meta {
+  name: 11. Register User
+  type: http
+  seq: 11
+}
+
+post {
+  url: http://localhost:3000/api/auth/register
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "username": "novousuario",
+    "password": "senha123",
+    "role": "Customer"
+  }
+}
+
+script:post-response {
+  if (res.status === 200) {
+    bru.setEnvVar("jwt_token", res.body.token);
+  }
+}

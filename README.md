@@ -258,8 +258,8 @@ The showcase is pre-seeded with users for testing role-based workflows:
 A pre-configured [Bruno](https://www.usebruno.com/) collection is ready to use in [`examples/bruno/`](examples/bruno):
 
 1. Open the `examples/bruno` folder in the Bruno app.
-2. Run **`10. Login (Customer)`** or **`9. Login (Admin)`** — the response script automatically stores `jwt_token`.
-3. Execute any of the order lifecycle requests (**`Create Order`**, **`Add Item`**, **`Pay Order`**, **`Ship Order`**, etc.).
+2. Run **`10. Login (Customer)`**, **`9. Login (Admin)`**, or create a new user with **`11. Register User`** — the response script automatically stores `jwt_token`.
+3. Test your profile with **`12. Get Current User (Me)`**, delete your account with **`13. Delete Account`**, or execute any of the order lifecycle requests (**`Create Order`**, **`Add Item`**, **`Pay Order`**, **`Ship Order`**, etc.).
 
 ---
 
