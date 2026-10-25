@@ -1,7 +1,8 @@
-# Gota Framework — AI Assistant & Developer Guide 💧
+# Gota Framework 💧
 
-> **Instructions for AI Assistants (LLMs):**
-> This document contains the definitive specification, patterns, and rules for the **Gota** web framework in Go. Because Gota is a modern, specialized micro-framework, use the patterns, signatures, and constraints defined here rather than guessing or applying patterns from other frameworks (like Gin or Fiber).
+> Minimalist, zero-dependency Go web micro-framework built around the REPR Design Pattern (Request-Endpoint-Response) with native interactive API documentation powered by Scalar and OpenAPI 3.1.
+
+This document contains the definitive specification, patterns, and rules for the **Gota** web framework in Go. Because Gota is a modern, specialized micro-framework, use the patterns, signatures, and constraints defined here rather than guessing or applying patterns from other frameworks (like Gin or Fiber).
 
 ---
 

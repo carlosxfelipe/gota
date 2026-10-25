@@ -34,7 +34,7 @@ Inspired by the ergonomic fluency of [Kite](https://github.com/claudiovictors/ki
 - **Fluent Kite-like Ergonomics**: Chainable metadata methods (`.Summary()`, `.Description()`, `.Tags()`, `.Middleware()`), route groups (`app.Group("/api")`), and path parameter matching (`:id`, `*wildcard`).
 - **Built-in Middlewares & Production Resilience**: Zero-dependency HS256 JWT authentication (`gota.JWT`, `gota.SignJWT`, `gota.VerifyJWT`, `gota.JWTClaims[T]`), CORS with automatic `OPTIONS` preflight, panic `Recover`, `RequestID` (UUID v4), standard `SlogLogger`, request `Logger`, server timeouts, and graceful shutdown (`app.ListenGraceful`).
 
-> 📖 Looking for in-depth patterns, validation recipes, and AI guidance? See the [Developer & AI Guide](docs/GOTA_AI_GUIDE.md).
+> 📖 Looking for in-depth patterns, validation recipes, and AI guidance? See [llms.txt](llms.txt).
 
 ---
 
@@ -180,8 +180,6 @@ gota/
 │   ├── router.go
 │   ├── router_test.go
 │   └── scalar.go
-├── docs/            # Developer & AI Assistant guides
-│   └── GOTA_AI_GUIDE.md
 ├── examples/        # Order Flow showcase (FastEndpoints / REPR architecture)
 │   ├── bruno/       # Bruno API collection
 │   ├── data/        # In-memory store and seed data (store.go)
@@ -215,6 +213,7 @@ gota/
 ├── endpoint_test.go # End-to-end test suite
 ├── gota.go          # Clean public entry point (facade)
 ├── go.mod
+├── llms.txt         # LLM & Developer guide (llms.txt standard)
 ├── logo.svg
 ├── LICENSE
 └── README.md
