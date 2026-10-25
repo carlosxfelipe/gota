@@ -38,7 +38,13 @@ Inspired by the ergonomic fluency of [Kite](https://github.com/claudiovictors/ki
 
 ## 📦 Installation
 
+Initialize your Go module (if starting a new project) and install Gota:
+
 ```bash
+# 1. Initialize your module (replace 'myapp' with your project name)
+go mod init myapp
+
+# 2. Add Gota to your dependencies
 go get github.com/carlosxfelipe/gota
 ```
 
@@ -47,6 +53,8 @@ Requires Go 1.26 or newer.
 ---
 
 ## 🚀 Quickstart (REPR Pattern)
+
+Create a `main.go` file:
 
 ```go
 package main
@@ -92,6 +100,12 @@ func main() {
 
 	log.Fatal(app.Listen(":3000"))
 }
+```
+
+Run your application:
+
+```bash
+go run main.go
 ```
 
 ---
