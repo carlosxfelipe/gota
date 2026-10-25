@@ -252,3 +252,48 @@ func TestValidatorNestedAndSlices(t *testing.T) {
 		t.Errorf("expected error on items[1].price")
 	}
 }
+
+type TestPointerDTO struct {
+	Name  *string `json:"name" validate:"min=3"`
+	Age   *int    `json:"age" validate:"max=10"`
+	Role  *string `json:"role" validate:"oneof=Admin,Customer"`
+	Email *string `json:"email" validate:"email"`
+	Count *int    `json:"count" validate:"min=1"`
+}
+
+func TestValidatorPointerFields(t *testing.T) {
+	ctx := &core.Context{}
+	str := func(s string) *string { return &s }
+	num := func(n int) *int { return &n }
+
+	invalid := TestPointerDTO{Name: str("ab"), Age: num(99), Role: str("Hacker"), Email: str("nope")}
+	valErr := ValidateStruct(ctx, &invalid)
+	if valErr == nil {
+		t.Fatal("expected pointer fields to be validated")
+	}
+	for _, f := range []string{"name", "age", "role", "email"} {
+		if len(valErr.Errors[f]) == 0 {
+			t.Errorf("expected error on %q", f)
+		}
+	}
+	if len(valErr.Errors["count"]) != 0 {
+		t.Errorf("nil pointer must not fail non-required rules")
+	}
+
+	valid := TestPointerDTO{Name: str("alice"), Age: num(5), Role: str("Admin"), Email: str("a@b.com")}
+	if err := ValidateStruct(ctx, &valid); err != nil {
+		t.Fatalf("expected valid pointer DTO to pass, got %v", err)
+	}
+}
+
+type TestUnexportedDTO struct {
+	Public string `json:"public" validate:"required"`
+	secret string `validate:"oneof=a,b"`
+}
+
+func TestValidatorSkipsUnexportedFields(t *testing.T) {
+	dto := TestUnexportedDTO{Public: "x", secret: "zzz"}
+	if err := ValidateStruct(&core.Context{}, &dto); err != nil {
+		t.Fatalf("unexported field must be skipped, got %v", err)
+	}
+}

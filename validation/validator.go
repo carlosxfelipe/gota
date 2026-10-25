@@ -14,6 +14,8 @@ import (
 	"github.com/carlosxfelipe/gota/core"
 )
 
+var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
 // Validator is an interface that structs can implement for custom validation logic.
 type Validator interface {
 	Validate() error
@@ -228,6 +230,10 @@ func validateStructRecursive(ctx *core.Context, val reflect.Value, prefix string
 	typ := val.Type()
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
+		// Unexported fields cannot be read via reflection (val.Interface() would panic).
+		if !field.IsExported() && !field.Anonymous {
+			continue
+		}
 		fieldVal := val.Field(i)
 
 		// Determine field name
@@ -312,6 +318,18 @@ func applyValidationRule(field string, val reflect.Value, rule string) string {
 	ruleParam := ""
 	if len(parts) > 1 {
 		ruleParam = parts[1]
+	}
+
+	// Every rule except `required` validates the pointed-to value; a nil pointer means
+	// "not provided" and is left to `required`. Without this, pointer fields such as
+	// *string with min=3 or *int with max=10 would silently skip validation.
+	if ruleName != "required" {
+		for val.Kind() == reflect.Pointer || val.Kind() == reflect.Interface {
+			if val.IsNil() {
+				return ""
+			}
+			val = val.Elem()
+		}
 	}
 
 	switch ruleName {
@@ -468,7 +486,7 @@ func applyValidationRule(field string, val reflect.Value, rule string) string {
 		if val.Kind() == reflect.String {
 			s := val.String()
 			if s != "" {
-				matched, _ := regexp.MatchString(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`, s)
+				matched := uuidPattern.MatchString(s)
 				if !matched {
 					return fmt.Sprintf("field %s must be a valid UUID", field)
 				}

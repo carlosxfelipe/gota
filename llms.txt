@@ -42,6 +42,7 @@ func main() {
 		ScalarTheme:  gota.ThemeFastify, // Default: ThemeFastify (Themes: ThemeFastify, ThemeDefault, ThemeMoon, etc.)
 		ScalarLayout: "classic",      // "classic" (Swagger-style) or "modern"
 		MaxBodyBytes: 10 << 20,       // 10MB limit (default: 10MB, negative to disable)
+		TrustProxyHeaders: false,     // true ONLY behind a trusted reverse proxy: makes ctx.ClientIP() honor X-Forwarded-For/X-Real-IP
 		ReadTimeout:  30 * time.Second, // Default: 30s
 		WriteTimeout: 30 * time.Second, // Default: 30s
 		IdleTimeout:  120 * time.Second, // Default: 120s
@@ -295,7 +296,8 @@ Gota includes zero-dependency HS256 JWT utilities:
 ### 6.1 Signing and Verifying Tokens
 
 ```go
-var Secret = []byte("my-super-secret-key")
+// Never hardcode the secret: load it from the environment or a secret manager.
+var Secret = []byte(os.Getenv("JWT_SECRET"))
 
 type CustomClaims struct {
 	UserID   int    `json:"userId"`
@@ -322,7 +324,10 @@ err := gota.VerifyJWT(Secret, tokenString, &claims)
 ```go
 // Protected group
 protected := app.Group("/api/protected")
+// Call Use BEFORE registering routes on the group (it panics otherwise).
+// RequireExp rejects tokens without an `exp` claim; `exp`/`nbf` are always enforced when present.
 protected.Use(gota.JWT(Secret, gota.JWTOptions{
+	RequireExp: true,
 	ClaimsFactory: func() any { return &CustomClaims{} },
 }))
 

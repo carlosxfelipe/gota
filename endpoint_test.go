@@ -2,8 +2,10 @@ package gota
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	stdhtml "html"
 	"io"
 	"log"
 	"mime/multipart"
@@ -12,6 +14,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 type CreateItemRequest struct {
@@ -153,7 +156,7 @@ func TestScalarAndOpenAPI(t *testing.T) {
 	if !strings.Contains(html, `@scalar/api-reference`) {
 		t.Errorf("expected Scalar script tag in docs HTML")
 	}
-	if !strings.Contains(html, `"layout":"classic"`) {
+	if !strings.Contains(stdhtml.UnescapeString(html), `"layout":"classic"`) {
 		t.Errorf("expected default classic layout in Scalar configuration")
 	}
 }
@@ -583,5 +586,30 @@ func TestREPRStreamingAndSSE(t *testing.T) {
 	}
 	if !strings.Contains(bodyStr, "event: status\ndata: {\"ready\":true}\n\n") {
 		t.Errorf("expected status event in SSE body: %s", bodyStr)
+	}
+}
+
+func TestSSEStreamStopsOnClientDisconnect(t *testing.T) {
+	app := New(Config{DisableDocs: true})
+	events := make(chan SSEvent) // never closed, never written
+	Get(app, "/stream", func(ctx *Context, _ Empty) (SSEStream, error) {
+		return SSEStream{Events: events}, nil
+	})
+
+	reqCtx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/stream", nil).WithContext(reqCtx)
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		app.ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SSEStream did not stop after client disconnect")
 	}
 }

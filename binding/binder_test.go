@@ -149,3 +149,22 @@ func TestBinderMultipartAndForm(t *testing.T) {
 		t.Errorf("expected file1.txt and file2.txt, got %s, %s", multiDTO.Files[0].Filename, multiDTO.Files[1].Filename)
 	}
 }
+
+func TestBinderJSONCannotSpoofNonBodyFields(t *testing.T) {
+	body := []byte(`{"ID":1,"Page":9,"Auth":"forged","name":"Alex"}`)
+	req := httptest.NewRequest("POST", "/users", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	ctx := core.NewContext(httptest.NewRecorder(), req, nil)
+
+	var dto TestBindDTO
+	if err := BindRequest(ctx, &dto); err != nil {
+		t.Fatalf("bind failed: %v", err)
+	}
+	if dto.ID != 0 || dto.Page != 0 || dto.Auth != "" {
+		t.Errorf("JSON body spoofed non-body fields: %+v", dto)
+	}
+	if dto.Name != "Alex" {
+		t.Errorf("expected Name=Alex, got %q", dto.Name)
+	}
+}

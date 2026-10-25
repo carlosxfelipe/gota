@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/carlosxfelipe/gota/binding"
 	"github.com/carlosxfelipe/gota/core"
@@ -38,13 +39,22 @@ type SSEStream struct {
 }
 
 // Stream sends each event in the channel and flushes it immediately.
+// It returns as soon as the client disconnects, even if the channel is never closed.
 func (s SSEStream) Stream(ctx *core.Context) error {
-	for evt := range s.Events {
-		if err := ctx.SSEvent(evt.Event, evt.Data); err != nil {
-			return err
+	done := ctx.Request.Context().Done()
+	for {
+		select {
+		case <-done:
+			return nil
+		case evt, ok := <-s.Events:
+			if !ok {
+				return nil
+			}
+			if err := ctx.SSEvent(evt.Event, evt.Data); err != nil {
+				return err
+			}
 		}
 	}
-	return nil
 }
 
 // hasRequiredRule reports whether a validate tag contains the `required` rule.
@@ -130,6 +140,9 @@ func WrapEndpoint[Req any, Res any](handler EndpointFunc[Req, Res], defaultStatu
 		}
 
 		if streamer, ok := any(res).(Streamer); ok {
+			// Long-lived streams (SSE, chunked) must not be cut by the server WriteTimeout.
+			// Errors are ignored: not every ResponseWriter supports deadlines.
+			_ = http.NewResponseController(ctx.ResponseWriter).SetWriteDeadline(time.Time{})
 			return streamer.Stream(ctx)
 		}
 

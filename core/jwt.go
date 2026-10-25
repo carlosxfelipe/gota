@@ -20,6 +20,9 @@ type JWTOptions struct {
 	// ClaimsFactory is an optional factory function returning a pointer to a custom claims struct.
 	// If nil, claims are decoded into map[string]any.
 	ClaimsFactory func() any
+	// RequireExp rejects tokens that do not carry a positive 'exp' claim, so that
+	// tokens without an expiration can never be accepted by the middleware.
+	RequireExp bool
 }
 
 // SignJWT creates an HMAC-SHA256 (HS256) signed JWT token string from the given payload.
@@ -46,7 +49,13 @@ func SignJWT(secret []byte, payload any) (string, error) {
 
 // VerifyJWT validates an HMAC-SHA256 JWT token against the given secret and decodes its payload into target.
 // If target is nil, only the format, signature, and expiration are verified.
+// Numeric 'exp' and 'nbf' claims (integer or fractional) are enforced when present;
+// a present but malformed 'exp' or 'nbf' rejects the token.
 func VerifyJWT(secret []byte, tokenString string, target any) error {
+	return verifyJWT(secret, tokenString, target, false)
+}
+
+func verifyJWT(secret []byte, tokenString string, target any, requireExp bool) error {
 	if len(secret) == 0 {
 		return errors.New("jwt: secret key cannot be empty")
 	}
@@ -71,14 +80,24 @@ func VerifyJWT(secret []byte, tokenString string, target any) error {
 		return errors.New("invalid token payload")
 	}
 
-	// Verify expiration if 'exp' claim exists
-	var expCheck struct {
-		Exp int64 `json:"exp"`
+	// Verify time claims. A malformed exp/nbf must never silently disable the check.
+	var timeCheck struct {
+		Exp *float64 `json:"exp"`
+		Nbf *float64 `json:"nbf"`
 	}
-	if err := json.Unmarshal(payloadBytes, &expCheck); err == nil && expCheck.Exp > 0 {
-		if time.Now().Unix() > expCheck.Exp {
+	if err := json.Unmarshal(payloadBytes, &timeCheck); err != nil {
+		return errors.New("invalid token claims")
+	}
+	now := float64(time.Now().Unix())
+	if timeCheck.Exp != nil && *timeCheck.Exp > 0 {
+		if now > *timeCheck.Exp {
 			return errors.New("token expired")
 		}
+	} else if requireExp {
+		return errors.New("token missing expiration")
+	}
+	if timeCheck.Nbf != nil && now < *timeCheck.Nbf {
+		return errors.New("token not yet valid")
 	}
 
 	if target != nil {
@@ -106,6 +125,7 @@ func JWT(secret []byte, opts ...JWTOptions) MiddlewareFunc {
 			cfg.ContextKey = opts[0].ContextKey
 		}
 		cfg.ClaimsFactory = opts[0].ClaimsFactory
+		cfg.RequireExp = opts[0].RequireExp
 	}
 
 	return func(next HandlerFunc) HandlerFunc {
@@ -136,9 +156,9 @@ func JWT(secret []byte, opts ...JWTOptions) MiddlewareFunc {
 				claims = &m
 			}
 
-			if err := VerifyJWT(cfg.Secret, parts[1], claims); err != nil {
+			if err := verifyJWT(cfg.Secret, parts[1], claims, cfg.RequireExp); err != nil {
 				return ctx.Status(http.StatusUnauthorized).Json(ErrorResponse{
-					Error:     "Invalid or expired token: " + err.Error(),
+					Error:     "Invalid or expired token",
 					Status:    http.StatusUnauthorized,
 					RequestID: ctx.RequestID(),
 				})

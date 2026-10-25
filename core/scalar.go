@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 )
 
 // ScalarTheme defines available color themes for Scalar API Reference.
@@ -83,7 +84,7 @@ func RenderScalarHTML(cfg ScalarConfig) (string, error) {
 		return "", err
 	}
 
-	html := fmt.Sprintf(`<!doctype html>
+	page := fmt.Sprintf(`<!doctype html>
 <html lang="en">
   <head>
     <title>%s</title>
@@ -106,7 +107,7 @@ func RenderScalarHTML(cfg ScalarConfig) (string, error) {
       src="https://cdn.jsdelivr.net/npm/@scalar/api-reference">
     </script>
   </body>
-</html>`, title, cfg.SpecURL, string(optionsJSON))
+</html>`, html.EscapeString(title), html.EscapeString(cfg.SpecURL), html.EscapeString(string(optionsJSON)))
 
-	return html, nil
+	return page, nil
 }

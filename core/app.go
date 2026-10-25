@@ -38,6 +38,10 @@ type Config struct {
 	// Use a negative value to disable the limit.
 	MaxBodyBytes int64 `json:"maxBodyBytes,omitempty"`
 
+	// TrustProxyHeaders makes Context.ClientIP honor X-Forwarded-For and X-Real-IP.
+	// Enable it only when the app runs behind a trusted reverse proxy that sets them.
+	TrustProxyHeaders bool `json:"trustProxyHeaders,omitempty"`
+
 	// ReadTimeout limits the duration for reading the entire request. Default: 30s.
 	// Use negative value to disable.
 	ReadTimeout time.Duration `json:"readTimeout,omitempty"`
@@ -71,6 +75,11 @@ type App struct {
 
 	mu     sync.Mutex
 	server *http.Server
+
+	// routeCount counts user-registered routes (docs routes excluded) and docsRoutes
+	// holds the built-in documentation routes, which must follow global middlewares.
+	routeCount int
+	docsRoutes []*Route
 }
 
 // New creates and configures a new Gota application instance.
@@ -115,6 +124,7 @@ func New(cfg Config) *App {
 
 	if !cfg.DisableDocs {
 		app.registerDocs()
+		app.routeCount = 0
 	}
 
 	return app
@@ -178,8 +188,20 @@ func defaultErrorHandler(ctx *Context, err error) {
 }
 
 // Use appends a global middleware executed across all requests.
+// It must be called before registering routes or groups: middlewares are bound to a route
+// when it is registered, so a late Use would silently leave existing routes unprotected.
+// Use panics in that case.
 func (a *App) Use(mw MiddlewareFunc) {
+	if a.routeCount > 0 {
+		panic("gota: App.Use must be called before registering routes; middleware would not apply to existing routes")
+	}
 	a.middlewares = append(a.middlewares, mw)
+
+	// Built-in docs routes are registered in New, so refresh their chain.
+	for _, rt := range a.docsRoutes {
+		rt.base = append([]MiddlewareFunc(nil), a.middlewares...)
+		rt.rebuild()
+	}
 }
 
 // Router returns the underlying Router instance.
@@ -219,6 +241,7 @@ func (a *App) Patch(path string, h HandlerFunc) *Route {
 
 // RegisterRoute internally binds an HTTP method and path with the global middleware chain.
 func (a *App) RegisterRoute(method, path string, h HandlerFunc) *Route {
+	a.routeCount++
 	base := make([]MiddlewareFunc, len(a.middlewares))
 	copy(base, a.middlewares)
 
@@ -256,14 +279,14 @@ func (a *App) registerDocs() {
 	docsURL := a.config.DocsURL
 
 	// OpenAPI 3.1 JSON spec
-	a.Get(openAPIURL, func(ctx *Context) error {
+	specRoute := a.Get(openAPIURL, func(ctx *Context) error {
 		gen := NewOpenAPIGenerator(a.config)
 		spec := gen.Generate(a.router.Routes())
 		return ctx.Json(spec)
 	}).Hidden()
 
 	// Scalar API Reference UI (Layout: classic by default)
-	a.Get(docsURL, func(ctx *Context) error {
+	docsRoute := a.Get(docsURL, func(ctx *Context) error {
 		html, err := RenderScalarHTML(ScalarConfig{
 			Title:   a.config.Title + " - API Reference",
 			SpecURL: openAPIURL,
@@ -276,6 +299,8 @@ func (a *App) registerDocs() {
 		ctx.SetHeader("Content-Type", "text/html; charset=utf-8")
 		return ctx.Send(html)
 	}).Hidden()
+
+	a.docsRoutes = []*Route{specRoute, docsRoute}
 }
 
 // ServeHTTP satisfies the standard net/http Handler interface.
@@ -307,6 +332,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	handler, params, ok := a.router.Match(r.Method, r.URL.Path)
 	ctx := NewContext(w, r, params)
+	ctx.trustProxy = a.config.TrustProxyHeaders
 
 	if !ok {
 		// A path that exists for other methods is 405, otherwise 404.
@@ -605,10 +631,16 @@ type RouteGroup struct {
 	app         *App
 	prefix      string
 	middlewares []MiddlewareFunc
+	registered  bool
 }
 
 // Use appends a middleware to this route group.
+// It must be called before registering routes on the group; otherwise it panics, because
+// already registered routes would silently not receive the middleware.
 func (g *RouteGroup) Use(mw MiddlewareFunc) {
+	if g.registered {
+		panic("gota: RouteGroup.Use must be called before registering routes on the group; middleware would not apply to existing routes")
+	}
 	g.middlewares = append(g.middlewares, mw)
 }
 
@@ -640,6 +672,8 @@ func (g *RouteGroup) Patch(path string, h HandlerFunc) *Route {
 // RegisterRoute registers a scoped route under this group prefix.
 func (g *RouteGroup) RegisterRoute(method, path string, h HandlerFunc) *Route {
 	full := joinPrefix(g.prefix, path)
+	g.registered = true
+	g.app.routeCount++
 	base := make([]MiddlewareFunc, len(g.middlewares))
 	copy(base, g.middlewares)
 

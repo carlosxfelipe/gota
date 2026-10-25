@@ -133,3 +133,48 @@ func TestJWTMiddleware(t *testing.T) {
 		t.Errorf("unexpected response body: %+v", res)
 	}
 }
+
+func TestVerifyJWTMalformedExpIsRejected(t *testing.T) {
+	secret := []byte("secret")
+
+	// Expired token whose exp is a fractional number must still be rejected.
+	token, _ := SignJWT(secret, map[string]any{"exp": float64(time.Now().Add(-time.Hour).Unix()) + 0.5})
+	if err := VerifyJWT(secret, token, nil); err == nil || err.Error() != "token expired" {
+		t.Fatalf("expected 'token expired' for fractional exp, got %v", err)
+	}
+
+	// exp with the wrong type must not disable the check.
+	token, _ = SignJWT(secret, map[string]any{"exp": "1"})
+	if err := VerifyJWT(secret, token, nil); err == nil {
+		t.Fatal("expected error for string exp")
+	}
+}
+
+func TestVerifyJWTNotBefore(t *testing.T) {
+	secret := []byte("secret")
+	token, _ := SignJWT(secret, map[string]any{"nbf": time.Now().Add(time.Hour).Unix()})
+	if err := VerifyJWT(secret, token, nil); err == nil || err.Error() != "token not yet valid" {
+		t.Fatalf("expected 'token not yet valid', got %v", err)
+	}
+}
+
+func TestJWTMiddlewareRequireExp(t *testing.T) {
+	secret := []byte("middleware-secret")
+	app := New(Config{DisableDocs: true})
+	group := app.Group("/p")
+	group.Use(JWT(secret, JWTOptions{RequireExp: true}))
+	group.Get("/x", func(ctx *Context) error { return ctx.Send("ok") })
+
+	noExp, _ := SignJWT(secret, map[string]any{"sub": "1"})
+	withExp, _ := SignJWT(secret, map[string]any{"sub": "1", "exp": time.Now().Add(time.Hour).Unix()})
+
+	for token, want := range map[string]int{noExp: http.StatusUnauthorized, withExp: http.StatusOK} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/p/x", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		app.ServeHTTP(rec, req)
+		if rec.Code != want {
+			t.Errorf("expected %d, got %d", want, rec.Code)
+		}
+	}
+}

@@ -31,8 +31,8 @@ func BindRequest(ctx *core.Context, target any) error {
 	}
 
 	contentType := ctx.Request.Header.Get("Content-Type")
-	isMultipart := strings.HasPrefix(contentType, "multipart/form-data")
-	isFormUrlencoded := strings.HasPrefix(contentType, "application/x-www-form-urlencoded")
+	isMultipart := strings.HasPrefix(strings.ToLower(contentType), "multipart/form-data")
+	isFormUrlencoded := strings.HasPrefix(strings.ToLower(contentType), "application/x-www-form-urlencoded")
 	hasBody := ctx.Request.ContentLength != 0
 
 	// 1. If multipart/form-data, parse multipart form
@@ -53,6 +53,7 @@ func BindRequest(ctx *core.Context, target any) error {
 			if err := json.Unmarshal(body, target); err != nil {
 				return fmt.Errorf("invalid json body: %w", err)
 			}
+			clearNonBodyFields(elem)
 		}
 	}
 
@@ -158,6 +159,26 @@ func BindRequest(ctx *core.Context, target any) error {
 	}
 
 	return nil
+}
+
+// clearNonBodyFields zeroes fields that are meant to come from the path, query, header or
+// form, unless they declare an explicit json tag. Without this, a JSON body such as
+// {"UserID": 1} could spoof a field tagged `header:"X-User-Id"` whenever the header is absent.
+func clearNonBodyFields(elem reflect.Value) {
+	typ := elem.Type()
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		if !elem.Field(i).CanSet() {
+			continue
+		}
+		if name, _, _ := strings.Cut(field.Tag.Get("json"), ","); name != "" && name != "-" {
+			continue
+		}
+		if field.Tag.Get("param") != "" || field.Tag.Get("query") != "" ||
+			field.Tag.Get("header") != "" || field.Tag.Get("form") != "" {
+			elem.Field(i).SetZero()
+		}
+	}
 }
 
 // setFieldValue sets a reflect.Value from a string representation.

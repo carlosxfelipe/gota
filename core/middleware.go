@@ -48,10 +48,20 @@ func DefaultCORSOptions() CORSOptions {
 }
 
 // CORS returns a middleware enabling Cross-Origin Resource Sharing.
+// It panics if AllowCredentials is combined with the "*" wildcard origin: browsers reject
+// that combination, and echoing arbitrary origins with credentials would let any site
+// make authenticated requests. List the allowed origins explicitly instead.
 func CORS(opts ...CORSOptions) MiddlewareFunc {
 	cfg := DefaultCORSOptions()
 	if len(opts) > 0 {
 		cfg = opts[0]
+	}
+	if cfg.AllowCredentials {
+		for _, o := range cfg.AllowOrigins {
+			if o == "*" {
+				panic("gota: CORS AllowCredentials cannot be combined with the \"*\" wildcard origin; list origins explicitly")
+			}
+		}
 	}
 
 	methodsStr := strings.Join(cfg.AllowMethods, ", ")
@@ -65,19 +75,22 @@ func CORS(opts ...CORSOptions) MiddlewareFunc {
 
 			origin := r.Header.Get("Origin")
 			if origin != "" {
-				if len(cfg.AllowOrigins) == 1 && cfg.AllowOrigins[0] == "*" {
+				wildcard := len(cfg.AllowOrigins) == 1 && cfg.AllowOrigins[0] == "*"
+				allowed := wildcard
+				if wildcard {
 					w.Header().Set("Access-Control-Allow-Origin", "*")
 				} else {
+					w.Header().Add("Vary", "Origin")
 					for _, o := range cfg.AllowOrigins {
 						if o == origin || o == "*" {
 							w.Header().Set("Access-Control-Allow-Origin", origin)
-							w.Header().Set("Vary", "Origin")
+							allowed = true
 							break
 						}
 					}
 				}
 
-				if cfg.AllowCredentials {
+				if allowed && cfg.AllowCredentials {
 					w.Header().Set("Access-Control-Allow-Credentials", "true")
 				}
 				if exposeStr != "" {
@@ -162,6 +175,24 @@ func defaultUUIDv4() string {
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
+// validRequestID reports whether a client-supplied request ID is safe to echo into
+// headers, logs and error bodies: 1-128 chars of letters, digits, '.', '_', '-' or ':'.
+func validRequestID(id string) bool {
+	if id == "" || len(id) > 128 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
+			c == '.', c == '_', c == '-', c == ':':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // RequestID adds a unique identifier to each request via response header and context store.
 func RequestID(opts ...RequestIDOptions) MiddlewareFunc {
 	headerName := "X-Request-ID"
@@ -179,7 +210,7 @@ func RequestID(opts ...RequestIDOptions) MiddlewareFunc {
 	return func(next HandlerFunc) HandlerFunc {
 		return func(ctx *Context) error {
 			id := ctx.Header(headerName)
-			if id == "" {
+			if !validRequestID(id) {
 				id = generator()
 			}
 			ctx.Set("request_id", id)

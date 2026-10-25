@@ -160,6 +160,18 @@ app := gota.New(gota.Config{
 
 ---
 
+## 🔒 Security Notes
+
+- **Middleware order**: call `app.Use` / `group.Use` **before** registering routes. Middlewares are bound to a route at registration, so a late `Use` panics instead of silently leaving routes unprotected.
+- **JWT**: `exp` and `nbf` are enforced whenever present, and a malformed value rejects the token. Pass `JWTOptions{RequireExp: true}` to reject tokens that carry no expiration. Load the secret from the environment, never hardcode it.
+- **Client IP**: `ctx.ClientIP()` returns `RemoteAddr`. Set `Config{TrustProxyHeaders: true}` only behind a trusted reverse proxy to honor `X-Forwarded-For` / `X-Real-IP` (these headers are trivially forged otherwise).
+- **CORS**: `AllowCredentials` cannot be combined with the `"*"` origin (`gota.CORS` panics); list origins explicitly.
+- **Binding**: fields tagged `param`, `query`, `header` or `form` (without an explicit `json` tag) are never filled from the JSON body.
+- **DTO design**: never expose privilege fields (e.g. `role`, `isAdmin`) in public request DTOs; assign them on the server.
+- **Streaming**: `SSEStream` / `StreamFunc` responses lift the server `WriteTimeout` and stop when the client disconnects.
+
+---
+
 ## 📁 Project Structure
 
 ```
@@ -261,22 +273,22 @@ The showcase is pre-seeded with users for testing role-based workflows:
 
 ### 🛣️ Showcase API Routes (Order Flow)
 
-| Method   | Endpoint                             | Auth   | Description                                                           |
-| -------- | ------------------------------------ | ------ | --------------------------------------------------------------------- |
-| `POST`   | `/api/auth/register`                 | Public | Registers a new account and returns an initial JWT Bearer token       |
-| `POST`   | `/api/auth/login`                    | Public | Authenticates credentials and returns a signed JWT Bearer token       |
-| `GET`    | `/api/auth/me`                       | Bearer | Retrieves the profile of the currently authenticated user             |
-| `DELETE` | `/api/auth/account`                  | Bearer | Permanently deletes the authenticated user's account                  |
-| `GET`    | `/api/orders`                        | Bearer | Lists orders (scoped by Customer, or full list for Admin)             |
-| `POST`   | `/api/orders`                        | Bearer | Creates a new order in `Created` state                                |
-| `GET`    | `/api/orders/:orderId`               | Bearer | Retrieves order details, items, and calculated `totalAmount`          |
-| `POST`   | `/api/orders/:orderId/items`         | Bearer | Adds a line item to an order still in `Created` state                 |
-| `DELETE` | `/api/orders/:orderId/items/:itemId` | Bearer | Removes a line item from an open `Created` order                      |
-| `POST`   | `/api/orders/:orderId/pay`           | Bearer | Pays order with items and transitions status to `Paid`                |
-| `POST`   | `/api/orders/:orderId/ship`          | Bearer | Ships paid order and transitions status to `Shipped`                  |
-| `POST`   | `/api/orders/:orderId/cancel`        | Bearer | Cancels order unless it was already `Shipped`                         |
-| `POST`   | `/api/orders/:orderId/receipt`       | Bearer | Uploads a payment receipt or invoice document (`multipart/form-data`) |
-| `GET`    | `/api/orders/:orderId/track`         | Bearer | Streams real-time order updates via Server-Sent Events (`SSEStream`)  |
+| Method   | Endpoint                             | Auth   | Description                                                                                                 |
+| -------- | ------------------------------------ | ------ | ----------------------------------------------------------------------------------------------------------- |
+| `POST`   | `/api/auth/register`                 | Public | Registers a new `Customer` account (role is always server-assigned) and returns an initial JWT Bearer token |
+| `POST`   | `/api/auth/login`                    | Public | Authenticates credentials and returns a signed JWT Bearer token                                             |
+| `GET`    | `/api/auth/me`                       | Bearer | Retrieves the profile of the currently authenticated user                                                   |
+| `DELETE` | `/api/auth/account`                  | Bearer | Permanently deletes the authenticated user's account                                                        |
+| `GET`    | `/api/orders`                        | Bearer | Lists orders (scoped by Customer, or full list for Admin)                                                   |
+| `POST`   | `/api/orders`                        | Bearer | Creates a new order in `Created` state                                                                      |
+| `GET`    | `/api/orders/:orderId`               | Bearer | Retrieves order details, items, and calculated `totalAmount`                                                |
+| `POST`   | `/api/orders/:orderId/items`         | Bearer | Adds a line item to an order still in `Created` state                                                       |
+| `DELETE` | `/api/orders/:orderId/items/:itemId` | Bearer | Removes a line item from an open `Created` order                                                            |
+| `POST`   | `/api/orders/:orderId/pay`           | Bearer | Pays order with items and transitions status to `Paid`                                                      |
+| `POST`   | `/api/orders/:orderId/ship`          | Bearer | Ships paid order and transitions status to `Shipped`                                                        |
+| `POST`   | `/api/orders/:orderId/cancel`        | Bearer | Cancels order unless it was already `Shipped`                                                               |
+| `POST`   | `/api/orders/:orderId/receipt`       | Bearer | Uploads a payment receipt or invoice document (`multipart/form-data`)                                       |
+| `GET`    | `/api/orders/:orderId/track`         | Bearer | Streams real-time order updates via Server-Sent Events (`SSEStream`)                                        |
 
 ### 🟠 Testing with Bruno
 

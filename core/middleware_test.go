@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -102,9 +103,17 @@ func TestSlogLoggerMiddleware(t *testing.T) {
 
 func TestContextClientIP(t *testing.T) {
 	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "192.0.2.9:1234"
 	req.Header.Set("X-Forwarded-For", "203.0.113.195, 70.41.3.18")
 	ctx := NewContext(httptest.NewRecorder(), req, nil)
 
+	// Default: forged proxy headers are ignored.
+	if ip := ctx.ClientIP(); ip != "192.0.2.9" {
+		t.Errorf("expected RemoteAddr 192.0.2.9 by default, got %q", ip)
+	}
+
+	// Trusted proxy mode.
+	ctx.trustProxy = true
 	if ip := ctx.ClientIP(); ip != "203.0.113.195" {
 		t.Errorf("expected 203.0.113.195 from X-Forwarded-For, got %q", ip)
 	}
@@ -112,6 +121,7 @@ func TestContextClientIP(t *testing.T) {
 	req2 := httptest.NewRequest("GET", "/", nil)
 	req2.Header.Set("X-Real-IP", "198.51.100.1")
 	ctx2 := NewContext(httptest.NewRecorder(), req2, nil)
+	ctx2.trustProxy = true
 	if ip := ctx2.ClientIP(); ip != "198.51.100.1" {
 		t.Errorf("expected 198.51.100.1 from X-Real-IP, got %q", ip)
 	}
@@ -157,5 +167,63 @@ func TestErrorResponseRequestID(t *testing.T) {
 	bodyNoID := recNoID.Body.String()
 	if bytes.Contains(recNoID.Body.Bytes(), []byte(`requestId`)) {
 		t.Errorf("expected response without requestId when not set, got: %s", bodyNoID)
+	}
+}
+
+func TestCORSCredentialsWithWildcardPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic for wildcard origin with credentials")
+		}
+	}()
+	CORS(CORSOptions{AllowOrigins: []string{"*"}, AllowCredentials: true})
+}
+
+func TestCORSExplicitOrigins(t *testing.T) {
+	app := New(Config{DisableDocs: true})
+	app.Use(CORS(CORSOptions{AllowOrigins: []string{"https://ok.example"}, AllowCredentials: true}))
+	app.Get("/x", func(ctx *Context) error { return ctx.Send("ok") })
+
+	for origin, wantAllowed := range map[string]bool{"https://ok.example": true, "https://evil.example": false} {
+		req := httptest.NewRequest("GET", "/x", nil)
+		req.Header.Set("Origin", origin)
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+
+		gotOrigin := rec.Header().Get("Access-Control-Allow-Origin")
+		gotCreds := rec.Header().Get("Access-Control-Allow-Credentials")
+		if wantAllowed && (gotOrigin != origin || gotCreds != "true") {
+			t.Errorf("%s: expected allow origin+credentials, got %q / %q", origin, gotOrigin, gotCreds)
+		}
+		if !wantAllowed && (gotOrigin != "" || gotCreds != "") {
+			t.Errorf("%s: expected no CORS grant, got %q / %q", origin, gotOrigin, gotCreds)
+		}
+		if rec.Header().Get("Vary") != "Origin" {
+			t.Errorf("%s: expected Vary: Origin", origin)
+		}
+	}
+}
+
+func TestRequestIDRejectsUnsafeClientValue(t *testing.T) {
+	app := New(Config{DisableDocs: true})
+	app.Use(RequestID())
+	app.Get("/x", func(ctx *Context) error { return ctx.Send("ok") })
+
+	for _, bad := range []string{"has space", "<script>", strings.Repeat("a", 129)} {
+		req := httptest.NewRequest("GET", "/x", nil)
+		req.Header.Set("X-Request-ID", bad)
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+		if got := rec.Header().Get("X-Request-ID"); got == bad || got == "" {
+			t.Errorf("expected regenerated ID for %q, got %q", bad, got)
+		}
+	}
+
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.Header.Set("X-Request-ID", "trace-123.abc")
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+	if got := rec.Header().Get("X-Request-ID"); got != "trace-123.abc" {
+		t.Errorf("expected valid ID to be kept, got %q", got)
 	}
 }

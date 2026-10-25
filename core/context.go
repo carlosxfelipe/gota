@@ -27,6 +27,9 @@ type Context struct {
 	bodyBytes  []byte
 	bodyRead   bool
 
+	// trustProxy enables reading the client IP from X-Forwarded-For / X-Real-IP.
+	trustProxy bool
+
 	mu    sync.RWMutex
 	store map[string]any
 }
@@ -120,19 +123,27 @@ func (c *Context) RequestID() string {
 			return s
 		}
 	}
-	return c.Header("X-Request-ID")
+	if id := c.Header("X-Request-ID"); validRequestID(id) {
+		return id
+	}
+	return ""
 }
 
-// ClientIP returns the client IP address from X-Forwarded-For, X-Real-IP, or RemoteAddr.
+// ClientIP returns the client IP address.
+// X-Forwarded-For and X-Real-IP are only honored when Config.TrustProxyHeaders is enabled
+// (i.e. the app runs behind a trusted reverse proxy); otherwise RemoteAddr is used,
+// since those headers can be freely forged by any client.
 func (c *Context) ClientIP() string {
-	if xff := c.Header("X-Forwarded-For"); xff != "" {
-		parts := strings.Split(xff, ",")
-		if len(parts) > 0 {
-			return strings.TrimSpace(parts[0])
+	if c.trustProxy {
+		if xff := c.Header("X-Forwarded-For"); xff != "" {
+			parts := strings.Split(xff, ",")
+			if len(parts) > 0 {
+				return strings.TrimSpace(parts[0])
+			}
 		}
-	}
-	if xrip := c.Header("X-Real-IP"); xrip != "" {
-		return strings.TrimSpace(xrip)
+		if xrip := c.Header("X-Real-IP"); xrip != "" {
+			return strings.TrimSpace(xrip)
+		}
 	}
 	host, _, err := net.SplitHostPort(c.Request.RemoteAddr)
 	if err == nil {

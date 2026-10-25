@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"syscall"
 	"testing"
 	"time"
@@ -113,5 +114,38 @@ func TestApp_ListenGraceful_Signal(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("ListenGraceful did not exit within timeout")
+	}
+}
+
+func mustPanic(t *testing.T, name string, fn func()) {
+	t.Helper()
+	defer func() {
+		if recover() == nil {
+			t.Errorf("%s: expected panic", name)
+		}
+	}()
+	fn()
+}
+
+func TestLateUsePanics(t *testing.T) {
+	app := New(Config{})
+	app.Use(RequestID()) // fine: docs routes do not count as user routes
+	app.Get("/a", func(ctx *Context) error { return ctx.Send("a") })
+	mustPanic(t, "App.Use after route", func() { app.Use(RequestID()) })
+
+	g := app.Group("/g")
+	g.Use(RequestID())
+	g.Get("/x", func(ctx *Context) error { return ctx.Send("x") })
+	mustPanic(t, "RouteGroup.Use after route", func() { g.Use(RequestID()) })
+}
+
+func TestDocsRoutesGetGlobalMiddleware(t *testing.T) {
+	app := New(Config{})
+	app.Use(RequestID())
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest("GET", "/openapi.json", nil))
+	if rec.Header().Get("X-Request-ID") == "" {
+		t.Error("expected global middleware to apply to docs routes")
 	}
 }

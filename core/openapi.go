@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"mime/multipart"
 	"net/http"
+	"path"
 	"reflect"
 	"sort"
 	"strconv"
@@ -111,15 +112,29 @@ type OpenAPIComponents struct {
 
 // OpenAPIGenerator converts registered routes into an OpenAPI 3.1 schema.
 type OpenAPIGenerator struct {
-	config  Config
-	schemas map[string]map[string]any
+	config      Config
+	schemas     map[string]map[string]any
+	schemaTypes map[string]reflect.Type
 }
 
 func NewOpenAPIGenerator(cfg Config) *OpenAPIGenerator {
 	return &OpenAPIGenerator{
-		config:  cfg,
-		schemas: make(map[string]map[string]any),
+		config:      cfg,
+		schemas:     make(map[string]map[string]any),
+		schemaTypes: make(map[string]reflect.Type),
 	}
+}
+
+// schemaName returns the components/schemas key for t. The plain type name is kept unless
+// a different type already uses it (same name in another package), in which case the
+// package name is prefixed so the two schemas do not overwrite each other.
+func (g *OpenAPIGenerator) schemaName(t reflect.Type) string {
+	name := t.Name()
+	if prev, taken := g.schemaTypes[name]; taken && prev != t {
+		name = path.Base(t.PkgPath()) + "_" + t.Name()
+	}
+	g.schemaTypes[name] = t
+	return name
 }
 
 func (g *OpenAPIGenerator) Generate(routes []*Node) *OpenAPISpec {
@@ -301,7 +316,7 @@ func (g *OpenAPIGenerator) registerOrRef(model any) map[string]any {
 		t = t.Elem()
 	}
 
-	if t.Kind() == reflect.Slice {
+	if t.Kind() == reflect.Slice && t.Elem().Kind() != reflect.Uint8 {
 		elemSchema := g.registerOrRef(reflect.New(t.Elem()).Elem().Interface())
 		return map[string]any{
 			"type":  "array",
@@ -318,6 +333,7 @@ func (g *OpenAPIGenerator) registerOrRef(model any) map[string]any {
 		return g.structToSchema(t)
 	}
 
+	typeName = g.schemaName(t)
 	if _, exists := g.schemas[typeName]; !exists {
 		g.schemas[typeName] = g.structToSchema(t)
 	}
@@ -379,7 +395,14 @@ func (g *OpenAPIGenerator) structToSchema(t reflect.Type) map[string]any {
 		}
 
 		valTag := field.Tag.Get("validate")
-		if strings.Contains(valTag, "required") {
+		isRequired := false
+		for _, rule := range strings.Split(valTag, ",") {
+			if strings.TrimSpace(rule) == "required" {
+				isRequired = true
+				break
+			}
+		}
+		if isRequired {
 			required = append(required, name)
 		}
 
@@ -429,6 +452,10 @@ func (g *OpenAPIGenerator) schemaForType(t reflect.Type) map[string]any {
 	case reflect.Bool:
 		return map[string]any{"type": "boolean"}
 	case reflect.Slice:
+		if t.Elem().Kind() == reflect.Uint8 {
+			// []byte is encoded by encoding/json as a base64 string.
+			return map[string]any{"type": "string", "format": "byte"}
+		}
 		return map[string]any{
 			"type":  "array",
 			"items": g.schemaForType(t.Elem()),
