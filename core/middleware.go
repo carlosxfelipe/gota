@@ -109,11 +109,17 @@ func Recover() MiddlewareFunc {
 		return func(ctx *Context) error {
 			defer func() {
 				if r := recover(); r != nil {
-					log.Printf("gota: panic recovered: %v\n%s", r, debug.Stack())
+					reqID := ctx.RequestID()
+					if reqID != "" {
+						log.Printf("gota: panic recovered [%s]: %v\n%s", reqID, r, debug.Stack())
+					} else {
+						log.Printf("gota: panic recovered: %v\n%s", r, debug.Stack())
+					}
 					if !ctx.Written() {
 						_ = ctx.Status(http.StatusInternalServerError).Json(ErrorResponse{
-							Error:  "internal server error",
-							Status: http.StatusInternalServerError,
+							Error:     "internal server error",
+							Status:    http.StatusInternalServerError,
+							RequestID: reqID,
 						})
 					}
 				}

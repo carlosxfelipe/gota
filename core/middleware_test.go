@@ -116,3 +116,46 @@ func TestContextClientIP(t *testing.T) {
 		t.Errorf("expected 198.51.100.1 from X-Real-IP, got %q", ip)
 	}
 }
+
+func TestErrorResponseRequestID(t *testing.T) {
+	// 1. With RequestID middleware
+	appWithID := New(Config{DisableDocs: true})
+	appWithID.Use(RequestID())
+	appWithID.Get("/fail", func(ctx *Context) error {
+		return errors.New("raw db failure")
+	})
+
+	req := httptest.NewRequest("GET", "/fail", nil)
+	req.Header.Set("X-Request-ID", "req-test-abc")
+	rec := httptest.NewRecorder()
+	appWithID.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"requestId":"req-test-abc"`)) {
+		t.Errorf("expected response to contain requestId, got: %s", body)
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"error":"internal server error"`)) {
+		t.Errorf("expected sanitized error message, got: %s", body)
+	}
+
+	// 2. Without RequestID middleware
+	appWithoutID := New(Config{DisableDocs: true})
+	appWithoutID.Get("/fail", func(ctx *Context) error {
+		return errors.New("raw db failure")
+	})
+
+	reqNoID := httptest.NewRequest("GET", "/fail", nil)
+	recNoID := httptest.NewRecorder()
+	appWithoutID.ServeHTTP(recNoID, reqNoID)
+
+	if recNoID.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", recNoID.Code)
+	}
+	bodyNoID := recNoID.Body.String()
+	if bytes.Contains(recNoID.Body.Bytes(), []byte(`requestId`)) {
+		t.Errorf("expected response without requestId when not set, got: %s", bodyNoID)
+	}
+}

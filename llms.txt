@@ -276,12 +276,13 @@ All of these produce standard JSON responses:
 
 ### 5.2 Unexpected Errors (500 Protection)
 
-If a raw Go `error` (e.g., database connection failure) is returned, Gota logs the actual error and stacktrace internally and returns a sanitized `500 Internal Server Error` to prevent information leakage:
+If a raw Go `error` (e.g., database connection failure) is returned, Gota logs the actual error and stacktrace internally and returns a sanitized `500 Internal Server Error` to prevent information leakage (and includes correlation `requestId` if `gota.RequestID()` is used):
 
 ```json
 {
   "error": "internal server error",
-  "status": 500
+  "status": 500,
+  "requestId": "b1a2c3d4-..."
 }
 ```
 

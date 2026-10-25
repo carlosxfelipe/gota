@@ -107,13 +107,15 @@ func WrapEndpoint[Req any, Res any](handler EndpointFunc[Req, Res], defaultStatu
 				var tooLarge *http.MaxBytesError
 				if errors.As(err, &tooLarge) {
 					return ctx.Status(http.StatusRequestEntityTooLarge).Json(ErrorResponse{
-						Error:  "request body too large",
-						Status: http.StatusRequestEntityTooLarge,
+						Error:     "request body too large",
+						Status:    http.StatusRequestEntityTooLarge,
+						RequestID: ctx.RequestID(),
 					})
 				}
 				return ctx.Status(http.StatusBadRequest).Json(ErrorResponse{
-					Error:  "invalid request: " + err.Error(),
-					Status: http.StatusBadRequest,
+					Error:     "invalid request: " + err.Error(),
+					Status:    http.StatusBadRequest,
+					RequestID: ctx.RequestID(),
 				})
 			}
 

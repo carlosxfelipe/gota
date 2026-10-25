@@ -113,16 +113,18 @@ func JWT(secret []byte, opts ...JWTOptions) MiddlewareFunc {
 			authHeader := ctx.Header("Authorization")
 			if authHeader == "" {
 				return ctx.Status(http.StatusUnauthorized).Json(ErrorResponse{
-					Error:  "Authorization header is required",
-					Status: http.StatusUnauthorized,
+					Error:     "Authorization header is required",
+					Status:    http.StatusUnauthorized,
+					RequestID: ctx.RequestID(),
 				})
 			}
 
 			parts := strings.SplitN(authHeader, " ", 2)
 			if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
 				return ctx.Status(http.StatusUnauthorized).Json(ErrorResponse{
-					Error:  "Invalid authorization format, expected Bearer <token>",
-					Status: http.StatusUnauthorized,
+					Error:     "Invalid authorization format, expected Bearer <token>",
+					Status:    http.StatusUnauthorized,
+					RequestID: ctx.RequestID(),
 				})
 			}
 
@@ -136,8 +138,9 @@ func JWT(secret []byte, opts ...JWTOptions) MiddlewareFunc {
 
 			if err := VerifyJWT(cfg.Secret, parts[1], claims); err != nil {
 				return ctx.Status(http.StatusUnauthorized).Json(ErrorResponse{
-					Error:  "Invalid or expired token: " + err.Error(),
-					Status: http.StatusUnauthorized,
+					Error:     "Invalid or expired token: " + err.Error(),
+					Status:    http.StatusUnauthorized,
+					RequestID: ctx.RequestID(),
 				})
 			}
 

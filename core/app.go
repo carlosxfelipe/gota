@@ -122,8 +122,9 @@ func New(cfg Config) *App {
 
 func defaultNotFoundHandler(ctx *Context) error {
 	return ctx.Status(http.StatusNotFound).Json(ErrorResponse{
-		Error:  fmt.Sprintf("route not found: %s %s", ctx.Request.Method, ctx.Request.URL.Path),
-		Status: http.StatusNotFound,
+		Error:     fmt.Sprintf("route not found: %s %s", ctx.Request.Method, ctx.Request.URL.Path),
+		Status:    http.StatusNotFound,
+		RequestID: ctx.RequestID(),
 	})
 }
 
@@ -150,8 +151,9 @@ func defaultErrorHandler(ctx *Context, err error) {
 	var httpErr *HTTPError
 	if errors.As(err, &httpErr) {
 		_ = ctx.Status(httpErr.Status).Json(ErrorResponse{
-			Error:  httpErr.Message,
-			Status: httpErr.Status,
+			Error:     httpErr.Message,
+			Status:    httpErr.Status,
+			RequestID: ctx.RequestID(),
 		})
 		return
 	}
@@ -162,10 +164,16 @@ func defaultErrorHandler(ctx *Context, err error) {
 		return
 	}
 
-	log.Printf("gota: handler error %s %s: %v", ctx.Request.Method, ctx.Request.URL.Path, err)
+	reqID := ctx.RequestID()
+	if reqID != "" {
+		log.Printf("gota: handler error %s %s [%s]: %v", ctx.Request.Method, ctx.Request.URL.Path, reqID, err)
+	} else {
+		log.Printf("gota: handler error %s %s: %v", ctx.Request.Method, ctx.Request.URL.Path, err)
+	}
 	_ = ctx.Status(http.StatusInternalServerError).Json(ErrorResponse{
-		Error:  "internal server error",
-		Status: http.StatusInternalServerError,
+		Error:     "internal server error",
+		Status:    http.StatusInternalServerError,
+		RequestID: reqID,
 	})
 }
 
@@ -274,10 +282,22 @@ func (a *App) registerDocs() {
 func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if err := recover(); err != nil {
-			log.Printf("gota: recovered panic in %s %s: %v\n%s", r.Method, r.URL.Path, err, debug.Stack())
+			reqID := w.Header().Get("X-Request-ID")
+			if reqID == "" {
+				reqID = r.Header.Get("X-Request-ID")
+			}
+			if reqID != "" {
+				log.Printf("gota: recovered panic in %s %s [%s]: %v\n%s", r.Method, r.URL.Path, reqID, err, debug.Stack())
+			} else {
+				log.Printf("gota: recovered panic in %s %s: %v\n%s", r.Method, r.URL.Path, err, debug.Stack())
+			}
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = w.Write([]byte(`{"error":"internal server error","status":500}` + "\n"))
+			if reqID != "" {
+				_, _ = w.Write([]byte(fmt.Sprintf(`{"error":"internal server error","status":500,"requestId":%q}`+"\n", reqID)))
+			} else {
+				_, _ = w.Write([]byte(`{"error":"internal server error","status":500}` + "\n"))
+			}
 		}
 	}()
 
@@ -295,8 +315,9 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fallback = func(ctx *Context) error {
 				ctx.SetHeader("Allow", strings.Join(allowed, ", "))
 				return ctx.Status(http.StatusMethodNotAllowed).Json(ErrorResponse{
-					Error:  fmt.Sprintf("method not allowed: %s %s", ctx.Request.Method, ctx.Request.URL.Path),
-					Status: http.StatusMethodNotAllowed,
+					Error:     fmt.Sprintf("method not allowed: %s %s", ctx.Request.Method, ctx.Request.URL.Path),
+					Status:    http.StatusMethodNotAllowed,
+					RequestID: ctx.RequestID(),
 				})
 			}
 		}

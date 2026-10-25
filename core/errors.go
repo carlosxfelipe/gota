@@ -7,8 +7,9 @@ import (
 
 // ErrorResponse encapsulates standard JSON error responses.
 type ErrorResponse struct {
-	Error  string `json:"error"`
-	Status int    `json:"status"`
+	Error     string `json:"error"`
+	Status    int    `json:"status"`
+	RequestID string `json:"requestId,omitempty"`
 }
 
 // HTTPError is a typed error containing an HTTP status code and message.
