@@ -15,7 +15,7 @@ func main() {
 		Title:        "Order Flow API",
 		Version:      "1.0.0",
 		Description:  "Order management API (REPR pattern).",
-		ScalarTheme:  gota.ThemeDefault,
+		ScalarTheme:  gota.ThemeFastify,
 		ScalarLayout: "classic",
 		MaxBodyBytes: 10 << 20, // 10MB request body protection
 	})

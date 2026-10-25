@@ -37,7 +37,7 @@ func main() {
 		Description:  "REST API built with Gota REPR pattern",
 		DocsURL:      "/docs",         // Default: /docs
 		OpenAPIURL:   "/openapi.json", // Default: /openapi.json
-		ScalarTheme:  gota.ThemeDefault, // Themes: ThemeDefault, ThemeMoon, ThemeLaserwave, etc.
+		ScalarTheme:  gota.ThemeFastify, // Default: ThemeFastify (Themes: ThemeFastify, ThemeDefault, ThemeMoon, etc.)
 		ScalarLayout: "classic",      // "classic" (Swagger-style) or "modern"
 		MaxBodyBytes: 10 << 20,       // 10MB limit (default: 10MB, negative to disable)
 		ReadTimeout:  30 * time.Second, // Default: 30s

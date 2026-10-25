@@ -144,16 +144,16 @@ Following the [REPR Design Pattern](https://deviq.com/design-patterns/repr-desig
 
 ## 📖 Interactive Documentation with Scalar
 
-Gota automatically renders the interactive **Scalar** interface at `/docs` using the **`classic` layout** by default:
+Gota automatically renders the interactive **Scalar** interface at `/docs` using the **`classic` layout** and **`fastify` theme** by default:
 
 ```go
 app := gota.New(gota.Config{
     Title:        "Store API",
     Version:      "1.0.0",
-    DocsURL:      "/docs",        // default
+    DocsURL:      "/docs",         // default
     OpenAPIURL:   "/openapi.json", // default
-    ScalarLayout: "classic",      // default: "classic" (or "modern")
-    ScalarTheme:  gota.ThemeLaserwave,
+    ScalarLayout: "classic",       // default
+    ScalarTheme:  gota.ThemeFastify, // default
     MaxBodyBytes: 10 << 20,       // default: 10MB (negative value to disable)
 })
 ```

@@ -49,7 +49,7 @@ func RenderScalarHTML(cfg ScalarConfig) (string, error) {
 
 	theme := cfg.Theme
 	if theme == "" {
-		theme = ThemeLaserwave
+		theme = ThemeFastify
 	}
 
 	layout := cfg.Layout

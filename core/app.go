@@ -88,7 +88,7 @@ func New(cfg Config) *App {
 		cfg.OpenAPIURL = "/openapi.json"
 	}
 	if cfg.ScalarTheme == "" {
-		cfg.ScalarTheme = ThemeLaserwave
+		cfg.ScalarTheme = ThemeFastify
 	}
 	if cfg.ScalarLayout == "" {
 		cfg.ScalarLayout = "classic"
