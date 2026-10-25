@@ -257,3 +257,63 @@ func TestAuthLifecycle(t *testing.T) {
 		t.Fatalf("expected login failure 400 after deletion, got %d", loginRes.Code)
 	}
 }
+
+func TestDocsAndRedirectRoutes(t *testing.T) {
+	app, _ := setupTestApp()
+	app.Get("/", func(ctx *gota.Context) error {
+		return ctx.Redirect("/docs")
+	}).Hidden()
+
+	// 1. Root redirect
+	resRoot := doRequest(app, http.MethodGet, "/", "", nil)
+	if resRoot.Code != http.StatusFound && resRoot.Code != http.StatusMovedPermanently {
+		t.Fatalf("expected redirect for /, got status %d", resRoot.Code)
+	}
+	if resRoot.Header().Get("Location") != "/docs" {
+		t.Errorf("expected Location /docs, got %s", resRoot.Header().Get("Location"))
+	}
+
+	// 2. Scalar UI HTML
+	resDocs := doRequest(app, http.MethodGet, "/docs", "", nil)
+	if resDocs.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /docs, got %d", resDocs.Code)
+	}
+	if !bytes.Contains(resDocs.Body.Bytes(), []byte("@scalar/api-reference")) {
+		t.Errorf("expected Scalar script in /docs output")
+	}
+
+	// 3. OpenAPI 3.1 JSON spec
+	resOpenAPI := doRequest(app, http.MethodGet, "/openapi.json", "", nil)
+	if resOpenAPI.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /openapi.json, got %d", resOpenAPI.Code)
+	}
+	var spec map[string]any
+	if err := json.Unmarshal(resOpenAPI.Body.Bytes(), &spec); err != nil {
+		t.Fatalf("failed to decode openapi.json: %v", err)
+	}
+	if spec["openapi"] != "3.1.0" {
+		t.Errorf("expected openapi 3.1.0, got %v", spec["openapi"])
+	}
+	paths, ok := spec["paths"].(map[string]any)
+	if !ok || len(paths) == 0 {
+		t.Fatal("expected non-empty paths in OpenAPI spec")
+	}
+	expectedEndpoints := []string{
+		"/api/auth/login",
+		"/api/auth/register",
+		"/api/auth/me",
+		"/api/auth/account",
+		"/api/orders",
+		"/api/orders/{orderId}",
+		"/api/orders/{orderId}/items",
+		"/api/orders/{orderId}/items/{itemId}",
+		"/api/orders/{orderId}/pay",
+		"/api/orders/{orderId}/ship",
+		"/api/orders/{orderId}/cancel",
+	}
+	for _, ep := range expectedEndpoints {
+		if _, exists := paths[ep]; !exists {
+			t.Errorf("expected endpoint %s in OpenAPI spec", ep)
+		}
+	}
+}
