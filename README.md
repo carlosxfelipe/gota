@@ -38,13 +38,15 @@ Inspired by the ergonomic fluency of [Kite](https://github.com/claudiovictors/ki
 
 ## 📦 Installation
 
-Initialize your Go module (if starting a new project) and install Gota:
+Initialize your Go module (if starting a new project):
 
 ```bash
-# 1. Initialize your module (replace 'myapp' with your project name)
 go mod init myapp
+```
 
-# 2. Add Gota to your dependencies
+Install Gota:
+
+```bash
 go get github.com/carlosxfelipe/gota
 ```
 
