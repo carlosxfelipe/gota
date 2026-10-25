@@ -23,13 +23,22 @@ type OrderItem struct {
 	Quantity    int     `json:"quantity" doc:"Quantity purchased" example:"2"`
 }
 
+// ShippingAddress represents the delivery address for an order with rich validation rules.
+type ShippingAddress struct {
+	Street  string `json:"street" doc:"Street address" example:"Av. Paulista, 1000" validate:"required,min=3"`
+	City    string `json:"city" doc:"City" example:"São Paulo" validate:"required"`
+	ZipCode string `json:"zipCode" doc:"8-digit postal code (CEP)" example:"01310100" validate:"required,len=8"`
+}
+
 // Order represents an order in the system.
 type Order struct {
-	ID           string      `json:"id" doc:"Unique order identifier" example:"b1a2c3d4-0001-4000-8000-000000000001"`
-	UserID       int         `json:"userId" doc:"ID of the user who owns the order" example:"2"`
-	CustomerName string      `json:"customerName" doc:"Customer name" example:"Carlos Felipe"`
-	Status       OrderStatus `json:"status" doc:"Current status of the order" example:"Created"`
-	Items        []OrderItem `json:"items" doc:"List of order items"`
+	ID              string           `json:"id" doc:"Unique order identifier" example:"b1a2c3d4-0001-4000-8000-000000000001"`
+	UserID          int              `json:"userId" doc:"ID of the user who owns the order" example:"2"`
+	CustomerName    string           `json:"customerName" doc:"Customer name" example:"Carlos Felipe"`
+	Status          OrderStatus      `json:"status" doc:"Current status of the order" example:"Created"`
+	Items           []OrderItem      `json:"items" doc:"List of order items"`
+	ShippingAddress *ShippingAddress `json:"shippingAddress,omitempty" doc:"Shipping address with nested validation"`
+	ReceiptFilename string           `json:"receiptFilename,omitempty" doc:"Attached receipt filename" example:"receipt.pdf"`
 }
 
 // TotalAmount calculates the sum of price * quantity for all items in the order.

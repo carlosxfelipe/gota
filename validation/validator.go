@@ -56,6 +56,37 @@ func isStdLibStruct(t reflect.Type) bool {
 	return strings.HasPrefix(pkg, "mime/") || strings.HasPrefix(pkg, "net/") || strings.HasPrefix(pkg, "io")
 }
 
+// isKnownRule reports whether a string represents a known validation rule name.
+func isKnownRule(s string) bool {
+	if s == "required" || s == "email" || s == "url" || s == "uuid" {
+		return true
+	}
+	parts := strings.SplitN(s, "=", 2)
+	switch parts[0] {
+	case "min", "max", "len", "oneof":
+		return true
+	default:
+		return false
+	}
+}
+
+// splitRules splits a validation tag into individual rules, preserving commas inside oneof parameters.
+func splitRules(tag string) []string {
+	var rules []string
+	for _, part := range strings.Split(tag, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if len(rules) > 0 && strings.HasPrefix(rules[len(rules)-1], "oneof=") && !isKnownRule(part) {
+			rules[len(rules)-1] += "," + part
+		} else {
+			rules = append(rules, part)
+		}
+	}
+	return rules
+}
+
 // CheckTags verifies that every `validate` tag on the struct type t only uses
 // known rules with valid parameters, recursing into nested structs and slices.
 // It is meant to run once at route registration so typos fail fast
@@ -90,7 +121,7 @@ func CheckTags(t reflect.Type) error {
 		}
 
 		if tag != "" {
-			for _, rule := range strings.Split(tag, ",") {
+			for _, rule := range splitRules(tag) {
 				rule = strings.TrimSpace(rule)
 				if rule == "" {
 					continue
@@ -224,7 +255,7 @@ func validateStructRecursive(ctx *core.Context, val reflect.Value, prefix string
 
 		validateTag := field.Tag.Get("validate")
 		if validateTag != "" {
-			rules := strings.Split(validateTag, ",")
+			rules := splitRules(validateTag)
 			for _, rule := range rules {
 				rule = strings.TrimSpace(rule)
 				if rule == "" {

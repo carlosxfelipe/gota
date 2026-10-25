@@ -203,7 +203,9 @@ gota/
 │   │       ├── pay_order.go
 │   │       ├── register.go
 │   │       ├── remove_item.go
-│   │       └── ship_order.go
+│   │       ├── ship_order.go
+│   │       ├── track_order.go
+│   │       └── upload_receipt.go
 │   ├── examples_test.go # End-to-end integration test suite
 │   └── main.go      # Application bootstrap
 ├── validation/      # Input validation engine and declarative rules
@@ -274,6 +276,8 @@ The showcase is pre-seeded with users for testing role-based workflows:
 | `POST`   | `/api/orders/:orderId/pay`           | Bearer | Pays order with items and transitions status to `Paid`          |
 | `POST`   | `/api/orders/:orderId/ship`          | Bearer | Ships paid order and transitions status to `Shipped`            |
 | `POST`   | `/api/orders/:orderId/cancel`        | Bearer | Cancels order unless it was already `Shipped`                   |
+| `POST`   | `/api/orders/:orderId/receipt`       | Bearer | Uploads a payment receipt or invoice document (`multipart/form-data`) |
+| `GET`    | `/api/orders/:orderId/track`         | Bearer | Streams real-time order updates via Server-Sent Events (`SSEStream`)  |
 
 ### 🟠 Testing with Bruno
 

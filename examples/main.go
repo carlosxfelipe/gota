@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"time"
 
 	"github.com/carlosxfelipe/gota"
 	"github.com/carlosxfelipe/gota/examples/data"
@@ -10,17 +11,21 @@ import (
 )
 
 func main() {
-	// Initializes Gota with built-in OpenAPI 3.1 and Scalar (classic layout by default)
+	// Initializes Gota with built-in OpenAPI 3.1, Scalar UI, and production timeouts
 	app := gota.New(gota.Config{
 		Title:        "Order Flow API",
 		Version:      "1.0.0",
-		Description:  "Order management API (REPR pattern).",
+		Description:  "Order management API with REPR pattern and zero external dependencies.",
 		ScalarTheme:  gota.ThemeFastify,
 		ScalarLayout: "classic",
 		MaxBodyBytes: 10 << 20, // 10MB request body protection
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	})
 
-	// Global Middlewares
+	// Global Middlewares (Observability, Resilience, Security)
+	app.Use(gota.RequestID())
 	app.Use(gota.Logger())
 	app.Use(gota.Recover())
 	app.Use(gota.CORS())
@@ -44,5 +49,8 @@ func main() {
 	auth.RegisterProtectedRoutes(protectedGroup, store)
 	orders.RegisterRoutes(protectedGroup, store)
 
-	log.Fatal(app.Listen(":3000"))
+	// Starts server with automatic graceful shutdown on SIGINT / SIGTERM
+	if err := app.ListenGraceful(":3000"); err != nil {
+		log.Printf("Server shutdown error: %v", err)
+	}
 }

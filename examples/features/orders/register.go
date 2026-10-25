@@ -56,4 +56,16 @@ func RegisterRoutes(target gota.RouterTarget, store *data.Store) {
 		Summary("Cancel order").
 		Description("Cancels an order unless it was already shipped.").
 		Tags("Orders")
+
+	// 9. Upload Order Receipt (Multipart Form File Upload)
+	gota.HandleEndpoint(target, http.MethodPost, "/api/orders/:orderId/receipt", &UploadReceiptEndpoint{Store: store}).
+		Summary("Upload order receipt").
+		Description("Attaches a payment receipt or invoice document (multipart/form-data) to the order.").
+		Tags("Orders")
+
+	// 10. Track Order (Server-Sent Events Streaming)
+	gota.HandleEndpoint(target, http.MethodGet, "/api/orders/:orderId/track", &TrackOrderEndpoint{Store: store}).
+		Summary("Track order status stream").
+		Description("Streams real-time Server-Sent Events (SSE) representing order processing stages.").
+		Tags("Orders")
 }

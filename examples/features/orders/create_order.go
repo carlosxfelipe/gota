@@ -9,7 +9,8 @@ import (
 
 // CreateOrderRequest defines the input payload to create a new order.
 type CreateOrderRequest struct {
-	CustomerName string `json:"customerName" doc:"Customer name" example:"Carlos Felipe" validate:"required,min=3"`
+	CustomerName    string                  `json:"customerName" doc:"Customer name" example:"Carlos Felipe" validate:"required,min=3"`
+	ShippingAddress *domain.ShippingAddress `json:"shippingAddress,omitempty" doc:"Optional delivery address with nested validation"`
 }
 
 // CreateOrderResponse defines the result of creating a new order.
@@ -31,11 +32,12 @@ func (e *CreateOrderEndpoint) Handle(ctx *gota.Context, req CreateOrderRequest) 
 	}
 
 	order := domain.Order{
-		ID:           domain.NewUUID(),
-		UserID:       userID,
-		CustomerName: req.CustomerName,
-		Status:       domain.StatusCreated,
-		Items:        []domain.OrderItem{},
+		ID:              domain.NewUUID(),
+		UserID:          userID,
+		CustomerName:    req.CustomerName,
+		Status:          domain.StatusCreated,
+		Items:           []domain.OrderItem{},
+		ShippingAddress: req.ShippingAddress,
 	}
 
 	e.Store.SaveOrder(order)

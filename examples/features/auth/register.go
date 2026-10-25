@@ -9,7 +9,7 @@ import (
 type RegisterRequest struct {
 	Username string `json:"username" doc:"Username" example:"novousuario" validate:"required,min=3"`
 	Password string `json:"password" doc:"User password" example:"senha123" validate:"required,min=6"`
-	Role     string `json:"role,omitempty" doc:"User role (defaults to Customer)" example:"Customer"`
+	Role     string `json:"role,omitempty" doc:"User role (Customer or Admin)" example:"Customer" validate:"oneof=Customer,Admin"`
 }
 
 // RegisterResponse returns the created user info along with an initial JWT token.

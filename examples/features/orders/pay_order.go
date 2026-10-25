@@ -6,9 +6,11 @@ import (
 	"github.com/carlosxfelipe/gota/examples/domain"
 )
 
-// PayOrderRequest defines the path parameter for payment.
+// PayOrderRequest defines the parameters and payload for payment.
 type PayOrderRequest struct {
-	OrderId string `param:"orderId" doc:"Order ID to be paid" example:"b1a2c3d4-0001-4000-8000-000000000001" validate:"required"`
+	OrderId  string `param:"orderId" doc:"Order ID to be paid" example:"b1a2c3d4-0001-4000-8000-000000000001" validate:"required"`
+	Method   string `json:"method,omitempty" doc:"Payment method" example:"pix" validate:"oneof=credit_card,pix,boleto"`
+	Currency string `json:"currency,omitempty" doc:"Payment currency" example:"BRL" validate:"oneof=BRL,USD,EUR"`
 }
 
 // PayOrderResponse defines the result of paying an order.
