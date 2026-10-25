@@ -47,9 +47,5 @@ func main() {
 	}))
 	orders.RegisterRoutes(ordersGroup, store)
 
-	log.Println("💧 Gota Order Flow server starting...")
-	log.Println("📖 Interactive Scalar docs (classic layout): http://localhost:3000/docs")
-	log.Println("📄 OpenAPI 3.1 specification: http://localhost:3000/openapi.json")
-
 	log.Fatal(app.Listen(":3000"))
 }

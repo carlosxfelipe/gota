@@ -297,9 +297,10 @@ func displayAddr(addr string) (listen string, display string) {
 // Listen starts an HTTP server listening on the specified address.
 func (a *App) Listen(addr string) error {
 	listen, display := displayAddr(addr)
-	log.Printf("💧 Gota server listening on %s", listen)
+	log.Printf("💧 Gota server listening on http://%s", display)
 	if !a.config.DisableDocs {
-		log.Printf("📖 Scalar docs available at http://%s%s (classic layout)", display, a.config.DocsURL)
+		log.Printf("📖 Scalar docs: http://%s%s", display, a.config.DocsURL)
+		log.Printf("📄 OpenAPI spec: http://%s%s", display, a.config.OpenAPIURL)
 	}
 	srv := &http.Server{
 		Addr:              listen,

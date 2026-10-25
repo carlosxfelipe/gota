@@ -90,9 +90,6 @@ func main() {
 		Summary("Register user").
 		Tags("Users")
 
-	log.Println("📖 Scalar UI (Classic Layout): http://localhost:3000/docs")
-	log.Println("📄 OpenAPI 3.1 Specification: http://localhost:3000/openapi.json")
-
 	log.Fatal(app.Listen(":3000"))
 }
 ```
