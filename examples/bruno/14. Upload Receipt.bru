@@ -1,0 +1,20 @@
+meta {
+  name: Upload Receipt
+  type: http
+  seq: 14
+}
+
+post {
+  url: http://localhost:3000/api/orders/{{orderId}}/receipt
+  body: multipart-form
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{jwt_token}}
+}
+
+body:multipart-form {
+  receipt: @file(receipt_sample.pdf)
+  notes: Comprovante de pagamento via Pix
+}

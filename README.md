@@ -262,20 +262,20 @@ The showcase is pre-seeded with users for testing role-based workflows:
 
 ### 🛣️ Showcase API Routes (Order Flow)
 
-| Method   | Endpoint                             | Auth   | Description                                                     |
-| -------- | ------------------------------------ | ------ | --------------------------------------------------------------- |
-| `POST`   | `/api/auth/register`                 | Public | Registers a new account and returns an initial JWT Bearer token |
-| `POST`   | `/api/auth/login`                    | Public | Authenticates credentials and returns a signed JWT Bearer token |
-| `GET`    | `/api/auth/me`                       | Bearer | Retrieves the profile of the currently authenticated user       |
-| `DELETE` | `/api/auth/account`                  | Bearer | Permanently deletes the authenticated user's account            |
-| `GET`    | `/api/orders`                        | Bearer | Lists orders (scoped by Customer, or full list for Admin)       |
-| `POST`   | `/api/orders`                        | Bearer | Creates a new order in `Created` state                          |
-| `GET`    | `/api/orders/:orderId`               | Bearer | Retrieves order details, items, and calculated `totalAmount`    |
-| `POST`   | `/api/orders/:orderId/items`         | Bearer | Adds a line item to an order still in `Created` state           |
-| `DELETE` | `/api/orders/:orderId/items/:itemId` | Bearer | Removes a line item from an open `Created` order                |
-| `POST`   | `/api/orders/:orderId/pay`           | Bearer | Pays order with items and transitions status to `Paid`          |
-| `POST`   | `/api/orders/:orderId/ship`          | Bearer | Ships paid order and transitions status to `Shipped`            |
-| `POST`   | `/api/orders/:orderId/cancel`        | Bearer | Cancels order unless it was already `Shipped`                   |
+| Method   | Endpoint                             | Auth   | Description                                                           |
+| -------- | ------------------------------------ | ------ | --------------------------------------------------------------------- |
+| `POST`   | `/api/auth/register`                 | Public | Registers a new account and returns an initial JWT Bearer token       |
+| `POST`   | `/api/auth/login`                    | Public | Authenticates credentials and returns a signed JWT Bearer token       |
+| `GET`    | `/api/auth/me`                       | Bearer | Retrieves the profile of the currently authenticated user             |
+| `DELETE` | `/api/auth/account`                  | Bearer | Permanently deletes the authenticated user's account                  |
+| `GET`    | `/api/orders`                        | Bearer | Lists orders (scoped by Customer, or full list for Admin)             |
+| `POST`   | `/api/orders`                        | Bearer | Creates a new order in `Created` state                                |
+| `GET`    | `/api/orders/:orderId`               | Bearer | Retrieves order details, items, and calculated `totalAmount`          |
+| `POST`   | `/api/orders/:orderId/items`         | Bearer | Adds a line item to an order still in `Created` state                 |
+| `DELETE` | `/api/orders/:orderId/items/:itemId` | Bearer | Removes a line item from an open `Created` order                      |
+| `POST`   | `/api/orders/:orderId/pay`           | Bearer | Pays order with items and transitions status to `Paid`                |
+| `POST`   | `/api/orders/:orderId/ship`          | Bearer | Ships paid order and transitions status to `Shipped`                  |
+| `POST`   | `/api/orders/:orderId/cancel`        | Bearer | Cancels order unless it was already `Shipped`                         |
 | `POST`   | `/api/orders/:orderId/receipt`       | Bearer | Uploads a payment receipt or invoice document (`multipart/form-data`) |
 | `GET`    | `/api/orders/:orderId/track`         | Bearer | Streams real-time order updates via Server-Sent Events (`SSEStream`)  |
 
@@ -283,9 +283,20 @@ The showcase is pre-seeded with users for testing role-based workflows:
 
 A pre-configured [Bruno](https://www.usebruno.com/) collection is ready to use in [`examples/bruno/`](examples/bruno):
 
+#### Desktop App (GUI):
+
 1. Open the `examples/bruno` folder in the Bruno app.
 2. Run **`10. Login (Customer)`**, **`9. Login (Admin)`**, or create a new user with **`11. Register User`** — the response script automatically stores `jwt_token`.
-3. Test your profile with **`12. Get Current User (Me)`**, delete your account with **`13. Delete Account`**, or execute any of the order lifecycle requests (**`Create Order`**, **`Add Item`**, **`Pay Order`**, **`Ship Order`**, etc.).
+3. Test your profile with **`12. Get Current User (Me)`**, delete your account with **`13. Delete Account`**, or execute any of the order lifecycle requests (**`Create Order`**, **`Add Item`**, **`Pay Order`**, **`Upload Receipt`**, **`Track Order (SSE)`**, **`Ship Order`**, etc.).
+
+#### Command Line (Bruno CLI):
+
+With the Gota server running (`go run examples/main.go`), execute the entire collection automatically via terminal:
+
+```bash
+cd examples/bruno
+npx -y @usebruno/cli run --env Local
+```
 
 ---
 

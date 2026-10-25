@@ -16,6 +16,17 @@ auth:bearer {
 
 body:json {
   {
-    "CustomerName": "Carlos"
+    "customerName": "Carlos Felipe",
+    "shippingAddress": {
+      "street": "Av. Paulista, 1000",
+      "city": "São Paulo",
+      "zipCode": "01310100"
+    }
+  }
+}
+
+script:post-response {
+  if (res.status === 200 && res.body.orderId) {
+    bru.setVar("orderId", res.body.orderId);
   }
 }

@@ -20,6 +20,6 @@ body:json {
 
 script:post-response {
   if (res.status === 200) {
-    bru.setEnvVar("jwt_token", res.body.token);
+    bru.setVar("jwt_token", res.body.token);
   }
 }

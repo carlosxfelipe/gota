@@ -25,6 +25,7 @@ package main
 
 import (
 	"log"
+	"time"
 
 	"github.com/carlosxfelipe/gota"
 )
@@ -131,6 +132,51 @@ func (r *CreateOrderRequest) Validate(ctx *core.Context) error {
 - **Explicit Status**: Chain `.Status(201)` on the route registration, or call `ctx.Status(http.StatusCreated)` inside the handler.
 - **Typed Streaming (`gota.StreamFunc`)**: Return a `gota.StreamFunc` to stream chunked bytes using `http.Flusher`. Documented in OpenAPI as `application/octet-stream`.
 - **Server-Sent Events (`gota.SSEStream`)**: Return a `gota.SSEStream` with an `<-chan gota.SSEvent` to stream live events. Documented in OpenAPI as `text/event-stream`.
+
+### 3.3 File Upload & Streaming Examples
+
+#### Multipart Form File Upload:
+
+```go
+type UploadReceiptRequest struct {
+	OrderID string                `param:"orderId" validate:"required"`
+	Receipt *multipart.FileHeader `form:"receipt" doc:"Receipt file (PDF/PNG)" validate:"required"`
+	Notes   string                `form:"notes,omitempty"`
+}
+
+type UploadReceiptResponse struct {
+	Filename string `json:"filename"`
+	Size     int64  `json:"size"`
+}
+
+gota.Post(app, "/api/orders/:orderId/receipt", func(ctx *gota.Context, req UploadReceiptRequest) (UploadReceiptResponse, error) {
+	return UploadReceiptResponse{
+		Filename: req.Receipt.Filename,
+		Size:     req.Receipt.Size,
+	}, nil
+}).
+	Summary("Upload order receipt").
+	Tags("Orders")
+```
+
+#### Server-Sent Events (SSE) Streaming:
+
+```go
+type TrackOrderRequest struct {
+	OrderID string `param:"orderId" validate:"required"`
+}
+
+gota.Get(app, "/api/orders/:orderId/track", func(ctx *gota.Context, req TrackOrderRequest) (gota.SSEStream, error) {
+	events := make(chan gota.SSEvent, 2)
+	events <- gota.SSEvent{Event: "order_status", Data: gota.Map{"status": "Processing"}}
+	events <- gota.SSEvent{Event: "order_status", Data: gota.Map{"status": "Completed"}}
+	close(events)
+
+	return gota.SSEStream{Events: events}, nil
+}).
+	Summary("Track order status stream").
+	Tags("Orders")
+```
 
 ---
 
@@ -344,3 +390,4 @@ app.Get("/healthz", func(ctx *gota.Context) error {
 6. ❌ **Do NOT omit error from handler returns**: Handlers must always return `(Res, error)`.
 7. ❌ **Do NOT import third-party packages for Gota features**: Gota has built-in CORS, JWT, Logger, Recover, Validator, Scalar UI, and OpenAPI generator without requiring any external module dependencies.
 8. ❌ **Do NOT mistype validation tags**: Gota validates all `validate` rules at startup; unknown rules or invalid arguments trigger an intentional `panic` during route registration.
+9. ❌ **Do NOT use `omitempty` in `validate:` tags**: Fields in Gota are optional by default unless marked with `required`. Adding `omitempty` is unnecessary and will be rejected by `CheckTags` as an unknown validation rule.
