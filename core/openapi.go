@@ -112,16 +112,18 @@ type OpenAPIComponents struct {
 
 // OpenAPIGenerator converts registered routes into an OpenAPI 3.1 schema.
 type OpenAPIGenerator struct {
-	config      Config
-	schemas     map[string]map[string]any
-	schemaTypes map[string]reflect.Type
+	config       Config
+	schemas      map[string]map[string]any
+	schemaTypes  map[string]reflect.Type
+	visitedTypes map[reflect.Type]bool
 }
 
 func NewOpenAPIGenerator(cfg Config) *OpenAPIGenerator {
 	return &OpenAPIGenerator{
-		config:      cfg,
-		schemas:     make(map[string]map[string]any),
-		schemaTypes: make(map[string]reflect.Type),
+		config:       cfg,
+		schemas:      make(map[string]map[string]any),
+		schemaTypes:  make(map[string]reflect.Type),
+		visitedTypes: make(map[reflect.Type]bool),
 	}
 }
 
@@ -311,39 +313,27 @@ func (g *OpenAPIGenerator) registerOrRef(model any) map[string]any {
 		return map[string]any{"type": "object"}
 	}
 
-	t := reflect.TypeOf(model)
-	if t.Kind() == reflect.Pointer {
-		t = t.Elem()
+	var t reflect.Type
+	if rt, ok := model.(reflect.Type); ok {
+		t = rt
+	} else {
+		t = reflect.TypeOf(model)
 	}
 
-	if t.Kind() == reflect.Slice && t.Elem().Kind() != reflect.Uint8 {
-		elemSchema := g.registerOrRef(reflect.New(t.Elem()).Elem().Interface())
-		return map[string]any{
-			"type":  "array",
-			"items": elemSchema,
-		}
-	}
-
-	if t.Kind() != reflect.Struct || t == reflect.TypeOf(time.Time{}) {
-		return g.schemaForType(t)
-	}
-
-	typeName := t.Name()
-	if typeName == "" || strings.HasPrefix(typeName, "struct {") {
-		return g.structToSchema(t)
-	}
-
-	typeName = g.schemaName(t)
-	if _, exists := g.schemas[typeName]; !exists {
-		g.schemas[typeName] = g.structToSchema(t)
-	}
-
-	return map[string]any{
-		"$ref": "#/components/schemas/" + typeName,
-	}
+	return g.schemaForType(t)
 }
 
 func (g *OpenAPIGenerator) structToSchema(t reflect.Type) map[string]any {
+	if g.visitedTypes[t] {
+		return map[string]any{
+			"type": "object",
+		}
+	}
+	g.visitedTypes[t] = true
+	defer func() {
+		delete(g.visitedTypes, t)
+	}()
+
 	properties := make(map[string]any)
 	var required []string
 
@@ -466,8 +456,23 @@ func (g *OpenAPIGenerator) schemaForType(t reflect.Type) map[string]any {
 			"additionalProperties": true,
 		}
 	case reflect.Struct:
+		typeName := t.Name()
+		if typeName == "" || strings.HasPrefix(typeName, "struct {") {
+			return g.structToSchema(t)
+		}
+
+		typeName = g.schemaName(t)
+		if _, exists := g.schemas[typeName]; !exists {
+			placeholder := map[string]any{"type": "object"}
+			g.schemas[typeName] = placeholder
+			built := g.structToSchema(t)
+			for k, v := range built {
+				placeholder[k] = v
+			}
+		}
+
 		return map[string]any{
-			"type": "object",
+			"$ref": "#/components/schemas/" + typeName,
 		}
 	default:
 		return map[string]any{"type": "string"}

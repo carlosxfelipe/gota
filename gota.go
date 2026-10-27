@@ -47,6 +47,9 @@ const (
 	DefaultScalarVersion = core.DefaultScalarVersion
 	DefaultScalarCDN     = core.DefaultScalarCDN
 	DefaultScalarSRI     = core.DefaultScalarSRI
+
+	DefaultMaxBodyBytes       = core.DefaultMaxBodyBytes
+	DefaultMaxMultipartMemory = core.DefaultMaxMultipartMemory
 )
 
 // New initializes and returns a new Gota application instance.

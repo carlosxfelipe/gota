@@ -30,6 +30,9 @@ type Context struct {
 	// trustProxy enables reading the client IP from X-Forwarded-For / X-Real-IP.
 	trustProxy bool
 
+	// maxMultipartMemory limits memory in bytes used to parse multipart forms.
+	maxMultipartMemory int64
+
 	mu    sync.RWMutex
 	store map[string]any
 }
@@ -40,10 +43,11 @@ func NewContext(w http.ResponseWriter, r *http.Request, params map[string]string
 		params = make(map[string]string)
 	}
 	return &Context{
-		ResponseWriter: w,
-		Request:        r,
-		Params:         params,
-		statusCode:     http.StatusOK,
+		ResponseWriter:     w,
+		Request:            r,
+		Params:             params,
+		statusCode:         http.StatusOK,
+		maxMultipartMemory: DefaultMaxMultipartMemory,
 	}
 }
 
@@ -157,10 +161,23 @@ func (c *Context) Form(name string) string {
 	return c.Request.FormValue(name)
 }
 
+// MaxMultipartMemory returns the maximum memory in bytes used to parse multipart forms.
+func (c *Context) MaxMultipartMemory() int64 {
+	if c.maxMultipartMemory <= 0 {
+		return DefaultMaxMultipartMemory
+	}
+	return c.maxMultipartMemory
+}
+
+// SetMaxMultipartMemory configures the maximum memory in bytes used by ParseMultipartForm for this context.
+func (c *Context) SetMaxMultipartMemory(limit int64) {
+	c.maxMultipartMemory = limit
+}
+
 // FormFile returns the first file for the provided form key.
 func (c *Context) FormFile(name string) (*multipart.FileHeader, error) {
 	if c.Request.MultipartForm == nil {
-		if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
+		if err := c.Request.ParseMultipartForm(c.MaxMultipartMemory()); err != nil {
 			return nil, err
 		}
 	}
@@ -175,7 +192,7 @@ func (c *Context) FormFile(name string) (*multipart.FileHeader, error) {
 // MultipartForm returns the parsed multipart form, including values and file headers.
 func (c *Context) MultipartForm() (*multipart.Form, error) {
 	if c.Request.MultipartForm == nil {
-		if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
+		if err := c.Request.ParseMultipartForm(c.MaxMultipartMemory()); err != nil {
 			return nil, err
 		}
 	}

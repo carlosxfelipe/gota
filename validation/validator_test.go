@@ -297,3 +297,75 @@ func TestValidatorSkipsUnexportedFields(t *testing.T) {
 		t.Fatalf("unexported field must be skipped, got %v", err)
 	}
 }
+
+type TestZeroAndFalseDTO struct {
+	// Primitives: 0 and false are zero-values in Go, so required rejects them.
+	PrimitiveBool bool `json:"primitiveBool" validate:"required"`
+	PrimitiveInt  int  `json:"primitiveInt" validate:"required"`
+
+	// Pointers: nil means absent (fails required), whereas *false and *0 are present (pass required).
+	PointerBool *bool `json:"pointerBool" validate:"required"`
+	PointerInt  *int  `json:"pointerInt" validate:"required"`
+}
+
+func TestValidatorRequired_PointersAllowZeroAndFalse(t *testing.T) {
+	ctx := &core.Context{}
+	f := false
+	zero := 0
+
+	// 1. Primitive false / 0 are rejected by required because they equal Go's zero-value.
+	invalidPrimitive := TestZeroAndFalseDTO{
+		PrimitiveBool: false,
+		PrimitiveInt:  0,
+		PointerBool:   &f,
+		PointerInt:    &zero,
+	}
+	err := ValidateStruct(ctx, &invalidPrimitive)
+	if err == nil {
+		t.Fatal("expected primitive false and 0 to fail required")
+	}
+	if len(err.Errors["primitiveBool"]) == 0 {
+		t.Errorf("expected error on primitiveBool")
+	}
+	if len(err.Errors["primitiveInt"]) == 0 {
+		t.Errorf("expected error on primitiveInt")
+	}
+	// But pointer fields with &false and &0 MUST pass!
+	if len(err.Errors["pointerBool"]) != 0 {
+		t.Errorf("pointer to false must pass required")
+	}
+	if len(err.Errors["pointerInt"]) != 0 {
+		t.Errorf("pointer to 0 must pass required")
+	}
+
+	// 2. Nil pointers are rejected by required because they indicate absence.
+	tVal := true
+	one := 1
+	invalidNilPointers := TestZeroAndFalseDTO{
+		PrimitiveBool: true,
+		PrimitiveInt:  1,
+		PointerBool:   nil,
+		PointerInt:    nil,
+	}
+	errNil := ValidateStruct(ctx, &invalidNilPointers)
+	if errNil == nil {
+		t.Fatal("expected nil pointers to fail required")
+	}
+	if len(errNil.Errors["pointerBool"]) == 0 {
+		t.Errorf("expected error on nil pointerBool")
+	}
+	if len(errNil.Errors["pointerInt"]) == 0 {
+		t.Errorf("expected error on nil pointerInt")
+	}
+
+	// 3. Fully valid with pointers.
+	valid := TestZeroAndFalseDTO{
+		PrimitiveBool: true,
+		PrimitiveInt:  1,
+		PointerBool:   &tVal,
+		PointerInt:    &one,
+	}
+	if err := ValidateStruct(ctx, &valid); err != nil {
+		t.Fatalf("expected valid DTO to pass, got: %v", err)
+	}
+}

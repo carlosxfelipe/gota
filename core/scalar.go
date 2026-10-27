@@ -96,10 +96,10 @@ func RenderScalarHTML(cfg ScalarConfig) (string, error) {
 	scriptURL := cfg.ScriptURL
 	sri := cfg.SRI
 	if scriptURL == "" {
+		// The default script is always paired with its own hash; a custom SRI only makes
+		// sense together with a custom ScriptURL (otherwise the browser would block it).
 		scriptURL = DefaultScalarCDN
-		if sri == "" {
-			sri = DefaultScalarSRI
-		}
+		sri = DefaultScalarSRI
 	}
 
 	var integrityAttr string

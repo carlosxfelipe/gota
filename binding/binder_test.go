@@ -168,3 +168,67 @@ func TestBinderJSONCannotSpoofNonBodyFields(t *testing.T) {
 		t.Errorf("expected Name=Alex, got %q", dto.Name)
 	}
 }
+
+type TestPointerBindDTO struct {
+	ID      *int    `param:"id"`
+	Limit   *int    `query:"limit"`
+	Active  *bool   `query:"active"`
+	Token   *string `header:"X-Token"`
+	Note    *string `form:"note"`
+	Missing *int    `query:"missing"`
+}
+
+func TestBinderPointerFields(t *testing.T) {
+	req := httptest.NewRequest("GET", "/x/0?limit=0&active=false", nil)
+	req.Header.Set("X-Token", "abc")
+	ctx := core.NewContext(httptest.NewRecorder(), req, map[string]string{"id": "0"})
+
+	var dto TestPointerBindDTO
+	if err := BindRequest(ctx, &dto); err != nil {
+		t.Fatalf("bind failed: %v", err)
+	}
+	if dto.ID == nil || *dto.ID != 0 {
+		t.Errorf("expected ID=&0, got %v", dto.ID)
+	}
+	if dto.Limit == nil || *dto.Limit != 0 {
+		t.Errorf("expected Limit=&0 (present, zero), got %v", dto.Limit)
+	}
+	if dto.Active == nil || *dto.Active {
+		t.Errorf("expected Active=&false (present), got %v", dto.Active)
+	}
+	if dto.Token == nil || *dto.Token != "abc" {
+		t.Errorf("expected Token=&abc, got %v", dto.Token)
+	}
+	if dto.Missing != nil {
+		t.Errorf("absent query param must stay nil, got %v", *dto.Missing)
+	}
+	if dto.Note != nil {
+		t.Errorf("absent form field must stay nil, got %v", *dto.Note)
+	}
+}
+
+func TestBinderPointerInvalidValue(t *testing.T) {
+	req := httptest.NewRequest("GET", "/x?limit=abc", nil)
+	ctx := core.NewContext(httptest.NewRecorder(), req, nil)
+	var dto TestPointerBindDTO
+	if err := BindRequest(ctx, &dto); err == nil {
+		t.Fatal("expected error for invalid *int query value")
+	}
+}
+
+func TestBinderPointerFormValue(t *testing.T) {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	_ = mw.WriteField("note", "")
+	_ = mw.Close()
+	req := httptest.NewRequest("POST", "/x", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	ctx := core.NewContext(httptest.NewRecorder(), req, nil)
+	var dto TestPointerBindDTO
+	if err := BindRequest(ctx, &dto); err != nil {
+		t.Fatalf("bind failed: %v", err)
+	}
+	if dto.Note == nil || *dto.Note != "" {
+		t.Errorf("expected Note=&\"\" (present, empty), got %v", dto.Note)
+	}
+}

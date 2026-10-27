@@ -42,7 +42,11 @@ func main() {
 		ScalarTheme:  gota.ThemeFastify, // Default: ThemeFastify (Themes: ThemeFastify, ThemeDefault, ThemeMoon, etc.)
 		ScalarLayout: "classic",      // "classic" (Swagger-style) or "modern"
 		MaxBodyBytes: 10 << 20,       // 10MB limit (default: 10MB, negative to disable)
+		MaxMultipartMemory: 32 << 20, // memory used to parse multipart forms (default: 32MB; larger parts spill to temp files)
 		TrustProxyHeaders: false,     // true ONLY behind a trusted reverse proxy: makes ctx.ClientIP() honor X-Forwarded-For/X-Real-IP
+		// Scalar UI script is pinned to a fixed version with SRI (gota.DefaultScalarCDN / DefaultScalarSRI).
+		// Override to self-host or use another CDN; set ScalarSRI together with ScalarScriptURL (empty SRI = no integrity check).
+		// ScalarScriptURL: "/static/scalar.js", ScalarSRI: "sha384-...",
 		ReadTimeout:  30 * time.Second, // Default: 30s
 		WriteTimeout: 30 * time.Second, // Default: 30s
 		IdleTimeout:  120 * time.Second, // Default: 120s
@@ -58,6 +62,21 @@ func main() {
 	log.Fatal(app.ListenGraceful(":3000"))
 }
 ```
+
+#### Scalar script (pinned version + SRI)
+
+The `/docs` page loads the Scalar UI script from a CDN. Gota pins it to a **fixed version with Subresource Integrity (SRI)** (`gota.DefaultScalarCDN`, `gota.DefaultScalarSRI`, version in `gota.DefaultScalarVersion`), so the browser refuses to run the script if its content ever differs (compromised CDN/package, unexpected upgrade). No configuration is needed.
+
+Override it only to self-host or use another CDN (e.g. air-gapped/corporate networks):
+
+```go
+app := gota.New(gota.Config{
+	ScalarScriptURL: "/static/scalar.js", // your own URL
+	ScalarSRI:       "sha384-...",        // optional; empty = no integrity check
+})
+```
+
+Rules: `ScalarSRI` only applies together with `ScalarScriptURL` (it is ignored otherwise, since a custom hash would not match the default script). Do not point `ScalarScriptURL` at a floating/`latest` URL while keeping an SRI hash: the hash would break on the next release.
 
 ---
 
@@ -86,9 +105,13 @@ Gota automatically binds fields from five sources using struct tags:
 | `format:"fmt"`      | OpenAPI schema format hint                       | `format:"date-time"`                             |
 | `default:"val"`     | OpenAPI default value                            | `default:"10"`                                   |
 
+#### Optional values and pointer fields:
+
+Pointer fields (`*int`, `*bool`, `*string`, ...) are supported for **every** source (`param`, `query`, `header`, `form`, `json`). When the value is absent the pointer stays `nil`; when present it points to the parsed value, even if it is `0`, `false` or `""`. Use pointers whenever "not provided" must be distinguished from a zero value (e.g. `Limit *int \`query:"limit"\`` so `?limit=0` differs from no `limit`). Non-pointer fields cannot make that distinction.
+
 #### Supported `validate` Rules:
 
-- `required`: Field must not be zero-value, empty string, or nil file header.
+- `required`: Field must not be zero-value, empty string, or nil. On Go primitives (`int`, `bool`), `0` and `false` are zero-values and fail `required`; use pointer types (`*int`, `*bool`) with `required` when `0` or `false` are valid and distinguish presence from absence.
 - `min=N`: Minimum string length (runes), slice length, or numeric value (e.g. `min=3`, `min=10.5`).
 - `max=N`: Maximum string length (runes), slice length, or numeric value (e.g. `max=100`).
 - `len=N`: Exact string rune count or slice/array/map item count (e.g. `len=6`).
@@ -102,6 +125,10 @@ Gota automatically binds fields from five sources using struct tags:
 Nested struct fields (e.g. `Address AddressDTO`) and slices of structs (e.g. `Items []ItemDTO`) are validated automatically and recursively. Validation errors preserve property hierarchy paths (e.g. `address.street` and `items[0].price`).
 
 > **Fail-Fast Tag Verification**: Gota verifies all `validate` tags at startup during route registration via `validation.CheckTags`, recursing into nested structs. If a rule name is misspelled (e.g. `validate:"requried"`) or a numeric parameter is missing or invalid (e.g. `min=abc`), Gota **panics immediately** upon registration to prevent silent security regressions.
+
+#### OpenAPI schemas for nested types:
+
+Nested struct fields are documented with their full `properties`: named structs (e.g. `Address AddressDTO`, `Items []ItemDTO`) become entries in `components.schemas` referenced via `$ref`, and anonymous inline structs are expanded in place. Self-referencing and mutually recursive types (e.g. `type Node struct { Next *Node }`) are supported and resolved through `$ref`, without infinite recursion. Two types with the same name in different packages get distinct schemas (the second is prefixed with its package name).
 
 #### Custom Struct Validation (`Validator` & `ContextValidator`):
 
@@ -160,6 +187,8 @@ gota.Post(app, "/api/orders/:orderId/receipt", func(ctx *gota.Context, req Uploa
 	Summary("Upload order receipt").
 	Tags("Orders")
 ```
+
+> **Memory limit**: `Config.MaxMultipartMemory` (default 32 MiB) bounds how much of a multipart form is kept in memory while parsing; the rest goes to temporary files. Lower it in memory-constrained containers. It applies to the automatic binder and to `ctx.FormFile` / `ctx.MultipartForm`. `ctx.MaxMultipartMemory()` reads the effective value; `ctx.SetMaxMultipartMemory(n)` only has effect if called (e.g. in a middleware) **before** the form is first parsed, which for typed endpoints happens before the handler runs. The total body size is still capped by `MaxBodyBytes`.
 
 #### Server-Sent Events (SSE) Streaming:
 

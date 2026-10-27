@@ -40,6 +40,9 @@ type Config struct {
 	// Use a negative value to disable the limit.
 	MaxBodyBytes int64 `json:"maxBodyBytes,omitempty"`
 
+	// MaxMultipartMemory limits memory in bytes used to parse multipart forms. Default: 32 MiB.
+	MaxMultipartMemory int64 `json:"maxMultipartMemory,omitempty"`
+
 	// TrustProxyHeaders makes Context.ClientIP honor X-Forwarded-For and X-Real-IP.
 	// Enable it only when the app runs behind a trusted reverse proxy that sets them.
 	TrustProxyHeaders bool `json:"trustProxyHeaders,omitempty"`
@@ -59,11 +62,12 @@ type Config struct {
 
 // Default constants for server configuration.
 const (
-	DefaultMaxBodyBytes      int64         = 10 << 20
-	DefaultReadHeaderTimeout time.Duration = 10 * time.Second
-	DefaultReadTimeout       time.Duration = 30 * time.Second
-	DefaultWriteTimeout      time.Duration = 30 * time.Second
-	DefaultIdleTimeout       time.Duration = 120 * time.Second
+	DefaultMaxBodyBytes       int64         = 10 << 20
+	DefaultMaxMultipartMemory int64         = 32 << 20
+	DefaultReadHeaderTimeout  time.Duration = 10 * time.Second
+	DefaultReadTimeout        time.Duration = 30 * time.Second
+	DefaultWriteTimeout       time.Duration = 30 * time.Second
+	DefaultIdleTimeout        time.Duration = 120 * time.Second
 )
 
 // App represents the core engine of Gota, managing routing, middlewares, and docs.
@@ -106,6 +110,9 @@ func New(cfg Config) *App {
 	}
 	if cfg.MaxBodyBytes == 0 {
 		cfg.MaxBodyBytes = DefaultMaxBodyBytes
+	}
+	if cfg.MaxMultipartMemory == 0 {
+		cfg.MaxMultipartMemory = DefaultMaxMultipartMemory
 	}
 	if cfg.ReadTimeout == 0 {
 		cfg.ReadTimeout = DefaultReadTimeout
@@ -337,6 +344,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	handler, params, ok := a.router.Match(r.Method, r.URL.Path)
 	ctx := NewContext(w, r, params)
 	ctx.trustProxy = a.config.TrustProxyHeaders
+	ctx.maxMultipartMemory = a.config.MaxMultipartMemory
 
 	if !ok {
 		// A path that exists for other methods is 405, otherwise 404.

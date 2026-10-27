@@ -149,3 +149,38 @@ func TestDocsRoutesGetGlobalMiddleware(t *testing.T) {
 		t.Error("expected global middleware to apply to docs routes")
 	}
 }
+
+func TestApp_MaxMultipartMemory(t *testing.T) {
+	// 1. Default config
+	appDefault := New(Config{})
+	if appDefault.config.MaxMultipartMemory != DefaultMaxMultipartMemory {
+		t.Errorf("expected default MaxMultipartMemory %d, got %d", DefaultMaxMultipartMemory, appDefault.config.MaxMultipartMemory)
+	}
+
+	// 2. Custom config propagated to Context
+	customLimit := int64(4 << 20)
+	appCustom := New(Config{MaxMultipartMemory: customLimit, DisableDocs: true})
+	var observedLimit int64
+	appCustom.Post("/upload", func(ctx *Context) error {
+		observedLimit = ctx.MaxMultipartMemory()
+		return ctx.Send("ok")
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/upload", nil)
+	appCustom.ServeHTTP(rec, req)
+
+	if observedLimit != customLimit {
+		t.Errorf("expected context MaxMultipartMemory %d, got %d", customLimit, observedLimit)
+	}
+
+	// 3. Standalone context default & setter
+	ctx := NewContext(rec, req, nil)
+	if ctx.MaxMultipartMemory() != DefaultMaxMultipartMemory {
+		t.Errorf("expected standalone context default %d, got %d", DefaultMaxMultipartMemory, ctx.MaxMultipartMemory())
+	}
+	ctx.SetMaxMultipartMemory(8 << 20)
+	if ctx.MaxMultipartMemory() != 8<<20 {
+		t.Errorf("expected updated context memory %d, got %d", 8<<20, ctx.MaxMultipartMemory())
+	}
+}

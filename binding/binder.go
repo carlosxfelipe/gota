@@ -37,7 +37,7 @@ func BindRequest(ctx *core.Context, target any) error {
 
 	// 1. If multipart/form-data, parse multipart form
 	if isMultipart {
-		if err := ctx.Request.ParseMultipartForm(32 << 20); err != nil {
+		if err := ctx.Request.ParseMultipartForm(ctx.MaxMultipartMemory()); err != nil {
 			return fmt.Errorf("failed to parse multipart form: %w", err)
 		}
 	} else if isFormUrlencoded {
@@ -184,6 +184,14 @@ func clearNonBodyFields(elem reflect.Value) {
 // setFieldValue sets a reflect.Value from a string representation.
 func setFieldValue(val reflect.Value, strVal string) error {
 	switch val.Kind() {
+	case reflect.Pointer:
+		// Pointer fields (*int, *bool, ...) stay nil when the value is absent, so 0/false
+		// can be told apart from "not provided".
+		elem := reflect.New(val.Type().Elem())
+		if err := setFieldValue(elem.Elem(), strVal); err != nil {
+			return err
+		}
+		val.Set(elem)
 	case reflect.String:
 		val.SetString(strVal)
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:

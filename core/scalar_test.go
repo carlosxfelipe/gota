@@ -72,3 +72,19 @@ func TestRenderScalarHTML_CustomScriptAndSRI(t *testing.T) {
 		t.Errorf("expected custom SRI in output")
 	}
 }
+
+func TestRenderScalarHTML_SRIWithoutScriptURLIsIgnored(t *testing.T) {
+	out, err := RenderScalarHTML(ScalarConfig{
+		SpecURL: "/openapi.json",
+		SRI:     "sha384-wronghashforthedefaultscript",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "wronghashforthedefaultscript") {
+		t.Errorf("custom SRI must not be applied to the default script: %s", out)
+	}
+	if !strings.Contains(out, `integrity="`+DefaultScalarSRI+`"`) {
+		t.Errorf("expected default SRI to stay in place")
+	}
+}

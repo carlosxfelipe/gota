@@ -155,6 +155,16 @@ app := gota.New(gota.Config{
     ScalarLayout: "classic",       // default
     ScalarTheme:  gota.ThemeFastify, // default
     MaxBodyBytes: 10 << 20,       // default: 10MB (negative value to disable)
+    MaxMultipartMemory: 32 << 20, // default: 32MB kept in memory while parsing multipart forms
+})
+```
+
+The Scalar script is loaded from a **pinned version with Subresource Integrity (SRI)** (`gota.DefaultScalarCDN` / `gota.DefaultScalarSRI`), so a compromised or updated CDN package cannot change what runs in your docs page. To self-host or use another CDN (e.g. air-gapped environments), set `ScalarScriptURL` and, optionally, `ScalarSRI`:
+
+```go
+app := gota.New(gota.Config{
+    ScalarScriptURL: "/static/scalar.js",
+    ScalarSRI:       "sha384-...", // leave empty to skip the integrity check
 })
 ```
 
@@ -169,6 +179,7 @@ app := gota.New(gota.Config{
 - **Binding**: fields tagged `param`, `query`, `header` or `form` (without an explicit `json` tag) are never filled from the JSON body.
 - **DTO design**: never expose privilege fields (e.g. `role`, `isAdmin`) in public request DTOs; assign them on the server.
 - **Streaming**: `SSEStream` / `StreamFunc` responses lift the server `WriteTimeout` and stop when the client disconnects.
+- **Validation `required`**: Go primitives (`int`, `bool`, etc.) have zero-values (`0`, `false`) that `required` treats as missing. When `0` or `false` are valid inputs that must be distinguished from omitted fields, use pointer types (e.g. `*int`, `*bool`) with `validate:"required"`: `nil` means absent, while `*0` / `*false` pass validation. Pointers are supported for every source (`json`, `param`, `query`, `header`, `form`); an absent query/header/form value leaves the pointer `nil`.
 
 ---
 
