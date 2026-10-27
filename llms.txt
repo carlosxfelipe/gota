@@ -372,6 +372,28 @@ gota.Get(protected, "/profile", func(ctx *gota.Context, _ gota.Empty) (UserRespo
 })
 ```
 
+### 6.3 Asymmetric RSA Tokens (RS256)
+
+Gota also natively supports RS256 with zero external dependencies (using Go stdlib `crypto/rsa` and `crypto/x509`):
+
+```go
+// Parse keys from PEM:
+privKey, err := gota.ParseRSAPrivateKeyFromPEM(privPEMBytes)
+pubKey, err := gota.ParseRSAPublicKeyFromPEM(pubPEMBytes)
+
+// Sign with RSA private key (optional keyID for 'kid' header):
+token, err := gota.SignJWTRSA(privKey, claims, "key-2026-1")
+
+// Verify with RSA public key:
+err = gota.VerifyJWTRSA(pubKey, tokenString, &claims)
+
+// RS256 Middleware:
+protected.Use(gota.JWTRSA(pubKey, gota.JWTOptions{
+	RequireExp: true,
+	ClaimsFactory: func() any { return &CustomClaims{} },
+}))
+```
+
 ---
 
 ## 7. Fluent Route Metadata Chaining

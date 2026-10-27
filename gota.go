@@ -1,6 +1,8 @@
 package gota
 
 import (
+	"crypto/rsa"
+
 	"github.com/carlosxfelipe/gota/core"
 	"github.com/carlosxfelipe/gota/validation"
 )
@@ -21,10 +23,18 @@ type (
 	ValidationError   = validation.ValidationError
 	ScalarTheme       = core.ScalarTheme
 	CORSOptions       = core.CORSOptions
+	JWTAlgorithm      = core.JWTAlgorithm
+	JWTHeader         = core.JWTHeader
 	JWTOptions        = core.JWTOptions
 	OpenAPISpec       = core.OpenAPISpec
 	RequestIDOptions  = core.RequestIDOptions
 	SlogLoggerOptions = core.SlogLoggerOptions
+)
+
+// Re-exported JWT Algorithm Constants
+const (
+	JWTAlgorithmHS256 = core.JWTAlgorithmHS256
+	JWTAlgorithmRS256 = core.JWTAlgorithmRS256
 )
 
 // Re-exported Scalar Theme Constants
@@ -97,12 +107,36 @@ func JWT(secret []byte, opts ...JWTOptions) MiddlewareFunc {
 	return core.JWT(secret, opts...)
 }
 
+func JWTRSA(publicKey *rsa.PublicKey, opts ...JWTOptions) MiddlewareFunc {
+	return core.JWTRSA(publicKey, opts...)
+}
+
 func SignJWT(secret []byte, payload any) (string, error) {
 	return core.SignJWT(secret, payload)
 }
 
+func SignJWTRSA(privateKey *rsa.PrivateKey, payload any, keyID ...string) (string, error) {
+	return core.SignJWTRSA(privateKey, payload, keyID...)
+}
+
 func VerifyJWT(secret []byte, tokenString string, target any) error {
 	return core.VerifyJWT(secret, tokenString, target)
+}
+
+func VerifyJWTRSA(publicKey *rsa.PublicKey, tokenString string, target any) error {
+	return core.VerifyJWTRSA(publicKey, tokenString, target)
+}
+
+func ParseJWTHeader(tokenString string) (JWTHeader, error) {
+	return core.ParseJWTHeader(tokenString)
+}
+
+func ParseRSAPrivateKeyFromPEM(pemBytes []byte) (*rsa.PrivateKey, error) {
+	return core.ParseRSAPrivateKeyFromPEM(pemBytes)
+}
+
+func ParseRSAPublicKeyFromPEM(pemBytes []byte) (*rsa.PublicKey, error) {
+	return core.ParseRSAPublicKeyFromPEM(pemBytes)
 }
 
 func JWTClaims[T any](ctx *Context, key ...string) (T, bool) {

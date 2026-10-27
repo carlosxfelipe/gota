@@ -1,8 +1,7 @@
 package core
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
+	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -11,10 +10,31 @@ import (
 	"time"
 )
 
+// JWTAlgorithm represents a supported JWT signing algorithm.
+type JWTAlgorithm string
+
+const (
+	// JWTAlgorithmHS256 represents HMAC-SHA256 symmetric signing (default).
+	JWTAlgorithmHS256 JWTAlgorithm = "HS256"
+	// JWTAlgorithmRS256 represents RSA-SHA256 asymmetric signing.
+	JWTAlgorithmRS256 JWTAlgorithm = "RS256"
+)
+
+// JWTHeader represents the decoded JOSE header of a JWT.
+type JWTHeader struct {
+	Alg string `json:"alg"`
+	Typ string `json:"typ"`
+	Kid string `json:"kid,omitempty"`
+}
+
 // JWTOptions provides configuration for JWT generation, verification, and middleware.
 type JWTOptions struct {
-	// Secret is the HMAC signing secret (required).
+	// Algorithm specifies the JWT signing algorithm (default: JWTAlgorithmHS256).
+	Algorithm JWTAlgorithm
+	// Secret is the HMAC signing secret (required when using HS256).
 	Secret []byte
+	// RSAPublicKey is the RSA public key used to verify RS256 tokens.
+	RSAPublicKey *rsa.PublicKey
 	// ContextKey is the key under which claims will be stored in Context (default: "user").
 	ContextKey string
 	// ClaimsFactory is an optional factory function returning a pointer to a custom claims struct.
@@ -25,56 +45,47 @@ type JWTOptions struct {
 	RequireExp bool
 }
 
-func hmacSHA256(secret []byte, data string) []byte {
-	h := hmac.New(sha256.New, secret)
-	h.Write([]byte(data))
-	return h.Sum(nil)
-}
-
-// SignJWT creates an HMAC-SHA256 (HS256) signed JWT token string from the given payload.
-func SignJWT(secret []byte, payload any) (string, error) {
-	if len(secret) == 0 {
-		return "", errors.New("jwt: secret key cannot be empty")
+// ParseJWTHeader decodes and returns the header from a JWT string without verifying its signature.
+func ParseJWTHeader(tokenString string) (JWTHeader, error) {
+	parts := strings.Split(tokenString, ".")
+	if len(parts) != 3 {
+		return JWTHeader{}, errors.New("invalid token format")
 	}
-
-	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
-
-	payloadBytes, err := json.Marshal(payload)
+	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		return "", err
+		return JWTHeader{}, errors.New("invalid token format")
 	}
-	payloadEncoded := base64.RawURLEncoding.EncodeToString(payloadBytes)
-
-	signingInput := header + "." + payloadEncoded
-	signature := base64.RawURLEncoding.EncodeToString(hmacSHA256(secret, signingInput))
-
-	return signingInput + "." + signature, nil
+	var hdr JWTHeader
+	if err := json.Unmarshal(headerBytes, &hdr); err != nil {
+		return JWTHeader{}, errors.New("invalid token format")
+	}
+	return hdr, nil
 }
 
-// VerifyJWT validates an HMAC-SHA256 JWT token against the given secret and decodes its payload into target.
-// If target is nil, only the format, signature, and expiration are verified.
-// Numeric 'exp' and 'nbf' claims (integer or fractional) are enforced when present;
-// a present but malformed 'exp' or 'nbf' rejects the token.
-func VerifyJWT(secret []byte, tokenString string, target any) error {
-	return verifyJWT(secret, tokenString, target, false)
-}
-
-func verifyJWT(secret []byte, tokenString string, target any, requireExp bool) error {
-	if len(secret) == 0 {
-		return errors.New("jwt: secret key cannot be empty")
-	}
-
+func verifyToken(tokenString string, target any, requireExp bool, expectedAlg string, verifySig func(signingInput string, sig []byte) error) error {
 	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 {
 		return errors.New("invalid token format")
 	}
 
-	signingInput := parts[0] + "." + parts[1]
-	expectedSig := hmacSHA256(secret, signingInput)
+	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return errors.New("invalid token format")
+	}
+
+	var hdr JWTHeader
+	if err := json.Unmarshal(headerBytes, &hdr); err != nil || hdr.Alg != expectedAlg {
+		return errors.New("invalid token signature")
+	}
 
 	actualSig, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil || !hmac.Equal(expectedSig, actualSig) {
+	if err != nil {
 		return errors.New("invalid token signature")
+	}
+
+	signingInput := parts[0] + "." + parts[1]
+	if err := verifySig(signingInput, actualSig); err != nil {
+		return err
 	}
 
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
@@ -111,25 +122,29 @@ func verifyJWT(secret []byte, tokenString string, target any, requireExp bool) e
 	return nil
 }
 
-// JWT returns a built-in middleware for Bearer token validation using HMAC-SHA256 (HS256).
-// On successful authentication, decoded claims are stored in Context under ContextKey (default: "user"),
-// and the raw token is stored under "jwt_token".
-func JWT(secret []byte, opts ...JWTOptions) MiddlewareFunc {
-	cfg := JWTOptions{
-		Secret:     secret,
-		ContextKey: "user",
+func applyJWTOptions(dst *JWTOptions, src JWTOptions) {
+	if src.Algorithm != "" {
+		dst.Algorithm = src.Algorithm
 	}
-	if len(opts) > 0 {
-		if len(opts[0].Secret) > 0 {
-			cfg.Secret = opts[0].Secret
-		}
-		if opts[0].ContextKey != "" {
-			cfg.ContextKey = opts[0].ContextKey
-		}
-		cfg.ClaimsFactory = opts[0].ClaimsFactory
-		cfg.RequireExp = opts[0].RequireExp
+	if len(src.Secret) > 0 {
+		dst.Secret = src.Secret
 	}
+	if src.RSAPublicKey != nil {
+		dst.RSAPublicKey = src.RSAPublicKey
+		if dst.Algorithm == "" {
+			dst.Algorithm = JWTAlgorithmRS256
+		}
+	}
+	if src.ContextKey != "" {
+		dst.ContextKey = src.ContextKey
+	}
+	if src.ClaimsFactory != nil {
+		dst.ClaimsFactory = src.ClaimsFactory
+	}
+	dst.RequireExp = src.RequireExp
+}
 
+func createJWTMiddleware(cfg JWTOptions) MiddlewareFunc {
 	return func(next HandlerFunc) HandlerFunc {
 		return func(ctx *Context) error {
 			unauthorized := func(msg string) error {
@@ -158,7 +173,17 @@ func JWT(secret []byte, opts ...JWTOptions) MiddlewareFunc {
 				claims = &m
 			}
 
-			if err := verifyJWT(cfg.Secret, parts[1], claims, cfg.RequireExp); err != nil {
+			var verifyErr error
+			if cfg.Algorithm == JWTAlgorithmRS256 || cfg.RSAPublicKey != nil {
+				if cfg.RSAPublicKey == nil {
+					return unauthorized("Invalid or expired token")
+				}
+				verifyErr = verifyJWTRSA(cfg.RSAPublicKey, parts[1], claims, cfg.RequireExp)
+			} else {
+				verifyErr = verifyJWT(cfg.Secret, parts[1], claims, cfg.RequireExp)
+			}
+
+			if verifyErr != nil {
 				return unauthorized("Invalid or expired token")
 			}
 
