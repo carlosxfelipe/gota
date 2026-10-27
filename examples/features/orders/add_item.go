@@ -8,10 +8,10 @@ import (
 
 // AddItemRequest defines the route parameters and body to add an item to an order.
 type AddItemRequest struct {
-	OrderId     string  `param:"orderId" doc:"Order ID" example:"b1a2c3d4-0001-4000-8000-000000000001" validate:"required"`
-	ProductName string  `json:"productName" doc:"Item name" example:"Coca-Cola Can 350ml" validate:"required"`
-	Price       float64 `json:"price" doc:"Unit price" example:"5.50" validate:"required,min=0.01,nowarn"`
-	Quantity    int     `json:"quantity" doc:"Quantity" example:"2" validate:"required,min=1,nowarn"`
+	OrderId     string  `param:"orderId" doc:"Order ID" example:"b1a2c3d4-0001-4000-8000-000000000001" validate:"required" msg:"Order ID is required"`
+	ProductName string  `json:"productName" doc:"Item name" example:"Coca-Cola Can 350ml" validate:"required" msg:"Product name is required"`
+	Price       float64 `json:"price" doc:"Unit price" example:"5.50" validate:"required,min=0.01,nowarn" msg:"required:Price is required|min:Price must be at least 0.01"`
+	Quantity    int     `json:"quantity" doc:"Quantity" example:"2" validate:"required,min=1,nowarn" msg:"required:Quantity is required|min:Quantity must be at least 1"`
 }
 
 // AddItemResponse defines the result of adding an item.

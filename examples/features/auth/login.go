@@ -7,8 +7,8 @@ import (
 
 // LoginRequest defines credentials for authentication.
 type LoginRequest struct {
-	Username string `json:"username" doc:"Username" example:"carlos" validate:"required"`
-	Password string `json:"password" doc:"User password" example:"carlos123" validate:"required"`
+	Username string `json:"username" doc:"Username" example:"carlos" validate:"required" msg:"Username is required"`
+	Password string `json:"password" doc:"User password" example:"carlos123" validate:"required" msg:"Password is required"`
 }
 
 // LoginResponse returns the generated JWT Bearer token.

@@ -25,9 +25,9 @@ type OrderItem struct {
 
 // ShippingAddress represents the delivery address for an order with rich validation rules.
 type ShippingAddress struct {
-	Street  string `json:"street" doc:"Street address" example:"Av. Paulista, 1000" validate:"required,min=3"`
-	City    string `json:"city" doc:"City" example:"São Paulo" validate:"required"`
-	ZipCode string `json:"zipCode" doc:"8-digit postal code (CEP)" example:"01310100" validate:"required,len=8"`
+	Street  string `json:"street" doc:"Street address" example:"Av. Paulista, 1000" validate:"required,min=3" msg:"required:Street address is required|min:Street address must be at least 3 characters"`
+	City    string `json:"city" doc:"City" example:"São Paulo" validate:"required" msg:"City is required"`
+	ZipCode string `json:"zipCode" doc:"8-digit postal code (CEP)" example:"01310100" validate:"required,len=8" msg:"required:Postal code is required|len:Postal code must be exactly 8 digits"`
 }
 
 // Order represents an order in the system.

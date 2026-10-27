@@ -9,7 +9,7 @@ import (
 
 // CreateOrderRequest defines the input payload to create a new order.
 type CreateOrderRequest struct {
-	CustomerName    string                  `json:"customerName" doc:"Customer name" example:"Carlos Felipe" validate:"required,min=3"`
+	CustomerName    string                  `json:"customerName" doc:"Customer name" example:"Carlos Felipe" validate:"required,min=3" msg:"required:Customer name is required|min:Customer name must be at least 3 characters"`
 	ShippingAddress *domain.ShippingAddress `json:"shippingAddress,omitempty" doc:"Optional delivery address with nested validation"`
 }
 
