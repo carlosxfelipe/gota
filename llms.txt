@@ -124,9 +124,12 @@ Pointer fields (`*int`, `*bool`, `*string`, ...) are supported for **every** sou
 
 Nested struct fields (e.g. `Address AddressDTO`) and slices of structs (e.g. `Items []ItemDTO`) are validated automatically and recursively. Validation errors preserve property hierarchy paths (e.g. `address.street` and `items[0].price`).
 
-> **Fail-Fast Tag Verification**: Gota verifies all `validate` tags at startup during route registration via `validation.CheckTags`, recursing into nested structs. If a rule name is misspelled (e.g. `validate:"requried"`) or a numeric parameter is missing or invalid (e.g. `min=abc`), Gota **panics immediately** upon registration to prevent silent security regressions.
+> **Fail-Fast Tag Verification & Suggestions**: Gota verifies all tags at startup during route registration via `validation.CheckTags`, recursing into nested structs. If an unsupported tag is used (e.g. `path:"id"` instead of `param:"id"`), a rule name is misspelled (e.g. `validate:"requried"`), or a numeric parameter is missing or invalid (e.g. `min=abc`), Gota **panics immediately** upon registration with actionable hints (e.g. suggesting `min` for `gte`, `max` for `lte`, etc.) to prevent silent bugs.
 >
-> **Primitive `required` Warnings**: In Go, primitive non-pointer types (`bool`, `int`, etc.) default to zero values (`false`, `0`). Tagging them with `validate:"required"` causes explicit zero values to fail validation. Gota logs a startup warning advising the use of pointers (`*bool`, `*int`). You can silence this per-field with `validate:"...,nowarn"` or `gota:"nowarn"`, or globally via `Config.SilenceTagWarnings: true` / `gota.SilenceTagWarnings(true)`.
+> **Startup Tag Warnings**: Gota logs non-fatal warnings at startup to educate developers and AI agents on common anti-patterns:
+> 1. `validate:"omitempty"`: In Gota, fields are optional by default unless marked with `required`. `omitempty` is accepted as a no-op but logs a reminder warning that it can be safely removed.
+> 2. Primitive `required`: In Go, primitive non-pointer types (`bool`, `int`, etc.) default to zero values (`false`, `0`), which fail `validate:"required"`. Gota logs a warning advising pointers (`*bool`, `*int`).
+> Warnings can be silenced per-field with `validate:"...,nowarn"` or `gota:"nowarn"`, or globally via `Config.SilenceTagWarnings: true` / `gota.SilenceTagWarnings(true)`.
 
 #### OpenAPI schemas for nested types:
 
@@ -471,8 +474,8 @@ app.Get("/healthz", func(ctx *gota.Context) error {
 5. ❌ **Do NOT manually encode JSON responses in REPR**: Return the response struct directly: `return MyResponse{...}, nil`.
 6. ❌ **Do NOT omit error from handler returns**: Handlers must always return `(Res, error)`.
 7. ❌ **Do NOT import third-party packages for Gota features**: Gota has built-in CORS, JWT, Logger, Recover, Validator, Scalar UI, and OpenAPI generator without requiring any external module dependencies.
-8. ❌ **Do NOT mistype validation tags**: Gota validates all `validate` rules at startup; unknown rules or invalid arguments trigger an intentional `panic` during route registration.
-9. ❌ **Do NOT use `omitempty` in `validate:` tags**: Fields in Gota are optional by default unless marked with `required`. Adding `omitempty` is unnecessary and will be rejected by `CheckTags` as an unknown validation rule.
+8. ❌ **Do NOT mistype validation tags**: Gota validates all struct and `validate` tags at startup; unknown rules, invalid arguments, or anti-patterns like `path:"id"` trigger an intentional `panic` with corrective hints during route registration.
+9. ❌ **Do NOT use `omitempty` in `validate:` tags**: Fields in Gota are optional by default unless marked with `required`. Adding `omitempty` is redundant; Gota accepts it as a no-op but logs a startup warning reminding you that it can be safely removed.
 
 ---
 

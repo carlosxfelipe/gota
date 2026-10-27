@@ -102,9 +102,9 @@ type EndpointFunc[Req any, Res any] func(ctx *core.Context, req Req) (Res, error
 func WrapEndpoint[Req any, Res any](handler EndpointFunc[Req, Res], defaultStatus int) (core.HandlerFunc, *core.RouteDoc) {
 	reqType := reflect.TypeOf(*new(Req))
 
-	// Fail fast: a typo in a `validate` tag would otherwise silently disable the rule.
+	// Fail fast: an invalid tag (e.g. unknown rule, min=abc, path:"id") would cause silent bugs.
 	if err := validation.CheckTags(reqType); err != nil {
-		panic(fmt.Sprintf("gota: invalid validate tag in %T: %v", *new(Req), err))
+		panic(fmt.Sprintf("gota: invalid tag in %T: %v", *new(Req), err))
 	}
 
 	// Emit non-fatal warnings for suspicious validation rules (e.g. required on primitive bool/numbers).

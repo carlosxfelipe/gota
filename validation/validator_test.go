@@ -96,6 +96,7 @@ func TestCheckTags(t *testing.T) {
 		C string `validate:"url"`
 		D string `validate:"uuid"`
 		E string
+		F string `validate:"omitempty,min=2"`
 	}
 	if err := CheckTags(reflect.TypeOf(valid{})); err != nil {
 		t.Errorf("expected valid tags to pass, got: %v", err)
@@ -107,37 +108,103 @@ func TestCheckTags(t *testing.T) {
 		t.Errorf("expected non-struct to be ignored, got: %v", err)
 	}
 
-	cases := map[string]any{
-		"unknown rule": struct {
-			A string `validate:"requird"`
-		}{},
-		"min without param": struct {
-			A string `validate:"min"`
-		}{},
-		"min bad param": struct {
-			A string `validate:"min=abc"`
-		}{},
-		"max bad param": struct {
-			A int `validate:"max=x"`
-		}{},
-		"len without param": struct {
-			A string `validate:"len"`
-		}{},
-		"len bad param": struct {
-			A string `validate:"len=xyz"`
-		}{},
-		"oneof without param": struct {
-			A string `validate:"oneof"`
-		}{},
-		"nested struct bad tag": struct {
-			Child struct {
-				A string `validate:"bad_rule"`
-			}
-		}{},
+	cases := map[string]struct {
+		val any
+		err string
+	}{
+		"unknown rule": {
+			val: struct {
+				A string `validate:"requird"`
+			}{},
+			err: "unknown validation rule",
+		},
+		"path tag anti-pattern": {
+			val: struct {
+				ID string `path:"id"`
+			}{},
+			err: "tag `path:\"id\"` is not supported; Gota uses `param:\"id\"`",
+		},
+		"gte suggestion": {
+			val: struct {
+				A int `validate:"gte=5"`
+			}{},
+			err: "unknown validation rule 'gte'; did you mean 'min=5'?",
+		},
+		"lte suggestion": {
+			val: struct {
+				A int `validate:"lte=10"`
+			}{},
+			err: "unknown validation rule 'lte'; did you mean 'max=10'?",
+		},
+		"length suggestion": {
+			val: struct {
+				A string `validate:"length=5"`
+			}{},
+			err: "unknown validation rule 'length'; did you mean 'len=5'?",
+		},
+		"dive suggestion": {
+			val: struct {
+				A []string `validate:"dive"`
+			}{},
+			err: "rule 'dive' is not needed",
+		},
+		"isdefault suggestion": {
+			val: struct {
+				A string `validate:"isdefault"`
+			}{},
+			err: "rule 'isdefault' is not needed",
+		},
+		"min without param": {
+			val: struct {
+				A string `validate:"min"`
+			}{},
+			err: "requires a numeric parameter",
+		},
+		"min bad param": {
+			val: struct {
+				A string `validate:"min=abc"`
+			}{},
+			err: "invalid numeric parameter",
+		},
+		"max bad param": {
+			val: struct {
+				A int `validate:"max=x"`
+			}{},
+			err: "invalid numeric parameter",
+		},
+		"len without param": {
+			val: struct {
+				A string `validate:"len"`
+			}{},
+			err: "requires an integer parameter",
+		},
+		"len bad param": {
+			val: struct {
+				A string `validate:"len=xyz"`
+			}{},
+			err: "invalid integer parameter",
+		},
+		"oneof without param": {
+			val: struct {
+				A string `validate:"oneof"`
+			}{},
+			err: "requires at least one choice",
+		},
+		"nested struct bad tag": {
+			val: struct {
+				Child struct {
+					A string `validate:"bad_rule"`
+				}
+			}{},
+			err: "unknown validation rule",
+		},
 	}
-	for name, v := range cases {
-		if err := CheckTags(reflect.TypeOf(v)); err == nil {
-			t.Errorf("%s: expected error", name)
+	for name, tc := range cases {
+		err := CheckTags(reflect.TypeOf(tc.val))
+		if err == nil {
+			t.Errorf("%s: expected error, got nil", name)
+		} else if !strings.Contains(err.Error(), tc.err) {
+			t.Errorf("%s: expected error containing %q, got %q", name, tc.err, err.Error())
 		}
 	}
 }
@@ -468,17 +535,20 @@ type WarningTestDTO struct {
 	ValidStr  string  `json:"validStr" validate:"required"`
 	Silenced1 bool    `json:"silenced1" validate:"required,nowarn"`
 	Silenced2 int     `json:"silenced2" validate:"required" gota:"nowarn"`
+	WithOmit  string  `json:"withOmit" validate:"omitempty,min=3"`
+	OmitSil   string  `json:"omitSil" validate:"omitempty,min=3,nowarn"`
 }
 
 func TestCheckTagWarnings(t *testing.T) {
 	warnings := CheckTagWarnings(reflect.TypeOf(WarningTestDTO{}))
-	if len(warnings) != 3 {
-		t.Fatalf("expected exactly 3 warnings for active, count, price, got %d: %v", len(warnings), warnings)
+	if len(warnings) != 4 {
+		t.Fatalf("expected exactly 4 warnings for active, count, price, withOmit, got %d: %v", len(warnings), warnings)
 	}
 
 	foundActive := false
 	foundCount := false
 	foundPrice := false
+	foundOmit := false
 	for _, w := range warnings {
 		if strings.Contains(w, `"active"`) && strings.Contains(w, "non-pointer bool") {
 			foundActive = true
@@ -489,8 +559,11 @@ func TestCheckTagWarnings(t *testing.T) {
 		if strings.Contains(w, `"price"`) && strings.Contains(w, "non-pointer float64") {
 			foundPrice = true
 		}
+		if strings.Contains(w, `"withOmit"`) && strings.Contains(w, `validate:"omitempty"`) {
+			foundOmit = true
+		}
 	}
-	if !foundActive || !foundCount || !foundPrice {
+	if !foundActive || !foundCount || !foundPrice || !foundOmit {
 		t.Errorf("missing expected field warning: %v", warnings)
 	}
 }

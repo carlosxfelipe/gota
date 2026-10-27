@@ -122,6 +122,11 @@ func checkTagsInternal(t reflect.Type, seen map[reflect.Type]bool) error {
 		tag := field.Tag.Get("validate")
 		name := fieldIdentifier(field)
 
+		// Anti-pattern check: using path:"id" instead of param:"id"
+		if pathTag := field.Tag.Get("path"); pathTag != "" {
+			return fmt.Errorf("field %q: tag `path:%q` is not supported; Gota uses `param:%q` for route path parameters", name, pathTag, pathTag)
+		}
+
 		if tag != "" {
 			for _, rule := range splitRules(tag) {
 				rule = strings.TrimSpace(rule)
@@ -130,7 +135,7 @@ func checkTagsInternal(t reflect.Type, seen map[reflect.Type]bool) error {
 				}
 				parts := strings.SplitN(rule, "=", 2)
 				switch parts[0] {
-				case "required", "email", "url", "uuid", "nowarn":
+				case "required", "email", "url", "uuid", "nowarn", "omitempty":
 				case "min", "max":
 					if len(parts) < 2 || parts[1] == "" {
 						return fmt.Errorf("field %q: rule %q requires a numeric parameter (e.g. %s=3)", name, parts[0], parts[0])
@@ -150,7 +155,44 @@ func checkTagsInternal(t reflect.Type, seen map[reflect.Type]bool) error {
 						return fmt.Errorf("field %q: rule %q requires at least one choice (e.g. oneof=a,b,c)", name, parts[0])
 					}
 				default:
-					return fmt.Errorf("field %q: unknown validation rule %q", name, parts[0])
+					switch parts[0] {
+					case "gte":
+						param := ""
+						if len(parts) > 1 {
+							param = "=" + parts[1]
+						}
+						return fmt.Errorf("field %q: unknown validation rule 'gte'; did you mean 'min%s'?", name, param)
+					case "gt":
+						param := ""
+						if len(parts) > 1 {
+							param = "=" + parts[1]
+						}
+						return fmt.Errorf("field %q: unknown validation rule 'gt'; did you mean 'min%s'?", name, param)
+					case "lte":
+						param := ""
+						if len(parts) > 1 {
+							param = "=" + parts[1]
+						}
+						return fmt.Errorf("field %q: unknown validation rule 'lte'; did you mean 'max%s'?", name, param)
+					case "lt":
+						param := ""
+						if len(parts) > 1 {
+							param = "=" + parts[1]
+						}
+						return fmt.Errorf("field %q: unknown validation rule 'lt'; did you mean 'max%s'?", name, param)
+					case "length":
+						param := ""
+						if len(parts) > 1 {
+							param = "=" + parts[1]
+						}
+						return fmt.Errorf("field %q: unknown validation rule 'length'; did you mean 'len%s'?", name, param)
+					case "dive":
+						return fmt.Errorf("field %q: rule 'dive' is not needed; Gota automatically validates nested structs and slices", name)
+					case "isdefault":
+						return fmt.Errorf("field %q: rule 'isdefault' is not needed; in Gota, fields are optional by default", name)
+					default:
+						return fmt.Errorf("field %q: unknown validation rule %q", name, parts[0])
+					}
 				}
 			}
 		}
@@ -208,6 +250,7 @@ func checkTagWarningsInternal(t reflect.Type, seen map[reflect.Type]bool, shadow
 		suppressed := field.Tag.Get("gota") == "nowarn"
 		tag := field.Tag.Get("validate")
 		hasRequired := false
+		hasOmitempty := false
 		if tag != "" {
 			for _, rule := range splitRules(tag) {
 				rule = strings.TrimSpace(rule)
@@ -217,14 +260,26 @@ func checkTagWarningsInternal(t reflect.Type, seen map[reflect.Type]bool, shadow
 				if rule == "required" {
 					hasRequired = true
 				}
+				if rule == "omitempty" {
+					hasOmitempty = true
+				}
 			}
 		}
 
+		typeName := t.Name()
+		if typeName == "" {
+			typeName = "struct"
+		}
+
+		if hasOmitempty && !suppressed {
+			msg := fmt.Sprintf(
+				"field %q in %s uses validate:\"omitempty\"; in Gota, all fields are optional by default unless marked with \"required\". You can safely remove it.",
+				name, typeName,
+			)
+			*warnings = append(*warnings, msg)
+		}
+
 		if hasRequired && !suppressed && isPrimitiveRejectingZero(field.Type) {
-			typeName := t.Name()
-			if typeName == "" {
-				typeName = "struct"
-			}
 			kindStr := field.Type.String()
 			zeroVal := zeroValueString(field.Type)
 			msg := fmt.Sprintf(
@@ -490,7 +545,7 @@ func applyValidationRule(field string, val reflect.Value, rule string) string {
 	}
 
 	switch ruleName {
-	case "nowarn":
+	case "nowarn", "omitempty":
 		return ""
 	case "required":
 		if isZero(val) {

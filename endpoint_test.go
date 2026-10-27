@@ -439,8 +439,14 @@ func TestInvalidValidateTagPanicsAtRegistration(t *testing.T) {
 	type badParamRequest struct {
 		Name string `json:"name" validate:"min=abc"`
 	}
+	type pathTagRequest struct {
+		ID string `path:"id"`
+	}
+	type omitemptyRequest struct {
+		Name string `json:"name" validate:"omitempty,min=3"`
+	}
 
-	mustPanic := func(name string, fn func()) {
+	mustPanic := func(name string, fieldName string, fn func()) {
 		t.Helper()
 		defer func() {
 			r := recover()
@@ -448,20 +454,26 @@ func TestInvalidValidateTagPanicsAtRegistration(t *testing.T) {
 				t.Errorf("%s: expected panic at registration", name)
 				return
 			}
-			if msg := fmt.Sprint(r); !strings.Contains(msg, "name") {
-				t.Errorf("%s: expected panic message to mention the field, got %q", name, msg)
+			if msg := fmt.Sprint(r); !strings.Contains(msg, fieldName) {
+				t.Errorf("%s: expected panic message to mention the field %q, got %q", name, fieldName, msg)
 			}
 		}()
 		fn()
 	}
 
 	app := New(Config{DisableDocs: true})
-	mustPanic("unknown rule", func() {
+	mustPanic("unknown rule", "name", func() {
 		Post(app, "/a", func(ctx *Context, req typoRequest) (Empty, error) { return Empty{}, nil })
 	})
-	mustPanic("invalid rule parameter", func() {
+	mustPanic("invalid rule parameter", "name", func() {
 		Post(app, "/b", func(ctx *Context, req badParamRequest) (Empty, error) { return Empty{}, nil })
 	})
+	mustPanic("path tag anti-pattern", "ID", func() {
+		Post(app, "/c/:id", func(ctx *Context, req pathTagRequest) (Empty, error) { return Empty{}, nil })
+	})
+
+	// omitempty must NOT panic at registration
+	Post(app, "/d", func(ctx *Context, req omitemptyRequest) (Empty, error) { return Empty{}, nil })
 }
 
 func TestPostCanExplicitlySet201Created(t *testing.T) {
