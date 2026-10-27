@@ -11,6 +11,11 @@ import (
 	"github.com/carlosxfelipe/gota/core"
 )
 
+var (
+	fileHeaderPtrType   = reflect.TypeOf((*multipart.FileHeader)(nil))
+	fileHeaderSliceType = reflect.TypeOf(([]*multipart.FileHeader)(nil))
+)
+
 // BindRequest binds parameters, query strings, headers, form data, and JSON body from core.Context to a target pointer.
 func BindRequest(ctx *core.Context, target any) error {
 	val := reflect.ValueOf(target)
@@ -71,7 +76,10 @@ func bindFieldsInternal(ctx *core.Context, elem reflect.Value, shadowed map[stri
 	typ := elem.Type()
 
 	// Collect tags declared on this struct itself so they shadow promoted fields.
-	localTags := make(map[string]bool)
+	mergedShadowed := make(map[string]bool, len(shadowed)+typ.NumField()*4)
+	for k, v := range shadowed {
+		mergedShadowed[k] = v
+	}
 	for i := 0; i < typ.NumField(); i++ {
 		f := typ.Field(i)
 		if _, ok := core.EmbeddedStructType(f); ok {
@@ -79,17 +87,9 @@ func bindFieldsInternal(ctx *core.Context, elem reflect.Value, shadowed map[stri
 		}
 		for _, tag := range [...]string{"param", "query", "header", "form"} {
 			if v := f.Tag.Get(tag); v != "" {
-				localTags[tag+":"+v] = true
+				mergedShadowed[tag+":"+v] = true
 			}
 		}
-	}
-
-	mergedShadowed := make(map[string]bool, len(shadowed)+len(localTags))
-	for k, v := range shadowed {
-		mergedShadowed[k] = v
-	}
-	for k, v := range localTags {
-		mergedShadowed[k] = v
 	}
 
 	for i := 0; i < typ.NumField(); i++ {
@@ -119,22 +119,10 @@ func bindFieldsInternal(ctx *core.Context, elem reflect.Value, shadowed map[stri
 		// Check query tag: query:"search"
 		if queryTag := field.Tag.Get("query"); queryTag != "" && !shadowed["query:"+queryTag] {
 			if queryVals, ok := ctx.Request.URL.Query()[queryTag]; ok && len(queryVals) > 0 {
-				if fieldVal.Kind() == reflect.Slice && fieldVal.Type().Elem().Kind() == reflect.String {
-					if len(queryVals) > 1 {
-						sliceVal := reflect.MakeSlice(fieldVal.Type(), len(queryVals), len(queryVals))
-						for idx, qv := range queryVals {
-							sliceVal.Index(idx).SetString(qv)
-						}
-						fieldVal.Set(sliceVal)
-					} else {
-						if err := setFieldValue(fieldVal, queryVals[0]); err != nil {
-							return fmt.Errorf("invalid query param %q: %w", queryTag, err)
-						}
-					}
-				} else {
-					if err := setFieldValue(fieldVal, queryVals[0]); err != nil {
-						return fmt.Errorf("invalid query param %q: %w", queryTag, err)
-					}
+				if len(queryVals) > 1 && isStringSlice(fieldVal) {
+					setStringSlice(fieldVal, queryVals, false)
+				} else if err := setFieldValue(fieldVal, queryVals[0]); err != nil {
+					return fmt.Errorf("invalid query param %q: %w", queryTag, err)
 				}
 			}
 		}
@@ -150,49 +138,26 @@ func bindFieldsInternal(ctx *core.Context, elem reflect.Value, shadowed map[stri
 
 		// Check form tag: form:"avatar" or form:"name"
 		if formTag := field.Tag.Get("form"); formTag != "" && !shadowed["form:"+formTag] {
-			// Single file: *multipart.FileHeader
-			if field.Type == reflect.TypeOf((*multipart.FileHeader)(nil)) {
-				if ctx.Request.MultipartForm != nil && ctx.Request.MultipartForm.File != nil {
-					if files := ctx.Request.MultipartForm.File[formTag]; len(files) > 0 {
-						fieldVal.Set(reflect.ValueOf(files[0]))
-					}
+			if field.Type == fileHeaderPtrType {
+				if files := getFormFiles(ctx, formTag); len(files) > 0 {
+					fieldVal.Set(reflect.ValueOf(files[0]))
 				}
 				continue
 			}
-
-			// Multiple files: []*multipart.FileHeader
-			if field.Type == reflect.TypeOf(([]*multipart.FileHeader)(nil)) {
-				if ctx.Request.MultipartForm != nil && ctx.Request.MultipartForm.File != nil {
-					if files := ctx.Request.MultipartForm.File[formTag]; len(files) > 0 {
-						fieldVal.Set(reflect.ValueOf(files))
-					}
+			if field.Type == fileHeaderSliceType {
+				if files := getFormFiles(ctx, formTag); len(files) > 0 {
+					fieldVal.Set(reflect.ValueOf(files))
 				}
 				continue
 			}
 
 			// Text / primitive form values
-			var formVals []string
-			if ctx.Request.MultipartForm != nil && ctx.Request.MultipartForm.Value != nil {
-				formVals = ctx.Request.MultipartForm.Value[formTag]
-			}
-			if len(formVals) == 0 && ctx.Request.PostForm != nil {
-				formVals = ctx.Request.PostForm[formTag]
-			}
-			if len(formVals) == 0 && ctx.Request.Form != nil {
-				formVals = ctx.Request.Form[formTag]
-			}
-
+			formVals := getFormValues(ctx, formTag)
 			if len(formVals) > 0 {
-				if fieldVal.Kind() == reflect.Slice && fieldVal.Type().Elem().Kind() == reflect.String {
-					sliceVal := reflect.MakeSlice(fieldVal.Type(), len(formVals), len(formVals))
-					for idx, v := range formVals {
-						sliceVal.Index(idx).SetString(v)
-					}
-					fieldVal.Set(sliceVal)
-				} else {
-					if err := setFieldValue(fieldVal, formVals[0]); err != nil {
-						return fmt.Errorf("invalid form field %q: %w", formTag, err)
-					}
+				if isStringSlice(fieldVal) {
+					setStringSlice(fieldVal, formVals, false)
+				} else if err := setFieldValue(fieldVal, formVals[0]); err != nil {
+					return fmt.Errorf("invalid form field %q: %w", formTag, err)
 				}
 			}
 		}
@@ -300,16 +265,51 @@ func setFieldValue(val reflect.Value, strVal string) error {
 			return fmt.Errorf("invalid boolean value %q", strVal)
 		}
 	case reflect.Slice:
-		if val.Type().Elem().Kind() == reflect.String {
+		if isStringSlice(val) {
 			parts := strings.Split(strVal, ",")
-			sliceVal := reflect.MakeSlice(val.Type(), len(parts), len(parts))
-			for i, p := range parts {
-				sliceVal.Index(i).SetString(strings.TrimSpace(p))
-			}
-			val.Set(sliceVal)
+			setStringSlice(val, parts, true)
 		}
 	default:
 		return fmt.Errorf("unsupported field type: %s", val.Kind())
+	}
+	return nil
+}
+
+func isStringSlice(val reflect.Value) bool {
+	return val.Kind() == reflect.Slice && val.Type().Elem().Kind() == reflect.String
+}
+
+func setStringSlice(val reflect.Value, items []string, trim bool) {
+	sliceVal := reflect.MakeSlice(val.Type(), len(items), len(items))
+	for i, item := range items {
+		if trim {
+			item = strings.TrimSpace(item)
+		}
+		sliceVal.Index(i).SetString(item)
+	}
+	val.Set(sliceVal)
+}
+
+func getFormFiles(ctx *core.Context, tag string) []*multipart.FileHeader {
+	if ctx.Request.MultipartForm != nil && ctx.Request.MultipartForm.File != nil {
+		return ctx.Request.MultipartForm.File[tag]
+	}
+	return nil
+}
+
+func getFormValues(ctx *core.Context, key string) []string {
+	if ctx.Request.MultipartForm != nil && ctx.Request.MultipartForm.Value != nil {
+		if vals := ctx.Request.MultipartForm.Value[key]; len(vals) > 0 {
+			return vals
+		}
+	}
+	if ctx.Request.PostForm != nil {
+		if vals := ctx.Request.PostForm[key]; len(vals) > 0 {
+			return vals
+		}
+	}
+	if ctx.Request.Form != nil {
+		return ctx.Request.Form[key]
 	}
 	return nil
 }
