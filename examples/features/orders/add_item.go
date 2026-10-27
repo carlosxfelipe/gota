@@ -10,8 +10,8 @@ import (
 type AddItemRequest struct {
 	OrderId     string  `param:"orderId" doc:"Order ID" example:"b1a2c3d4-0001-4000-8000-000000000001" validate:"required"`
 	ProductName string  `json:"productName" doc:"Item name" example:"Coca-Cola Can 350ml" validate:"required"`
-	Price       float64 `json:"price" doc:"Unit price" example:"5.50" validate:"required,min=0.01"`
-	Quantity    int     `json:"quantity" doc:"Quantity" example:"2" validate:"required,min=1"`
+	Price       float64 `json:"price" doc:"Unit price" example:"5.50" validate:"required,min=0.01,nowarn"`
+	Quantity    int     `json:"quantity" doc:"Quantity" example:"2" validate:"required,min=1,nowarn"`
 }
 
 // AddItemResponse defines the result of adding an item.

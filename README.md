@@ -20,19 +20,13 @@ Inspired by the ergonomic fluency of [Kite](https://github.com/claudiovictors/ki
 
 ---
 
-## ✨ Features
+## ✨ Key Features
 
-- **First-Class REPR Design Pattern**:
-  - **Request**: Automatic binding across route params, query string, headers, form fields, and JSON body (`param`, `query`, `header`, `form`, `json` tags) with file uploads (`*multipart.FileHeader`), nested structs, and declarative validation (`validate:"required,min=3,oneof=A,B,len=N"` or custom `Validator` interface).
-  - **Endpoint**: Single Responsibility Principle per operation, implemented via generic functions (`gota.Get`, `gota.Post`, etc.) or struct-based endpoints (`Endpoint[Req, Res]`).
-  - **Response**: Automatic JSON serialization (200 OK by default, 204 No Content for `gota.Empty`, or `.Status(code)`), and native typed streaming (`gota.StreamFunc`, `gota.SSEStream`).
-- **Zero External Dependencies**: Built entirely on top of the Go standard library (`net/http`, `reflect`, `encoding/json`, `log/slog`, `sync`, etc.).
-- **Interactive Documentation with Scalar**:
-  - Automatic **OpenAPI 3.1** specification generation derived directly from `Req` and `Res` types (including `multipart/form-data` binary file uploads).
-  - Interactive **Scalar** UI served at `/docs` with **`classic` layout enabled by default** (Swagger-style).
-  - OpenAPI 3.1 JSON schema exposed at `/openapi.json` out of the box.
-- **Fluent Kite-like Ergonomics**: Chainable metadata methods (`.Summary()`, `.Description()`, `.Tags()`, `.Middleware()`), route groups (`app.Group("/api")`), and path parameter matching (`:id`, `*wildcard`).
-- **Built-in Middlewares & Production Resilience**: Zero-dependency HS256 JWT authentication (`gota.JWT`, `gota.SignJWT`, `gota.VerifyJWT`, `gota.JWTClaims[T]`), CORS with automatic `OPTIONS` preflight, panic `Recover`, `RequestID` (UUID v4), standard `SlogLogger`, request `Logger`, server timeouts, and graceful shutdown (`app.ListenGraceful`).
+- **REPR Design Pattern**: Request-Endpoint-Response architecture with automatic model binding, declarative validation, and typed JSON / streaming responses.
+- **Zero External Dependencies**: Built 100% on the Go standard library.
+- **Native OpenAPI 3.1 & Scalar Docs**: Automatic spec generation from Go types, serving interactive Scalar UI (`classic` layout) at `/docs`.
+- **Fluent Route Ergonomics**: Chainable metadata (`.Summary()`, `.Tags()`, `.Middleware()`), route groups, and parameter matching (`:id`, `*wildcard`).
+- **Production-Ready Middlewares**: Built-in JWT (HS256), CORS, Panic Recovery, Request ID, Slog logger, timeouts, and graceful shutdown.
 
 > 📖 Looking for in-depth patterns, validation recipes, security best practices, and AI guidance? See [llms.txt](llms.txt).
 
