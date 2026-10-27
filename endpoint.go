@@ -16,7 +16,20 @@ import (
 	"github.com/carlosxfelipe/gota/validation"
 )
 
-var loggedTagWarnings sync.Map
+var (
+	loggedTagWarnings   sync.Map
+	emptyType           = reflect.TypeOf(Empty{})
+	emptyStructType     = reflect.TypeOf(struct{}{})
+	streamerType        = reflect.TypeOf((*Streamer)(nil)).Elem()
+	sseStreamType       = reflect.TypeOf(SSEStream{})
+	sseStreamPtrType    = reflect.TypeOf(&SSEStream{})
+	fileHeaderPtrType   = reflect.TypeOf((*multipart.FileHeader)(nil))
+	fileHeaderSliceType = reflect.TypeOf(([]*multipart.FileHeader)(nil))
+)
+
+func isEmptyType(t reflect.Type) bool {
+	return t == emptyType || t == emptyStructType
+}
 
 // Streamer defines the contract for streaming responses in REPR endpoints.
 type Streamer interface {
@@ -84,23 +97,6 @@ type Endpoint[Req any, Res any] interface {
 // EndpointFunc defines the contract for function-based REPR endpoints.
 type EndpointFunc[Req any, Res any] func(ctx *core.Context, req Req) (Res, error)
 
-// RouteConfig holds metadata for self-configuring endpoints.
-type RouteConfig struct {
-	Method      string
-	Path        string
-	Summary     string
-	Description string
-	Tags        []string
-	Status      int
-	Deprecated  bool
-}
-
-// ConfigurableEndpoint is implemented by endpoints that define their own route metadata.
-type ConfigurableEndpoint interface {
-	Route() RouteConfig
-	Register(target RouterTarget) *core.Route
-}
-
 // WrapEndpoint converts a generic REPR handler into a standard Gota HandlerFunc
 // with automatic parameter binding, validation, and OpenAPI documentation.
 func WrapEndpoint[Req any, Res any](handler EndpointFunc[Req, Res], defaultStatus int) (core.HandlerFunc, *core.RouteDoc) {
@@ -131,7 +127,7 @@ func WrapEndpoint[Req any, Res any](handler EndpointFunc[Req, Res], defaultStatu
 		reqType := reflect.TypeOf(req)
 
 		// Perform auto-binding and validation if Req is not Empty
-		if reqType != reflect.TypeOf(Empty{}) && reqType != reflect.TypeOf(struct{}{}) {
+		if !isEmptyType(reqType) {
 			if err := binding.BindRequest(ctx, &req); err != nil {
 				var tooLarge *http.MaxBytesError
 				if errors.As(err, &tooLarge) {
@@ -167,7 +163,7 @@ func WrapEndpoint[Req any, Res any](handler EndpointFunc[Req, Res], defaultStatu
 
 		if !ctx.Written() {
 			resType := reflect.TypeOf(res)
-			if resType == reflect.TypeOf(Empty{}) || resType == reflect.TypeOf(struct{}{}) {
+			if isEmptyType(resType) {
 				return ctx.NoContent()
 			}
 			status := defaultStatus
@@ -198,7 +194,7 @@ func introspectEndpoint[Req any, Res any](defaultStatus int) *core.RouteDoc {
 	hasFormFields := false
 	hasFileFields := false
 
-	if reqType != nil && reqType != reflect.TypeOf(Empty{}) && reqType != reflect.TypeOf(struct{}{}) && reqType.Kind() == reflect.Struct {
+	if reqType != nil && !isEmptyType(reqType) && reqType.Kind() == reflect.Struct {
 		for i := 0; i < reqType.NumField(); i++ {
 			field := reqType.Field(i)
 
@@ -240,7 +236,7 @@ func introspectEndpoint[Req any, Res any](defaultStatus int) *core.RouteDoc {
 
 			if formTag := field.Tag.Get("form"); formTag != "" {
 				hasFormFields = true
-				if field.Type == reflect.TypeOf((*multipart.FileHeader)(nil)) || field.Type == reflect.TypeOf(([]*multipart.FileHeader)(nil)) {
+				if field.Type == fileHeaderPtrType || field.Type == fileHeaderSliceType {
 					hasFileFields = true
 				}
 			}
@@ -269,15 +265,14 @@ func introspectEndpoint[Req any, Res any](defaultStatus int) *core.RouteDoc {
 
 	var res Res
 	resType := reflect.TypeOf(res)
-	streamerType := reflect.TypeOf((*Streamer)(nil)).Elem()
 
-	if resType == reflect.TypeOf(Empty{}) || resType == reflect.TypeOf(struct{}{}) {
+	if isEmptyType(resType) {
 		doc.Responses[http.StatusNoContent] = &core.ResponseDoc{
 			Description: "No Content",
 		}
 	} else if resType != nil && (resType.Implements(streamerType) || reflect.PointerTo(resType).Implements(streamerType)) {
 		cType := "application/octet-stream"
-		if resType == reflect.TypeOf(SSEStream{}) || resType == reflect.TypeOf(&SSEStream{}) {
+		if resType == sseStreamType || resType == sseStreamPtrType {
 			cType = "text/event-stream"
 		}
 		doc.Responses[defaultStatus] = &core.ResponseDoc{
@@ -305,50 +300,39 @@ func introspectEndpoint[Req any, Res any](defaultStatus int) *core.RouteDoc {
 	return doc
 }
 
-// Get registers an HTTP GET REPR endpoint on App or RouteGroup.
-func Get[Req any, Res any](target RouterTarget, path string, handler EndpointFunc[Req, Res]) *core.Route {
+func registerEndpoint[Req any, Res any](target RouterTarget, method, path string, handler EndpointFunc[Req, Res]) *core.Route {
 	h, doc := WrapEndpoint(handler, http.StatusOK)
-	route := target.RegisterRoute(http.MethodGet, path, h)
+	route := target.RegisterRoute(method, path, h)
 	route.Doc(*doc)
 	return route
+}
+
+// Get registers an HTTP GET REPR endpoint on App or RouteGroup.
+func Get[Req any, Res any](target RouterTarget, path string, handler EndpointFunc[Req, Res]) *core.Route {
+	return registerEndpoint(target, http.MethodGet, path, handler)
 }
 
 // Post registers an HTTP POST REPR endpoint on App or RouteGroup.
 func Post[Req any, Res any](target RouterTarget, path string, handler EndpointFunc[Req, Res]) *core.Route {
-	h, doc := WrapEndpoint(handler, http.StatusOK)
-	route := target.RegisterRoute(http.MethodPost, path, h)
-	route.Doc(*doc)
-	return route
+	return registerEndpoint(target, http.MethodPost, path, handler)
 }
 
 // Put registers an HTTP PUT REPR endpoint on App or RouteGroup.
 func Put[Req any, Res any](target RouterTarget, path string, handler EndpointFunc[Req, Res]) *core.Route {
-	h, doc := WrapEndpoint(handler, http.StatusOK)
-	route := target.RegisterRoute(http.MethodPut, path, h)
-	route.Doc(*doc)
-	return route
+	return registerEndpoint(target, http.MethodPut, path, handler)
 }
 
 // Delete registers an HTTP DELETE REPR endpoint on App or RouteGroup.
 func Delete[Req any, Res any](target RouterTarget, path string, handler EndpointFunc[Req, Res]) *core.Route {
-	h, doc := WrapEndpoint(handler, http.StatusOK)
-	route := target.RegisterRoute(http.MethodDelete, path, h)
-	route.Doc(*doc)
-	return route
+	return registerEndpoint(target, http.MethodDelete, path, handler)
 }
 
 // Patch registers an HTTP PATCH REPR endpoint on App or RouteGroup.
 func Patch[Req any, Res any](target RouterTarget, path string, handler EndpointFunc[Req, Res]) *core.Route {
-	h, doc := WrapEndpoint(handler, http.StatusOK)
-	route := target.RegisterRoute(http.MethodPatch, path, h)
-	route.Doc(*doc)
-	return route
+	return registerEndpoint(target, http.MethodPatch, path, handler)
 }
 
 // HandleEndpoint registers a struct-based REPR endpoint implementing Endpoint[Req, Res].
 func HandleEndpoint[Req any, Res any](target RouterTarget, method, path string, ep Endpoint[Req, Res]) *core.Route {
-	h, doc := WrapEndpoint(ep.Handle, http.StatusOK)
-	route := target.RegisterRoute(method, path, h)
-	route.Doc(*doc)
-	return route
+	return registerEndpoint(target, method, path, ep.Handle)
 }
