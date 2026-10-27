@@ -684,4 +684,3 @@ func toComparableValue(val reflect.Value) (float64, string, bool) {
 		return 0, "", false
 	}
 }
-
