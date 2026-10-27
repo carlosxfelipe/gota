@@ -58,17 +58,57 @@ func BindRequest(ctx *core.Context, target any) error {
 	}
 
 	// 2. Reflect on fields to bind `param`, `query`, `header`, and `form` tags
+	return bindFields(ctx, elem)
+}
+
+// bindFields binds the `param`, `query`, `header` and `form` tagged fields of the struct value
+// elem, descending into embedded structs whose fields encoding/json would promote.
+func bindFields(ctx *core.Context, elem reflect.Value) error {
+	return bindFieldsInternal(ctx, elem, nil)
+}
+
+func bindFieldsInternal(ctx *core.Context, elem reflect.Value, shadowed map[string]bool) error {
 	typ := elem.Type()
+
+	// Collect tags declared on this struct itself so they shadow promoted fields.
+	localTags := make(map[string]bool)
+	for i := 0; i < typ.NumField(); i++ {
+		f := typ.Field(i)
+		if _, ok := core.EmbeddedStructType(f); ok {
+			continue
+		}
+		for _, tag := range [...]string{"param", "query", "header", "form"} {
+			if v := f.Tag.Get(tag); v != "" {
+				localTags[tag+":"+v] = true
+			}
+		}
+	}
+
+	mergedShadowed := make(map[string]bool, len(shadowed)+len(localTags))
+	for k, v := range shadowed {
+		mergedShadowed[k] = v
+	}
+	for k, v := range localTags {
+		mergedShadowed[k] = v
+	}
+
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
 		fieldVal := elem.Field(i)
+
+		if ft, ok := core.EmbeddedStructType(field); ok {
+			if err := bindEmbedded(ctx, fieldVal, ft, mergedShadowed); err != nil {
+				return err
+			}
+			continue
+		}
 
 		if !fieldVal.CanSet() {
 			continue
 		}
 
 		// Check param tag: param:"id"
-		if paramTag := field.Tag.Get("param"); paramTag != "" {
+		if paramTag := field.Tag.Get("param"); paramTag != "" && !shadowed["param:"+paramTag] {
 			if strVal, ok := ctx.Params[paramTag]; ok && strVal != "" {
 				if err := setFieldValue(fieldVal, strVal); err != nil {
 					return fmt.Errorf("invalid path param %q: %w", paramTag, err)
@@ -77,7 +117,7 @@ func BindRequest(ctx *core.Context, target any) error {
 		}
 
 		// Check query tag: query:"search"
-		if queryTag := field.Tag.Get("query"); queryTag != "" {
+		if queryTag := field.Tag.Get("query"); queryTag != "" && !shadowed["query:"+queryTag] {
 			if queryVals, ok := ctx.Request.URL.Query()[queryTag]; ok && len(queryVals) > 0 {
 				if fieldVal.Kind() == reflect.Slice && fieldVal.Type().Elem().Kind() == reflect.String {
 					if len(queryVals) > 1 {
@@ -100,7 +140,7 @@ func BindRequest(ctx *core.Context, target any) error {
 		}
 
 		// Check header tag: header:"X-Token"
-		if headerTag := field.Tag.Get("header"); headerTag != "" {
+		if headerTag := field.Tag.Get("header"); headerTag != "" && !shadowed["header:"+headerTag] {
 			if strVal := ctx.Header(headerTag); strVal != "" {
 				if err := setFieldValue(fieldVal, strVal); err != nil {
 					return fmt.Errorf("invalid header %q: %w", headerTag, err)
@@ -109,7 +149,7 @@ func BindRequest(ctx *core.Context, target any) error {
 		}
 
 		// Check form tag: form:"avatar" or form:"name"
-		if formTag := field.Tag.Get("form"); formTag != "" {
+		if formTag := field.Tag.Get("form"); formTag != "" && !shadowed["form:"+formTag] {
 			// Single file: *multipart.FileHeader
 			if field.Type == reflect.TypeOf((*multipart.FileHeader)(nil)) {
 				if ctx.Request.MultipartForm != nil && ctx.Request.MultipartForm.File != nil {
@@ -161,13 +201,51 @@ func BindRequest(ctx *core.Context, target any) error {
 	return nil
 }
 
+// bindEmbedded binds the fields of an embedded struct. A nil embedded pointer is only
+// allocated when at least one of its fields was actually bound, so absent values keep it nil.
+func bindEmbedded(ctx *core.Context, fieldVal reflect.Value, ft reflect.Type, shadowed map[string]bool) error {
+	if fieldVal.Kind() != reflect.Pointer {
+		return bindFieldsInternal(ctx, fieldVal, shadowed)
+	}
+	if !fieldVal.IsNil() {
+		return bindFieldsInternal(ctx, fieldVal.Elem(), shadowed)
+	}
+	if !fieldVal.CanSet() {
+		return nil
+	}
+	tmp := reflect.New(ft)
+	if err := bindFieldsInternal(ctx, tmp.Elem(), shadowed); err != nil {
+		return err
+	}
+	if !tmp.Elem().IsZero() {
+		fieldVal.Set(tmp)
+	}
+	return nil
+}
+
 // clearNonBodyFields zeroes fields that are meant to come from the path, query, header or
 // form, unless they declare an explicit json tag. Without this, a JSON body such as
 // {"UserID": 1} could spoof a field tagged `header:"X-User-Id"` whenever the header is absent.
+// Fields of embedded structs are promoted by encoding/json, so they are cleared as well.
 func clearNonBodyFields(elem reflect.Value) {
 	typ := elem.Type()
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
+		if _, ok := core.EmbeddedStructType(field); ok {
+			embedded := elem.Field(i)
+			if embedded.Kind() == reflect.Pointer {
+				if embedded.IsNil() {
+					continue
+				}
+				clearNonBodyFields(embedded.Elem())
+				if embedded.CanSet() && embedded.Elem().IsZero() {
+					embedded.SetZero()
+				}
+				continue
+			}
+			clearNonBodyFields(embedded)
+			continue
+		}
 		if !elem.Field(i).CanSet() {
 			continue
 		}

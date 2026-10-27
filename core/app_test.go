@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"syscall"
@@ -182,5 +183,27 @@ func TestApp_MaxMultipartMemory(t *testing.T) {
 	ctx.SetMaxMultipartMemory(8 << 20)
 	if ctx.MaxMultipartMemory() != 8<<20 {
 		t.Errorf("expected updated context memory %d, got %d", 8<<20, ctx.MaxMultipartMemory())
+	}
+
+	// 4. Negative value disables memory limit (returns math.MaxInt64)
+	appDisabled := New(Config{MaxMultipartMemory: -1, DisableDocs: true})
+	var observedDisabledLimit int64
+	appDisabled.Post("/upload", func(ctx *Context) error {
+		observedDisabledLimit = ctx.MaxMultipartMemory()
+		return ctx.Send("ok")
+	})
+	appDisabled.ServeHTTP(httptest.NewRecorder(), req)
+	if observedDisabledLimit != math.MaxInt64 {
+		t.Errorf("expected disabled memory limit math.MaxInt64, got %d", observedDisabledLimit)
+	}
+
+	ctx.SetMaxMultipartMemory(-1)
+	if ctx.MaxMultipartMemory() != math.MaxInt64 {
+		t.Errorf("expected setter with -1 to return math.MaxInt64, got %d", ctx.MaxMultipartMemory())
+	}
+
+	ctx.SetMaxMultipartMemory(0)
+	if ctx.MaxMultipartMemory() != DefaultMaxMultipartMemory {
+		t.Errorf("expected setter with 0 to revert to default %d, got %d", DefaultMaxMultipartMemory, ctx.MaxMultipartMemory())
 	}
 }

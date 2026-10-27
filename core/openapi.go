@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"path"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -112,28 +113,53 @@ type OpenAPIComponents struct {
 
 // OpenAPIGenerator converts registered routes into an OpenAPI 3.1 schema.
 type OpenAPIGenerator struct {
-	config       Config
-	schemas      map[string]map[string]any
-	schemaTypes  map[string]reflect.Type
-	visitedTypes map[reflect.Type]bool
+	config      Config
+	schemas     map[string]map[string]any
+	schemaTypes map[string]reflect.Type
 }
 
 func NewOpenAPIGenerator(cfg Config) *OpenAPIGenerator {
 	return &OpenAPIGenerator{
-		config:       cfg,
-		schemas:      make(map[string]map[string]any),
-		schemaTypes:  make(map[string]reflect.Type),
-		visitedTypes: make(map[reflect.Type]bool),
+		config:      cfg,
+		schemas:     make(map[string]map[string]any),
+		schemaTypes: make(map[string]reflect.Type),
 	}
 }
 
-// schemaName returns the components/schemas key for t. The plain type name is kept unless
-// a different type already uses it (same name in another package), in which case the
-// package name is prefixed so the two schemas do not overwrite each other.
+var (
+	schemaNamePathPrefix = regexp.MustCompile(`[A-Za-z0-9_.\-]+/`)
+	schemaNamePkgQual    = regexp.MustCompile(`\b[A-Za-z_][A-Za-z0-9_]*\.`)
+	schemaNameInvalid    = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
+)
+
+// sanitizeSchemaName makes a Go type name usable as a components/schemas key, which OpenAPI
+// restricts to [A-Za-z0-9._-]. Generic instantiations such as
+// "Page[github.com/acme/api/model.User]" become "Page_User"; a "/" would also break $ref
+// resolution because it is the JSON Pointer separator.
+func sanitizeSchemaName(name string) string {
+	name = schemaNamePathPrefix.ReplaceAllString(name, "")
+	name = schemaNamePkgQual.ReplaceAllString(name, "")
+	name = schemaNameInvalid.ReplaceAllString(name, "_")
+	return strings.Trim(name, "_")
+}
+
+// schemaName returns the components/schemas key for t. The plain (sanitized) type name is
+// kept unless a different type already uses it (same name in another package, or generic
+// instantiations that sanitize to the same name), in which case the package name is
+// prefixed and, as a last resort, a numeric suffix is added so two schemas never overwrite
+// each other.
 func (g *OpenAPIGenerator) schemaName(t reflect.Type) string {
-	name := t.Name()
+	name := sanitizeSchemaName(t.Name())
 	if prev, taken := g.schemaTypes[name]; taken && prev != t {
-		name = path.Base(t.PkgPath()) + "_" + t.Name()
+		name = sanitizeSchemaName(path.Base(t.PkgPath()) + "_" + t.Name())
+	}
+	candidate := name
+	for i := 2; ; i++ {
+		prev, taken := g.schemaTypes[name]
+		if !taken || prev == t {
+			break
+		}
+		name = fmt.Sprintf("%s_%d", candidate, i)
 	}
 	g.schemaTypes[name] = t
 	return name
@@ -324,28 +350,66 @@ func (g *OpenAPIGenerator) registerOrRef(model any) map[string]any {
 }
 
 func (g *OpenAPIGenerator) structToSchema(t reflect.Type) map[string]any {
-	if g.visitedTypes[t] {
-		return map[string]any{
-			"type": "object",
-		}
-	}
-	g.visitedTypes[t] = true
-	defer func() {
-		delete(g.visitedTypes, t)
-	}()
-
 	properties := make(map[string]any)
-	var required []string
+	required := make(map[string]bool)
+	g.collectStructFields(t, properties, required, map[reflect.Type]bool{})
+
+	schema := map[string]any{
+		"type":       "object",
+		"properties": properties,
+	}
+	if len(required) > 0 {
+		names := make([]string, 0, len(required))
+		for name := range required {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		schema["required"] = names
+	}
+	return schema
+}
+
+// collectStructFields adds the documented fields of t to properties/required. Untagged
+// embedded structs are flattened like encoding/json promotes them: fields declared on the
+// outer struct win over promoted ones, whatever their declaration order. embedding tracks
+// the current embedding chain so self-embedding through pointers cannot recurse forever.
+func (g *OpenAPIGenerator) collectStructFields(t reflect.Type, properties map[string]any, required map[string]bool, embedding map[reflect.Type]bool) {
+	if embedding[t] {
+		return
+	}
+	embedding[t] = true
+	defer delete(embedding, t)
+
+	// Promoted fields are collected apart so the outer struct's own fields always win.
+	promoted := make(map[string]any)
+	promotedRequired := make(map[string]bool)
+	own := make(map[string]bool)
 
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
-		if !field.IsExported() {
-			continue
-		}
 
 		jsonTag := field.Tag.Get("json")
 		formTag := field.Tag.Get("form")
 		if jsonTag == "-" || formTag == "-" {
+			continue
+		}
+
+		if ft, ok := EmbeddedStructType(field); ok {
+			sub := make(map[string]any)
+			subRequired := make(map[string]bool)
+			g.collectStructFields(ft, sub, subRequired, embedding)
+			for name, schema := range sub {
+				if _, exists := promoted[name]; !exists {
+					promoted[name] = schema
+					if subRequired[name] {
+						promotedRequired[name] = true
+					}
+				}
+			}
+			continue
+		}
+
+		if !field.IsExported() {
 			continue
 		}
 
@@ -392,23 +456,25 @@ func (g *OpenAPIGenerator) structToSchema(t reflect.Type) map[string]any {
 				break
 			}
 		}
-		if isRequired {
-			required = append(required, name)
-		}
 
 		properties[name] = fieldSchema
+		own[name] = true
+		if isRequired {
+			required[name] = true
+		} else {
+			delete(required, name)
+		}
 	}
 
-	sort.Strings(required)
-
-	schema := map[string]any{
-		"type":       "object",
-		"properties": properties,
+	for name, schema := range promoted {
+		if own[name] {
+			continue
+		}
+		properties[name] = schema
+		if promotedRequired[name] {
+			required[name] = true
+		}
 	}
-	if len(required) > 0 {
-		schema["required"] = required
-	}
-	return schema
 }
 
 func (g *OpenAPIGenerator) schemaForType(t reflect.Type) map[string]any {
@@ -450,10 +516,16 @@ func (g *OpenAPIGenerator) schemaForType(t reflect.Type) map[string]any {
 			"type":  "array",
 			"items": g.schemaForType(t.Elem()),
 		}
+	case reflect.Interface:
+		return map[string]any{}
 	case reflect.Map:
+		prop := any(true)
+		if t.Elem().Kind() != reflect.Interface {
+			prop = g.schemaForType(t.Elem())
+		}
 		return map[string]any{
 			"type":                 "object",
-			"additionalProperties": true,
+			"additionalProperties": prop,
 		}
 	case reflect.Struct:
 		typeName := t.Name()

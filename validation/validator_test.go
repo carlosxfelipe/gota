@@ -369,3 +369,91 @@ func TestValidatorRequired_PointersAllowZeroAndFalse(t *testing.T) {
 		t.Fatalf("expected valid DTO to pass, got: %v", err)
 	}
 }
+
+type EmbBaseQuery struct {
+	Limit int `query:"limit" validate:"required"`
+}
+
+type EmbAuditQuery struct {
+	Author string `query:"author" validate:"required"`
+}
+
+type EmbContainerDTO struct {
+	EmbBaseQuery
+	*EmbAuditQuery
+	Name string `json:"name" validate:"required"`
+}
+
+func TestValidatorEmbeddedStructs(t *testing.T) {
+	ctx := &core.Context{}
+
+	// 1. Missing embedded fields: errors must use promoted field names, not EmbeddedType.field.
+	invalid := EmbContainerDTO{
+		Name: "Alice",
+	}
+	err := ValidateStruct(ctx, &invalid)
+	if err == nil {
+		t.Fatal("expected validation errors for missing limit and author")
+	}
+	if len(err.Errors["limit"]) == 0 {
+		t.Errorf("expected error on promoted key 'limit', got errors: %v", err.Errors)
+	}
+	if len(err.Errors["author"]) == 0 {
+		t.Errorf("expected error on promoted key 'author' from nil pointer, got errors: %v", err.Errors)
+	}
+	if len(err.Errors["EmbBaseQuery.limit"]) != 0 || len(err.Errors["EmbAuditQuery.author"]) != 0 {
+		t.Errorf("embedded type name must not be used as prefix in error keys: %v", err.Errors)
+	}
+
+	// 2. Fully valid: all promoted fields provided
+	valid := EmbContainerDTO{
+		EmbBaseQuery:  EmbBaseQuery{Limit: 10},
+		EmbAuditQuery: &EmbAuditQuery{Author: "Carlos"},
+		Name:          "Alice",
+	}
+	if err := ValidateStruct(ctx, &valid); err != nil {
+		t.Fatalf("expected valid embedded DTO to pass, got: %v", err)
+	}
+}
+
+type ShadowValidateDTO struct {
+	EmbBaseQuery
+	Limit int `query:"limit" validate:"min=10"` // Shadows EmbBaseQuery.Limit
+}
+
+func TestValidatorEmbeddedShadowing(t *testing.T) {
+	ctx := &core.Context{}
+
+	// Limit=5 satisfies required (from EmbBaseQuery) but fails min=10 (outer field).
+	// Shadowed field EmbBaseQuery.Limit should not run or duplicate errors.
+	dto := ShadowValidateDTO{
+		Limit: 5,
+	}
+	err := ValidateStruct(ctx, &dto)
+	if err == nil {
+		t.Fatal("expected error because outer Limit=5 fails min=10")
+	}
+	if len(err.Errors["limit"]) != 1 {
+		t.Errorf("expected exactly 1 error on limit, got: %v", err.Errors["limit"])
+	}
+}
+
+type CyclicNode struct {
+	Next *CyclicNode `json:"next"`
+	Name string      `json:"name" validate:"required"`
+}
+
+func TestValidatorCyclicSafety(t *testing.T) {
+	if err := CheckTags(reflect.TypeOf(CyclicNode{})); err != nil {
+		t.Fatalf("CheckTags on cyclic type failed: %v", err)
+	}
+
+	node1 := &CyclicNode{Name: "Node1"}
+	node2 := &CyclicNode{Name: "Node2", Next: node1}
+	node1.Next = node2 // cycle!
+
+	err := ValidateStruct(&core.Context{}, node1)
+	if err != nil {
+		t.Fatalf("expected cyclic node with valid names to pass, got: %v", err)
+	}
+}

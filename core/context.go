@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -162,9 +163,14 @@ func (c *Context) Form(name string) string {
 }
 
 // MaxMultipartMemory returns the maximum memory in bytes used to parse multipart forms.
+// Returns DefaultMaxMultipartMemory when unset (0). A negative value disables the memory
+// limit (returns math.MaxInt64), allowing the form to be kept in memory up to MaxBodyBytes.
 func (c *Context) MaxMultipartMemory() int64 {
-	if c.maxMultipartMemory <= 0 {
+	if c.maxMultipartMemory == 0 {
 		return DefaultMaxMultipartMemory
+	}
+	if c.maxMultipartMemory < 0 {
+		return math.MaxInt64
 	}
 	return c.maxMultipartMemory
 }

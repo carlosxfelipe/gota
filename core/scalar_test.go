@@ -1,6 +1,7 @@
 package core
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -86,5 +87,24 @@ func TestRenderScalarHTML_SRIWithoutScriptURLIsIgnored(t *testing.T) {
 	}
 	if !strings.Contains(out, `integrity="`+DefaultScalarSRI+`"`) {
 		t.Errorf("expected default SRI to stay in place")
+	}
+}
+
+func TestScalarConstantsConsistency(t *testing.T) {
+	// 1. DefaultScalarCDN must match ScalarCDNURL with DefaultScalarVersion
+	expectedCDN := ScalarCDNURL(DefaultScalarVersion)
+	if DefaultScalarCDN != expectedCDN {
+		t.Errorf("expected DefaultScalarCDN to be %q, got %q", expectedCDN, DefaultScalarCDN)
+	}
+
+	// 2. DefaultScalarCDN must contain the pinned version
+	if !strings.Contains(DefaultScalarCDN, "@"+DefaultScalarVersion+"/") {
+		t.Errorf("expected DefaultScalarCDN to contain pinned version @%s/, got %q", DefaultScalarVersion, DefaultScalarCDN)
+	}
+
+	// 3. SRI must have valid W3C Subresource Integrity format
+	sriPattern := regexp.MustCompile(`^sha(256|384|512)-[A-Za-z0-9+/=]+$`)
+	if !sriPattern.MatchString(DefaultScalarSRI) {
+		t.Errorf("invalid SRI hash format %q", DefaultScalarSRI)
 	}
 }

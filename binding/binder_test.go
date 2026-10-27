@@ -232,3 +232,105 @@ func TestBinderPointerFormValue(t *testing.T) {
 		t.Errorf("expected Note=&\"\" (present, empty), got %v", dto.Note)
 	}
 }
+
+type EmbeddedPageQuery struct {
+	Limit int `query:"limit"`
+	Page  int `query:"page"`
+}
+
+type EmbeddedAuditHeader struct {
+	Token string `header:"X-Token"`
+}
+
+type EmbeddedReqDTO struct {
+	EmbeddedPageQuery
+	*EmbeddedAuditHeader
+	ID   int    `param:"id"`
+	Name string `json:"name"`
+}
+
+func TestBinderEmbeddedStruct(t *testing.T) {
+	body := []byte(`{"name":"Alex"}`)
+	req := httptest.NewRequest("POST", "/items/42?limit=10&page=2", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Token", "secret123")
+	ctx := core.NewContext(httptest.NewRecorder(), req, map[string]string{"id": "42"})
+
+	var dto EmbeddedReqDTO
+	if err := BindRequest(ctx, &dto); err != nil {
+		t.Fatalf("bind failed: %v", err)
+	}
+	if dto.ID != 42 {
+		t.Errorf("expected ID=42, got %d", dto.ID)
+	}
+	if dto.Name != "Alex" {
+		t.Errorf("expected Name=Alex, got %q", dto.Name)
+	}
+	if dto.Limit != 10 || dto.Page != 2 {
+		t.Errorf("expected embedded Limit=10, Page=2, got %+v", dto.EmbeddedPageQuery)
+	}
+	if dto.EmbeddedAuditHeader == nil || dto.EmbeddedAuditHeader.Token != "secret123" {
+		t.Errorf("expected embedded pointer to be allocated with Token=secret123, got %+v", dto.EmbeddedAuditHeader)
+	}
+}
+
+func TestBinderEmbeddedPointerNilWhenAbsent(t *testing.T) {
+	req := httptest.NewRequest("GET", "/items/1?limit=5", nil)
+	ctx := core.NewContext(httptest.NewRecorder(), req, map[string]string{"id": "1"})
+
+	var dto EmbeddedReqDTO
+	if err := BindRequest(ctx, &dto); err != nil {
+		t.Fatalf("bind failed: %v", err)
+	}
+	if dto.EmbeddedAuditHeader != nil {
+		t.Errorf("expected embedded pointer to stay nil when header is absent, got %+v", dto.EmbeddedAuditHeader)
+	}
+	if dto.Limit != 5 {
+		t.Errorf("expected Limit=5, got %d", dto.Limit)
+	}
+}
+
+type ShadowOuterDTO struct {
+	EmbeddedPageQuery
+	Limit int `query:"limit"` // Outer shadows EmbeddedPageQuery.Limit
+}
+
+func TestBinderEmbeddedShadowing(t *testing.T) {
+	req := httptest.NewRequest("GET", "/test?limit=99&page=1", nil)
+	ctx := core.NewContext(httptest.NewRecorder(), req, nil)
+
+	var dto ShadowOuterDTO
+	if err := BindRequest(ctx, &dto); err != nil {
+		t.Fatalf("bind failed: %v", err)
+	}
+	if dto.Limit != 99 {
+		t.Errorf("outer Limit should win, got %d", dto.Limit)
+	}
+	if dto.EmbeddedPageQuery.Limit != 0 {
+		t.Errorf("shadowed embedded Limit must not be set, got %d", dto.EmbeddedPageQuery.Limit)
+	}
+	if dto.EmbeddedPageQuery.Page != 1 {
+		t.Errorf("unshadowed embedded Page must be set to 1, got %d", dto.EmbeddedPageQuery.Page)
+	}
+}
+
+func TestBinderEmbeddedJSONCannotSpoofNonBodyFields(t *testing.T) {
+	body := []byte(`{"Limit":100,"Page":50,"Token":"spoofed","Name":"Sam"}`)
+	req := httptest.NewRequest("POST", "/items/1", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	ctx := core.NewContext(httptest.NewRecorder(), req, map[string]string{"id": "1"})
+
+	var dto EmbeddedReqDTO
+	if err := BindRequest(ctx, &dto); err != nil {
+		t.Fatalf("bind failed: %v", err)
+	}
+	if dto.Limit != 0 || dto.Page != 0 {
+		t.Errorf("JSON body must not spoof embedded non-body fields: %+v", dto.EmbeddedPageQuery)
+	}
+	if dto.EmbeddedAuditHeader != nil {
+		t.Errorf("JSON body must not allocate embedded pointer for non-body fields: %+v", dto.EmbeddedAuditHeader)
+	}
+	if dto.Name != "Sam" {
+		t.Errorf("expected Name=Sam, got %q", dto.Name)
+	}
+}

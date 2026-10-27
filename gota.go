@@ -57,6 +57,11 @@ func New(cfg Config) *App {
 	return core.New(cfg)
 }
 
+// ScalarCDNURL returns the standalone bundle URL for a given @scalar/api-reference version.
+func ScalarCDNURL(version string) string {
+	return core.ScalarCDNURL(version)
+}
+
 // Built-in Middleware helpers
 func CORS(opts ...CORSOptions) MiddlewareFunc {
 	return core.CORS(opts...)

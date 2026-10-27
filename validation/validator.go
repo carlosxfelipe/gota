@@ -94,18 +94,21 @@ func splitRules(tag string) []string {
 // It is meant to run once at route registration so typos fail fast
 // instead of silently disabling a rule.
 func CheckTags(t reflect.Type) error {
+	return checkTagsInternal(t, make(map[reflect.Type]bool))
+}
+
+func checkTagsInternal(t reflect.Type, seen map[reflect.Type]bool) error {
 	if t == nil {
 		return nil
 	}
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
-	if t.Kind() != reflect.Struct {
+	if t.Kind() != reflect.Struct || isStdLibStruct(t) || seen[t] {
 		return nil
 	}
-	if isStdLibStruct(t) {
-		return nil
-	}
+	seen[t] = true
+	defer delete(seen, t)
 
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
@@ -120,6 +123,12 @@ func CheckTags(t reflect.Type) error {
 			if n := strings.Split(jsonTag, ",")[0]; n != "" {
 				name = n
 			}
+		} else if paramTag := field.Tag.Get("param"); paramTag != "" {
+			name = paramTag
+		} else if queryTag := field.Tag.Get("query"); queryTag != "" {
+			name = queryTag
+		} else if headerTag := field.Tag.Get("header"); headerTag != "" {
+			name = headerTag
 		}
 
 		if tag != "" {
@@ -167,7 +176,7 @@ func CheckTags(t reflect.Type) error {
 			}
 		}
 		if ft.Kind() == reflect.Struct && !isStdLibStruct(ft) {
-			if err := CheckTags(ft); err != nil {
+			if err := checkTagsInternal(ft, seen); err != nil {
 				return err
 			}
 		}
@@ -188,7 +197,7 @@ func ValidateStruct(ctx *core.Context, target any) *ValidationError {
 	errMap := make(map[string][]string)
 
 	if val.Kind() == reflect.Struct {
-		validateStructRecursive(ctx, val, "", errMap)
+		validateStructRecursive(ctx, val, "", errMap, nil, make(map[reflect.Type]bool))
 	}
 
 	// 2. Custom Validator interface
@@ -216,7 +225,28 @@ func ValidateStruct(ctx *core.Context, target any) *ValidationError {
 	return nil
 }
 
-func validateStructRecursive(ctx *core.Context, val reflect.Value, prefix string, errMap map[string][]string) {
+func fieldIdentifier(field reflect.StructField) string {
+	if formTag := field.Tag.Get("form"); formTag != "" && formTag != "-" {
+		parts := strings.Split(formTag, ",")
+		if parts[0] != "" {
+			return parts[0]
+		}
+	} else if jsonTag := field.Tag.Get("json"); jsonTag != "" && jsonTag != "-" {
+		parts := strings.Split(jsonTag, ",")
+		if parts[0] != "" {
+			return parts[0]
+		}
+	} else if paramTag := field.Tag.Get("param"); paramTag != "" {
+		return paramTag
+	} else if queryTag := field.Tag.Get("query"); queryTag != "" {
+		return queryTag
+	} else if headerTag := field.Tag.Get("header"); headerTag != "" {
+		return headerTag
+	}
+	return field.Name
+}
+
+func validateStructRecursive(ctx *core.Context, val reflect.Value, prefix string, errMap map[string][]string, shadowed map[string]bool, embedding map[reflect.Type]bool) {
 	if val.Kind() == reflect.Pointer {
 		if val.IsNil() {
 			return
@@ -227,42 +257,54 @@ func validateStructRecursive(ctx *core.Context, val reflect.Value, prefix string
 		return
 	}
 
-	typ := val.Type()
-	for i := 0; i < typ.NumField(); i++ {
-		field := typ.Field(i)
-		// Unexported fields cannot be read via reflection (val.Interface() would panic).
-		if !field.IsExported() && !field.Anonymous {
+	t := val.Type()
+	if embedding[t] {
+		return
+	}
+	embedding[t] = true
+	defer delete(embedding, t)
+
+	// Collect direct fields of this struct so they shadow any promoted fields from embedded structs.
+	localOwn := make(map[string]bool)
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if _, ok := core.EmbeddedStructType(field); ok {
 			continue
 		}
-		fieldVal := val.Field(i)
+		localOwn[fieldIdentifier(field)] = true
+	}
 
-		// Determine field name
-		fieldName := field.Name
-		if formTag := field.Tag.Get("form"); formTag != "" && formTag != "-" {
-			parts := strings.Split(formTag, ",")
-			if parts[0] != "" {
-				fieldName = parts[0]
-			}
-		} else if jsonTag := field.Tag.Get("json"); jsonTag != "" && jsonTag != "-" {
-			parts := strings.Split(jsonTag, ",")
-			if parts[0] != "" {
-				fieldName = parts[0]
-			}
-		} else if paramTag := field.Tag.Get("param"); paramTag != "" {
-			fieldName = paramTag
-		} else if queryTag := field.Tag.Get("query"); queryTag != "" {
-			fieldName = queryTag
+	mergedShadowed := make(map[string]bool, len(shadowed)+len(localOwn))
+	for k, v := range shadowed {
+		mergedShadowed[k] = v
+	}
+	for k, v := range localOwn {
+		mergedShadowed[k] = v
+	}
+
+	// 1. Validate own/direct fields
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if _, ok := core.EmbeddedStructType(field); ok {
+			continue
 		}
-
+		// Unexported fields cannot be read via reflection (val.Interface() would panic).
+		if !field.IsExported() {
+			continue
+		}
+		fieldName := fieldIdentifier(field)
+		if shadowed[fieldName] {
+			continue
+		}
 		fullName := fieldName
 		if prefix != "" {
 			fullName = prefix + "." + fieldName
 		}
+		fieldVal := val.Field(i)
 
 		validateTag := field.Tag.Get("validate")
 		if validateTag != "" {
-			rules := splitRules(validateTag)
-			for _, rule := range rules {
+			for _, rule := range splitRules(validateTag) {
 				rule = strings.TrimSpace(rule)
 				if rule == "" {
 					continue
@@ -274,14 +316,14 @@ func validateStructRecursive(ctx *core.Context, val reflect.Value, prefix string
 			}
 		}
 
-		// Recurse into nested structs or slice of structs
+		// Recurse into nested struct (not embedded) or slice of structs
 		ft := field.Type
 		if ft.Kind() == reflect.Pointer {
 			if !fieldVal.IsNil() {
-				validateStructRecursive(ctx, fieldVal.Elem(), fullName, errMap)
+				validateStructRecursive(ctx, fieldVal.Elem(), fullName, errMap, nil, embedding)
 			}
 		} else if ft.Kind() == reflect.Struct && !isStdLibStruct(ft) {
-			validateStructRecursive(ctx, fieldVal, fullName, errMap)
+			validateStructRecursive(ctx, fieldVal, fullName, errMap, nil, embedding)
 		} else if ft.Kind() == reflect.Slice {
 			elemType := ft.Elem()
 			if elemType.Kind() == reflect.Pointer {
@@ -291,10 +333,29 @@ func validateStructRecursive(ctx *core.Context, val reflect.Value, prefix string
 				for idx := 0; idx < fieldVal.Len(); idx++ {
 					item := fieldVal.Index(idx)
 					itemPrefix := fmt.Sprintf("%s[%d]", fullName, idx)
-					validateStructRecursive(ctx, item, itemPrefix, errMap)
+					validateStructRecursive(ctx, item, itemPrefix, errMap, nil, embedding)
 				}
 			}
 		}
+	}
+
+	// 2. Validate promoted fields from embedded structs with the same prefix
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		ft, ok := core.EmbeddedStructType(field)
+		if !ok {
+			continue
+		}
+		fieldVal := val.Field(i)
+		if fieldVal.Kind() == reflect.Pointer {
+			if fieldVal.IsNil() {
+				validateNilEmbedded(ft, prefix, errMap, mergedShadowed)
+				continue
+			}
+			validateStructRecursive(ctx, fieldVal.Elem(), prefix, errMap, mergedShadowed, embedding)
+			continue
+		}
+		validateStructRecursive(ctx, fieldVal, prefix, errMap, mergedShadowed, embedding)
 	}
 
 	// If the struct itself implements Validator or ContextValidator
@@ -307,6 +368,37 @@ func validateStructRecursive(ctx *core.Context, val reflect.Value, prefix string
 		if cv, ok := val.Addr().Interface().(ContextValidator); ok && prefix != "" {
 			if err := cv.Validate(ctx); err != nil {
 				errMap[prefix] = append(errMap[prefix], err.Error())
+			}
+		}
+	}
+}
+
+// validateNilEmbedded checks whether any unshadowed fields of an absent embedded struct
+// are marked required, reporting "field <name> is required" with the correct promoted name.
+func validateNilEmbedded(ft reflect.Type, prefix string, errMap map[string][]string, shadowed map[string]bool) {
+	for i := 0; i < ft.NumField(); i++ {
+		f := ft.Field(i)
+		if subType, ok := core.EmbeddedStructType(f); ok {
+			validateNilEmbedded(subType, prefix, errMap, shadowed)
+			continue
+		}
+		if !f.IsExported() {
+			continue
+		}
+		name := fieldIdentifier(f)
+		if shadowed[name] {
+			continue
+		}
+		fullName := name
+		if prefix != "" {
+			fullName = prefix + "." + name
+		}
+		tag := f.Tag.Get("validate")
+		if tag != "" {
+			for _, rule := range splitRules(tag) {
+				if strings.TrimSpace(rule) == "required" {
+					errMap[fullName] = append(errMap[fullName], fmt.Sprintf("field %s is required", fullName))
+				}
 			}
 		}
 	}

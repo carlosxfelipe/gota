@@ -155,7 +155,7 @@ app := gota.New(gota.Config{
     ScalarLayout: "classic",       // default
     ScalarTheme:  gota.ThemeFastify, // default
     MaxBodyBytes: 10 << 20,       // default: 10MB (negative value to disable)
-    MaxMultipartMemory: 32 << 20, // default: 32MB kept in memory while parsing multipart forms
+    MaxMultipartMemory: 32 << 20, // default: 32MB kept in memory (negative value to disable limit)
 })
 ```
 

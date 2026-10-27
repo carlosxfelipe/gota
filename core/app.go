@@ -41,6 +41,7 @@ type Config struct {
 	MaxBodyBytes int64 `json:"maxBodyBytes,omitempty"`
 
 	// MaxMultipartMemory limits memory in bytes used to parse multipart forms. Default: 32 MiB.
+	// Use a negative value to disable the limit (keeps form in memory up to MaxBodyBytes).
 	MaxMultipartMemory int64 `json:"maxMultipartMemory,omitempty"`
 
 	// TrustProxyHeaders makes Context.ClientIP honor X-Forwarded-For and X-Real-IP.

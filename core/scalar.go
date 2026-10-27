@@ -27,11 +27,19 @@ const (
 )
 
 // Default Scalar CDN settings pinned to latest stable release with Subresource Integrity (SRI).
+// To upgrade the version, update DefaultScalarVersion and recompute DefaultScalarSRI via:
+//
+//	curl -sL https://cdn.jsdelivr.net/npm/@scalar/api-reference@<version>/dist/browser/standalone.js | openssl dgst -sha384 -binary | openssl base64 -A | sed 's/^/sha384-/'
 const (
 	DefaultScalarVersion = "1.76.0"
-	DefaultScalarCDN     = "https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.76.0/dist/browser/standalone.js"
+	DefaultScalarCDN     = "https://cdn.jsdelivr.net/npm/@scalar/api-reference@" + DefaultScalarVersion + "/dist/browser/standalone.js"
 	DefaultScalarSRI     = "sha384-oH1C0RwqcwbVXkC+r8A+4qRoyEUQdtxAzOwumkxZtQBBcsy61FOoPt7B50OVJYYQ"
 )
+
+// ScalarCDNURL returns the standalone bundle URL for a given @scalar/api-reference version.
+func ScalarCDNURL(version string) string {
+	return "https://cdn.jsdelivr.net/npm/@scalar/api-reference@" + version + "/dist/browser/standalone.js"
+}
 
 // ScalarConfig holds visual and functional settings for Scalar API Reference.
 type ScalarConfig struct {

@@ -42,7 +42,7 @@ func main() {
 		ScalarTheme:  gota.ThemeFastify, // Default: ThemeFastify (Themes: ThemeFastify, ThemeDefault, ThemeMoon, etc.)
 		ScalarLayout: "classic",      // "classic" (Swagger-style) or "modern"
 		MaxBodyBytes: 10 << 20,       // 10MB limit (default: 10MB, negative to disable)
-		MaxMultipartMemory: 32 << 20, // memory used to parse multipart forms (default: 32MB; larger parts spill to temp files)
+		MaxMultipartMemory: 32 << 20, // memory used to parse multipart forms (default: 32MB; negative to disable limit)
 		TrustProxyHeaders: false,     // true ONLY behind a trusted reverse proxy: makes ctx.ClientIP() honor X-Forwarded-For/X-Real-IP
 		// Scalar UI script is pinned to a fixed version with SRI (gota.DefaultScalarCDN / DefaultScalarSRI).
 		// Override to self-host or use another CDN; set ScalarSRI together with ScalarScriptURL (empty SRI = no integrity check).
@@ -188,7 +188,7 @@ gota.Post(app, "/api/orders/:orderId/receipt", func(ctx *gota.Context, req Uploa
 	Tags("Orders")
 ```
 
-> **Memory limit**: `Config.MaxMultipartMemory` (default 32 MiB) bounds how much of a multipart form is kept in memory while parsing; the rest goes to temporary files. Lower it in memory-constrained containers. It applies to the automatic binder and to `ctx.FormFile` / `ctx.MultipartForm`. `ctx.MaxMultipartMemory()` reads the effective value; `ctx.SetMaxMultipartMemory(n)` only has effect if called (e.g. in a middleware) **before** the form is first parsed, which for typed endpoints happens before the handler runs. The total body size is still capped by `MaxBodyBytes`.
+> **Memory limit**: `Config.MaxMultipartMemory` (default 32 MiB) bounds how much of a multipart form is kept in memory while parsing; the rest goes to temporary files (a negative value disables this limit, keeping parts in memory up to `MaxBodyBytes`). Lower it in memory-constrained containers. It applies to the automatic binder and to `ctx.FormFile` / `ctx.MultipartForm`. `ctx.MaxMultipartMemory()` reads the effective value; `ctx.SetMaxMultipartMemory(n)` only has effect if called (e.g. in a middleware) **before** the form is first parsed, which for typed endpoints happens before the handler runs. The total body size is still capped by `MaxBodyBytes`.
 
 #### Server-Sent Events (SSE) Streaming:
 
