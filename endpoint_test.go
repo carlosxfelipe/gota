@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/carlosxfelipe/gota/validation"
 )
 
 type CreateItemRequest struct {
@@ -611,5 +613,58 @@ func TestSSEStreamStopsOnClientDisconnect(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("SSEStream did not stop after client disconnect")
+	}
+}
+
+type SuspiciousReq struct {
+	Active bool `json:"active" validate:"required"`
+}
+
+type SilencedReq struct {
+	Active bool `json:"active" validate:"required,nowarn"`
+}
+
+func TestWrapEndpoint_PrimitiveRequiredWarning(t *testing.T) {
+	var logged []string
+	validation.TagWarningLogger = func(w string) {
+		logged = append(logged, w)
+	}
+	defer func() {
+		validation.TagWarningLogger = nil
+		validation.SilenceTagWarnings = false
+	}()
+
+	// 1. SuspiciousReq emits warning
+	WrapEndpoint(func(ctx *Context, req SuspiciousReq) (Empty, error) {
+		return Empty{}, nil
+	}, http.StatusOK)
+
+	if len(logged) == 0 {
+		t.Fatal("expected warning for SuspiciousReq with non-pointer bool required")
+	}
+	if !strings.Contains(logged[0], "non-pointer bool") {
+		t.Errorf("expected warning mentioning non-pointer bool, got: %s", logged[0])
+	}
+
+	// 2. SilencedReq with nowarn tag emits no warning
+	logged = nil
+	WrapEndpoint(func(ctx *Context, req SilencedReq) (Empty, error) {
+		return Empty{}, nil
+	}, http.StatusOK)
+	if len(logged) != 0 {
+		t.Errorf("expected no warning for SilencedReq with nowarn, got: %v", logged)
+	}
+
+	// 3. Global silence suppresses warning
+	SilenceTagWarnings(true)
+	type AnotherSuspiciousReq struct {
+		Count int `json:"count" validate:"required"`
+	}
+	logged = nil
+	WrapEndpoint(func(ctx *Context, req AnotherSuspiciousReq) (Empty, error) {
+		return Empty{}, nil
+	}, http.StatusOK)
+	if len(logged) != 0 {
+		t.Errorf("expected no warning when SilenceTagWarnings is true, got: %v", logged)
 	}
 }

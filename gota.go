@@ -54,7 +54,16 @@ const (
 
 // New initializes and returns a new Gota application instance.
 func New(cfg Config) *App {
+	if cfg.SilenceTagWarnings {
+		validation.SilenceTagWarnings = true
+	}
 	return core.New(cfg)
+}
+
+// SilenceTagWarnings enables or disables startup warning logs for suspicious validation tags
+// (such as validate:"required" on primitive bool or numeric fields).
+func SilenceTagWarnings(silence bool) {
+	validation.SilenceTagWarnings = silence
 }
 
 // ScalarCDNURL returns the standalone bundle URL for a given @scalar/api-reference version.

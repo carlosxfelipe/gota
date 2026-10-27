@@ -59,6 +59,9 @@ type Config struct {
 	// IdleTimeout is the maximum duration to wait for the next request when keep-alive is enabled. Default: 120s.
 	// Use negative value to disable.
 	IdleTimeout time.Duration `json:"idleTimeout,omitempty"`
+
+	// SilenceTagWarnings disables startup warning logs for suspicious validation tags (e.g. required on primitive bool/numbers).
+	SilenceTagWarnings bool `json:"silenceTagWarnings,omitempty"`
 }
 
 // Default constants for server configuration.

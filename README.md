@@ -34,7 +34,7 @@ Inspired by the ergonomic fluency of [Kite](https://github.com/claudiovictors/ki
 - **Fluent Kite-like Ergonomics**: Chainable metadata methods (`.Summary()`, `.Description()`, `.Tags()`, `.Middleware()`), route groups (`app.Group("/api")`), and path parameter matching (`:id`, `*wildcard`).
 - **Built-in Middlewares & Production Resilience**: Zero-dependency HS256 JWT authentication (`gota.JWT`, `gota.SignJWT`, `gota.VerifyJWT`, `gota.JWTClaims[T]`), CORS with automatic `OPTIONS` preflight, panic `Recover`, `RequestID` (UUID v4), standard `SlogLogger`, request `Logger`, server timeouts, and graceful shutdown (`app.ListenGraceful`).
 
-> 📖 Looking for in-depth patterns, validation recipes, and AI guidance? See [llms.txt](llms.txt).
+> 📖 Looking for in-depth patterns, validation recipes, security best practices, and AI guidance? See [llms.txt](llms.txt).
 
 ---
 
@@ -166,80 +166,6 @@ app := gota.New(gota.Config{
     ScalarScriptURL: "/static/scalar.js",
     ScalarSRI:       "sha384-...", // leave empty to skip the integrity check
 })
-```
-
----
-
-## 🔒 Security Notes
-
-- **Middleware order**: call `app.Use` / `group.Use` **before** registering routes. Middlewares are bound to a route at registration, so a late `Use` panics instead of silently leaving routes unprotected.
-- **JWT**: `exp` and `nbf` are enforced whenever present, and a malformed value rejects the token. Pass `JWTOptions{RequireExp: true}` to reject tokens that carry no expiration. Load the secret from the environment, never hardcode it.
-- **Client IP**: `ctx.ClientIP()` returns `RemoteAddr`. Set `Config{TrustProxyHeaders: true}` only behind a trusted reverse proxy to honor `X-Forwarded-For` / `X-Real-IP` (these headers are trivially forged otherwise).
-- **CORS**: `AllowCredentials` cannot be combined with the `"*"` origin (`gota.CORS` panics); list origins explicitly.
-- **Binding**: fields tagged `param`, `query`, `header` or `form` (without an explicit `json` tag) are never filled from the JSON body.
-- **DTO design**: never expose privilege fields (e.g. `role`, `isAdmin`) in public request DTOs; assign them on the server.
-- **Streaming**: `SSEStream` / `StreamFunc` responses lift the server `WriteTimeout` and stop when the client disconnects.
-- **Validation `required`**: Go primitives (`int`, `bool`, etc.) have zero-values (`0`, `false`) that `required` treats as missing. When `0` or `false` are valid inputs that must be distinguished from omitted fields, use pointer types (e.g. `*int`, `*bool`) with `validate:"required"`: `nil` means absent, while `*0` / `*false` pass validation. Pointers are supported for every source (`json`, `param`, `query`, `header`, `form`); an absent query/header/form value leaves the pointer `nil`.
-
----
-
-## 📁 Project Structure
-
-```
-gota/
-├── binding/         # Automated model binding (param, query, header, form, json)
-│   ├── binder.go
-│   └── binder_test.go
-├── core/            # Core HTTP engine (app, context, router, middleware, openapi, scalar)
-│   ├── app.go
-│   ├── app_test.go
-│   ├── context.go
-│   ├── errors.go
-│   ├── jwt.go
-│   ├── jwt_test.go
-│   ├── middleware.go
-│   ├── middleware_test.go
-│   ├── openapi.go
-│   ├── router.go
-│   ├── router_test.go
-│   └── scalar.go
-├── examples/        # Order Flow showcase (FastEndpoints / REPR architecture)
-│   ├── bruno/       # Bruno API collection
-│   ├── data/        # In-memory store and seed data (store.go)
-│   ├── domain/      # Domain models (order.go, user.go)
-│   ├── features/    # Vertical slice features
-│   │   ├── auth/    # Lifecycle authentication endpoints
-│   │   │   ├── claims.go
-│   │   │   ├── delete_account.go
-│   │   │   ├── login.go
-│   │   │   ├── me.go
-│   │   │   ├── register.go
-│   │   │   └── register_routes.go
-│   │   └── orders/  # Complete order flow domain logic
-│   │       ├── add_item.go
-│   │       ├── cancel_order.go
-│   │       ├── create_order.go
-│   │       ├── get_order.go
-│   │       ├── list_orders.go
-│   │       ├── pay_order.go
-│   │       ├── register.go
-│   │       ├── remove_item.go
-│   │       ├── ship_order.go
-│   │       ├── track_order.go
-│   │       └── upload_receipt.go
-│   ├── examples_test.go # End-to-end integration test suite
-│   └── main.go      # Application bootstrap
-├── validation/      # Input validation engine and declarative rules
-│   ├── validator.go
-│   └── validator_test.go
-├── endpoint.go      # First-class REPR generic endpoint engine
-├── endpoint_test.go # End-to-end test suite
-├── gota.go          # Clean public entry point (facade)
-├── go.mod
-├── llms.txt         # LLM & Developer guide (llms.txt standard)
-├── logo.svg
-├── LICENSE
-└── README.md
 ```
 
 ---

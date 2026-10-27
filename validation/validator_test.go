@@ -3,6 +3,7 @@ package validation
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/carlosxfelipe/gota/core"
@@ -455,5 +456,41 @@ func TestValidatorCyclicSafety(t *testing.T) {
 	err := ValidateStruct(&core.Context{}, node1)
 	if err != nil {
 		t.Fatalf("expected cyclic node with valid names to pass, got: %v", err)
+	}
+}
+
+type WarningTestDTO struct {
+	Active    bool    `json:"active" validate:"required"`
+	Count     int     `json:"count" validate:"required"`
+	Price     float64 `json:"price" validate:"required"`
+	ValidPtrB *bool   `json:"validPtrB" validate:"required"`
+	ValidPtrI *int    `json:"validPtrI" validate:"required"`
+	ValidStr  string  `json:"validStr" validate:"required"`
+	Silenced1 bool    `json:"silenced1" validate:"required,nowarn"`
+	Silenced2 int     `json:"silenced2" validate:"required" gota:"nowarn"`
+}
+
+func TestCheckTagWarnings(t *testing.T) {
+	warnings := CheckTagWarnings(reflect.TypeOf(WarningTestDTO{}))
+	if len(warnings) != 3 {
+		t.Fatalf("expected exactly 3 warnings for active, count, price, got %d: %v", len(warnings), warnings)
+	}
+
+	foundActive := false
+	foundCount := false
+	foundPrice := false
+	for _, w := range warnings {
+		if strings.Contains(w, `"active"`) && strings.Contains(w, "non-pointer bool") {
+			foundActive = true
+		}
+		if strings.Contains(w, `"count"`) && strings.Contains(w, "non-pointer int") {
+			foundCount = true
+		}
+		if strings.Contains(w, `"price"`) && strings.Contains(w, "non-pointer float64") {
+			foundPrice = true
+		}
+	}
+	if !foundActive || !foundCount || !foundPrice {
+		t.Errorf("missing expected field warning: %v", warnings)
 	}
 }

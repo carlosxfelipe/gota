@@ -60,7 +60,7 @@ func isStdLibStruct(t reflect.Type) bool {
 
 // isKnownRule reports whether a string represents a known validation rule name.
 func isKnownRule(s string) bool {
-	if s == "required" || s == "email" || s == "url" || s == "uuid" {
+	if s == "required" || s == "email" || s == "url" || s == "uuid" || s == "nowarn" {
 		return true
 	}
 	parts := strings.SplitN(s, "=", 2)
@@ -88,6 +88,13 @@ func splitRules(tag string) []string {
 	}
 	return rules
 }
+
+// SilenceTagWarnings controls whether startup warning logs are printed for suspicious validation tags
+// (such as validate:"required" on primitive bool or numeric fields).
+var SilenceTagWarnings bool
+
+// TagWarningLogger, if set, redirects tag warning messages. When nil, log.Printf is used by endpoint wrappers.
+var TagWarningLogger func(warning string)
 
 // CheckTags verifies that every `validate` tag on the struct type t only uses
 // known rules with valid parameters, recursing into nested structs and slices.
@@ -139,7 +146,7 @@ func checkTagsInternal(t reflect.Type, seen map[reflect.Type]bool) error {
 				}
 				parts := strings.SplitN(rule, "=", 2)
 				switch parts[0] {
-				case "required", "email", "url", "uuid":
+				case "required", "email", "url", "uuid", "nowarn":
 				case "min", "max":
 					if len(parts) < 2 || parts[1] == "" {
 						return fmt.Errorf("field %q: rule %q requires a numeric parameter (e.g. %s=3)", name, parts[0], parts[0])
@@ -182,6 +189,135 @@ func checkTagsInternal(t reflect.Type, seen map[reflect.Type]bool) error {
 		}
 	}
 	return nil
+}
+
+// CheckTagWarnings inspects struct type t for suspicious validation tags, returning
+// non-fatal warning messages. In particular, it warns when validate:"required" is placed
+// on non-pointer bool or numeric fields where Go's zero values (false, 0) fail required validation.
+// A warning on a specific field can be silenced with validate:"...,nowarn" or gota:"nowarn",
+// or globally via gota.SilenceTagWarnings(true).
+func CheckTagWarnings(t reflect.Type) []string {
+	var warnings []string
+	checkTagWarningsInternal(t, make(map[reflect.Type]bool), nil, &warnings)
+	return warnings
+}
+
+func checkTagWarningsInternal(t reflect.Type, seen map[reflect.Type]bool, shadowed map[string]bool, warnings *[]string) {
+	if t == nil {
+		return
+	}
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct || isStdLibStruct(t) || seen[t] {
+		return
+	}
+	seen[t] = true
+	defer delete(seen, t)
+
+	localOwn := make(map[string]bool)
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if _, ok := core.EmbeddedStructType(field); ok {
+			continue
+		}
+		localOwn[fieldIdentifier(field)] = true
+	}
+
+	mergedShadowed := make(map[string]bool, len(shadowed)+len(localOwn))
+	for k, v := range shadowed {
+		mergedShadowed[k] = v
+	}
+	for k, v := range localOwn {
+		mergedShadowed[k] = v
+	}
+
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if _, ok := core.EmbeddedStructType(field); ok {
+			continue
+		}
+		if !field.IsExported() {
+			continue
+		}
+		name := fieldIdentifier(field)
+		if shadowed[name] {
+			continue
+		}
+
+		suppressed := field.Tag.Get("gota") == "nowarn"
+		tag := field.Tag.Get("validate")
+		hasRequired := false
+		if tag != "" {
+			for _, rule := range splitRules(tag) {
+				rule = strings.TrimSpace(rule)
+				if rule == "nowarn" {
+					suppressed = true
+				}
+				if rule == "required" {
+					hasRequired = true
+				}
+			}
+		}
+
+		if hasRequired && !suppressed && isPrimitiveRejectingZero(field.Type) {
+			typeName := t.Name()
+			if typeName == "" {
+				typeName = "struct"
+			}
+			kindStr := field.Type.String()
+			zeroVal := zeroValueString(field.Type)
+			msg := fmt.Sprintf(
+				"field %q in %s is a non-pointer %s with validate:\"required\"; in Go, zero value (%s) will fail validation. Use *%s if zero values are allowed, or silence with gota.SilenceTagWarnings(true).",
+				name, typeName, kindStr, zeroVal, kindStr,
+			)
+			*warnings = append(*warnings, msg)
+		}
+
+		ft := field.Type
+		if ft.Kind() == reflect.Pointer {
+			ft = ft.Elem()
+		}
+		if ft.Kind() == reflect.Slice {
+			ft = ft.Elem()
+			if ft.Kind() == reflect.Pointer {
+				ft = ft.Elem()
+			}
+		}
+		if ft.Kind() == reflect.Struct && !isStdLibStruct(ft) {
+			checkTagWarningsInternal(ft, seen, nil, warnings)
+		}
+	}
+
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		ft, ok := core.EmbeddedStructType(field)
+		if !ok {
+			continue
+		}
+		checkTagWarningsInternal(ft, seen, mergedShadowed, warnings)
+	}
+}
+
+func isPrimitiveRejectingZero(t reflect.Type) bool {
+	switch t.Kind() {
+	case reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64:
+		return true
+	default:
+		return false
+	}
+}
+
+func zeroValueString(t reflect.Type) string {
+	switch t.Kind() {
+	case reflect.Bool:
+		return "false"
+	default:
+		return "0"
+	}
 }
 
 // ValidateStruct validates a struct instance using both its validate tags and Validator interface.
@@ -425,6 +561,8 @@ func applyValidationRule(field string, val reflect.Value, rule string) string {
 	}
 
 	switch ruleName {
+	case "nowarn":
+		return ""
 	case "required":
 		if isZero(val) {
 			return fmt.Sprintf("field %s is required", field)

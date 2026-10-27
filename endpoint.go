@@ -3,16 +3,20 @@ package gota
 import (
 	"errors"
 	"fmt"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/carlosxfelipe/gota/binding"
 	"github.com/carlosxfelipe/gota/core"
 	"github.com/carlosxfelipe/gota/validation"
 )
+
+var loggedTagWarnings sync.Map
 
 // Streamer defines the contract for streaming responses in REPR endpoints.
 type Streamer interface {
@@ -100,9 +104,24 @@ type ConfigurableEndpoint interface {
 // WrapEndpoint converts a generic REPR handler into a standard Gota HandlerFunc
 // with automatic parameter binding, validation, and OpenAPI documentation.
 func WrapEndpoint[Req any, Res any](handler EndpointFunc[Req, Res], defaultStatus int) (core.HandlerFunc, *core.RouteDoc) {
+	reqType := reflect.TypeOf(*new(Req))
+
 	// Fail fast: a typo in a `validate` tag would otherwise silently disable the rule.
-	if err := validation.CheckTags(reflect.TypeOf(*new(Req))); err != nil {
+	if err := validation.CheckTags(reqType); err != nil {
 		panic(fmt.Sprintf("gota: invalid validate tag in %T: %v", *new(Req), err))
+	}
+
+	// Emit non-fatal warnings for suspicious validation rules (e.g. required on primitive bool/numbers).
+	if !validation.SilenceTagWarnings {
+		for _, w := range validation.CheckTagWarnings(reqType) {
+			if _, already := loggedTagWarnings.LoadOrStore(w, true); !already {
+				if validation.TagWarningLogger != nil {
+					validation.TagWarningLogger(w)
+				} else {
+					log.Printf("⚠️  gota: %s", w)
+				}
+			}
+		}
 	}
 
 	doc := introspectEndpoint[Req, Res](defaultStatus)

@@ -125,6 +125,8 @@ Pointer fields (`*int`, `*bool`, `*string`, ...) are supported for **every** sou
 Nested struct fields (e.g. `Address AddressDTO`) and slices of structs (e.g. `Items []ItemDTO`) are validated automatically and recursively. Validation errors preserve property hierarchy paths (e.g. `address.street` and `items[0].price`).
 
 > **Fail-Fast Tag Verification**: Gota verifies all `validate` tags at startup during route registration via `validation.CheckTags`, recursing into nested structs. If a rule name is misspelled (e.g. `validate:"requried"`) or a numeric parameter is missing or invalid (e.g. `min=abc`), Gota **panics immediately** upon registration to prevent silent security regressions.
+>
+> **Primitive `required` Warnings**: In Go, primitive non-pointer types (`bool`, `int`, etc.) default to zero values (`false`, `0`). Tagging them with `validate:"required"` causes explicit zero values to fail validation. Gota logs a startup warning advising the use of pointers (`*bool`, `*int`). You can silence this per-field with `validate:"...,nowarn"` or `gota:"nowarn"`, or globally via `Config.SilenceTagWarnings: true` / `gota.SilenceTagWarnings(true)`.
 
 #### OpenAPI schemas for nested types:
 
@@ -427,3 +429,17 @@ app.Get("/healthz", func(ctx *gota.Context) error {
 7. ❌ **Do NOT import third-party packages for Gota features**: Gota has built-in CORS, JWT, Logger, Recover, Validator, Scalar UI, and OpenAPI generator without requiring any external module dependencies.
 8. ❌ **Do NOT mistype validation tags**: Gota validates all `validate` rules at startup; unknown rules or invalid arguments trigger an intentional `panic` during route registration.
 9. ❌ **Do NOT use `omitempty` in `validate:` tags**: Fields in Gota are optional by default unless marked with `required`. Adding `omitempty` is unnecessary and will be rejected by `CheckTags` as an unknown validation rule.
+
+---
+
+## 10. Security Notes & Best Practices
+
+- **Middleware Order**: Call `app.Use` and `group.Use` **before** registering routes. Middlewares are bound to routes at registration time; calling `Use` after routes have already been registered triggers an intentional `panic` to prevent routes from remaining unprotected silently.
+- **JWT Authentication**: `exp` and `nbf` claims are strictly enforced whenever present, and malformed values reject the token. Use `gota.JWTOptions{RequireExp: true}` to reject tokens without an expiration timestamp. Always load signing keys from environment variables or secrets managers, never hardcode them.
+- **Client IP & Reverse Proxies**: `ctx.ClientIP()` returns `RemoteAddr` by default. Only enable `Config{TrustProxyHeaders: true}` when running behind a trusted reverse proxy (e.g. NGINX, Cloudflare, AWS ALB), as `X-Forwarded-For` and `X-Real-IP` can otherwise be trivially spoofed by untrusted clients.
+- **CORS Configuration**: Setting `AllowCredentials: true` with `AllowOrigins: []string{"*"}` is forbidden by the CORS specification and triggers an intentional `panic` in `gota.CORS`; always specify explicit origin domains when credentials are allowed.
+- **Model Binding Isolation**: Fields tagged exclusively with `param`, `query`, `header`, or `form` (without an explicit `json` tag) are never populated from the JSON request body, preventing cross-source payload injection.
+- **Privilege & DTO Design**: Never accept administrative or privilege fields (such as `role`, `isAdmin`, or `permissions`) in public request DTOs. Always authenticate the caller and assign permissions server-side.
+- **Streaming & Timeouts**: Handlers returning `gota.SSEStream` or `gota.StreamFunc` automatically lift the server's `WriteTimeout` and terminate cleanly when the client disconnects or the context is cancelled.
+- **Validation `required` on Primitives**: Go zero-values (`0`, `false`) fail `validate:"required"`. When `0` or `false` are valid inputs that must be distinguished from absent values, use pointer types (e.g. `*int`, `*bool`) with `validate:"required"`. Absent values remain `nil`, while explicit zeros pass validation.
+
