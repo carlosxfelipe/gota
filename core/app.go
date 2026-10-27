@@ -254,9 +254,13 @@ func (a *App) Patch(path string, h HandlerFunc) *Route {
 
 // RegisterRoute internally binds an HTTP method and path with the global middleware chain.
 func (a *App) RegisterRoute(method, path string, h HandlerFunc) *Route {
+	return a.registerRouteWithBase(method, path, h, a.middlewares)
+}
+
+func (a *App) registerRouteWithBase(method, path string, h HandlerFunc, middlewares []MiddlewareFunc) *Route {
 	a.routeCount++
-	base := make([]MiddlewareFunc, len(a.middlewares))
-	copy(base, a.middlewares)
+	base := make([]MiddlewareFunc, len(middlewares))
+	copy(base, middlewares)
 
 	n := a.router.Add(method, path, Chain(h, base))
 	n.RawHandler = h
@@ -265,14 +269,15 @@ func (a *App) RegisterRoute(method, path string, h HandlerFunc) *Route {
 	return &Route{Node: n, router: a.router, base: base}
 }
 
+func optionsNoContentHandler(ctx *Context) error {
+	return ctx.NoContent()
+}
+
 func registerAutoOptions(router *Router, method, path string, base []MiddlewareFunc) {
 	if method == http.MethodOptions {
 		return
 	}
-	optionsHandler := func(ctx *Context) error {
-		return ctx.NoContent()
-	}
-	router.addAuto(http.MethodOptions, path, Chain(optionsHandler, base))
+	router.addAuto(http.MethodOptions, path, Chain(optionsNoContentHandler, base))
 }
 
 // URLFor generates a URL for a previously named route.
@@ -408,26 +413,13 @@ func (a *App) Listen(addr string) error {
 		log.Printf("📄 OpenAPI spec: http://%s%s", display, a.config.OpenAPIURL)
 	}
 
-	readTimeout := a.config.ReadTimeout
-	if readTimeout < 0 {
-		readTimeout = 0
-	}
-	writeTimeout := a.config.WriteTimeout
-	if writeTimeout < 0 {
-		writeTimeout = 0
-	}
-	idleTimeout := a.config.IdleTimeout
-	if idleTimeout < 0 {
-		idleTimeout = 0
-	}
-
 	srv := &http.Server{
 		Addr:              listen,
 		Handler:           a,
 		ReadHeaderTimeout: DefaultReadHeaderTimeout,
-		ReadTimeout:       readTimeout,
-		WriteTimeout:      writeTimeout,
-		IdleTimeout:       idleTimeout,
+		ReadTimeout:       nonNegativeDuration(a.config.ReadTimeout),
+		WriteTimeout:      nonNegativeDuration(a.config.WriteTimeout),
+		IdleTimeout:       nonNegativeDuration(a.config.IdleTimeout),
 	}
 
 	a.mu.Lock()
@@ -552,57 +544,39 @@ func (rt *Route) Hidden() *Route {
 
 // Body defines the request body model for documentation.
 func (rt *Route) Body(model any, description ...string) *Route {
-	desc := ""
-	if len(description) > 0 {
-		desc = description[0]
-	}
 	rt.ensureDoc().RequestBody = &BodyDoc{
 		Model:       model,
-		Description: desc,
+		Description: optionalString(description...),
 		Required:    true,
 	}
 	return rt
 }
 
-// Query documents a query parameter for the route.
-func (rt *Route) Query(name string, model any, description ...string) *Route {
-	desc := ""
-	if len(description) > 0 {
-		desc = description[0]
-	}
+func (rt *Route) addParam(in, name string, model any, desc string) *Route {
 	rt.ensureDoc().Parameters = append(rt.ensureDoc().Parameters, ParamDoc{
-		In:          "query",
+		In:          in,
 		Name:        name,
 		Model:       model,
 		Description: desc,
 	})
 	return rt
+}
+
+// Query documents a query parameter for the route.
+func (rt *Route) Query(name string, model any, description ...string) *Route {
+	return rt.addParam("query", name, model, optionalString(description...))
 }
 
 // Header documents an expected request header.
 func (rt *Route) Header(name string, model any, description ...string) *Route {
-	desc := ""
-	if len(description) > 0 {
-		desc = description[0]
-	}
-	rt.ensureDoc().Parameters = append(rt.ensureDoc().Parameters, ParamDoc{
-		In:          "header",
-		Name:        name,
-		Model:       model,
-		Description: desc,
-	})
-	return rt
+	return rt.addParam("header", name, model, optionalString(description...))
 }
 
 // Response documents an expected response status code and data model.
 func (rt *Route) Response(statusCode int, model any, description ...string) *Route {
-	desc := ""
-	if len(description) > 0 {
-		desc = description[0]
-	}
 	rt.ensureDoc().Responses[statusCode] = &ResponseDoc{
 		Model:       model,
-		Description: desc,
+		Description: optionalString(description...),
 	}
 	return rt
 }
@@ -687,17 +661,8 @@ func (g *RouteGroup) Patch(path string, h HandlerFunc) *Route {
 
 // RegisterRoute registers a scoped route under this group prefix.
 func (g *RouteGroup) RegisterRoute(method, path string, h HandlerFunc) *Route {
-	full := joinPrefix(g.prefix, path)
 	g.registered = true
-	g.app.routeCount++
-	base := make([]MiddlewareFunc, len(g.middlewares))
-	copy(base, g.middlewares)
-
-	n := g.app.router.Add(method, full, Chain(h, base))
-	n.RawHandler = h
-
-	registerAutoOptions(g.app.router, method, full, base)
-	return &Route{Node: n, router: g.app.router, base: base}
+	return g.app.registerRouteWithBase(method, joinPrefix(g.prefix, path), h, g.middlewares)
 }
 
 // Group nests a new RouteGroup under this group's prefix.
@@ -716,4 +681,18 @@ func joinPrefix(prefix, path string) string {
 		return prefix
 	}
 	return prefix + path
+}
+
+func nonNegativeDuration(d time.Duration) time.Duration {
+	if d < 0 {
+		return 0
+	}
+	return d
+}
+
+func optionalString(s ...string) string {
+	if len(s) > 0 {
+		return s[0]
+	}
+	return ""
 }

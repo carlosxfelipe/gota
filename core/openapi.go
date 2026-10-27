@@ -2,7 +2,6 @@ package core
 
 import (
 	"fmt"
-	"mime/multipart"
 	"net/http"
 	"path"
 	"reflect"
@@ -10,7 +9,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // RouteDoc holds OpenAPI metadata for an individual route.
@@ -207,13 +205,7 @@ func (g *OpenAPIGenerator) Generate(routes []*Node) *OpenAPISpec {
 func toOpenAPIPath(path string) string {
 	parts := strings.Split(path, "/")
 	for i, part := range parts {
-		if strings.HasPrefix(part, ":") {
-			parts[i] = "{" + part[1:] + "}"
-		} else if strings.HasPrefix(part, "*") {
-			name := "wildcard"
-			if len(part) > 1 {
-				name = part[1:]
-			}
+		if name, ok := pathParamName(part); ok {
 			parts[i] = "{" + name + "}"
 		}
 	}
@@ -319,19 +311,25 @@ func (g *OpenAPIGenerator) buildOperation(rt *Node) OpenAPIOp {
 
 func extractPathParams(path string) []string {
 	var params []string
-	parts := strings.Split(path, "/")
-	for _, p := range parts {
-		if strings.HasPrefix(p, ":") {
-			params = append(params, p[1:])
-		} else if strings.HasPrefix(p, "*") {
-			name := "wildcard"
-			if len(p) > 1 {
-				name = p[1:]
-			}
+	for _, p := range strings.Split(path, "/") {
+		if name, ok := pathParamName(p); ok {
 			params = append(params, name)
 		}
 	}
 	return params
+}
+
+func pathParamName(segment string) (string, bool) {
+	if strings.HasPrefix(segment, ":") {
+		return segment[1:], true
+	}
+	if strings.HasPrefix(segment, "*") {
+		if len(segment) > 1 {
+			return segment[1:], true
+		}
+		return "wildcard", true
+	}
+	return "", false
 }
 
 func (g *OpenAPIGenerator) registerOrRef(model any) map[string]any {
@@ -421,16 +419,10 @@ func (g *OpenAPIGenerator) collectStructFields(t reflect.Type, properties map[st
 		}
 
 		name := field.Name
-		if formTag != "" {
-			parts := strings.Split(formTag, ",")
-			if parts[0] != "" {
-				name = parts[0]
-			}
-		} else if jsonTag != "" {
-			parts := strings.Split(jsonTag, ",")
-			if parts[0] != "" {
-				name = parts[0]
-			}
+		if formName, _, _ := strings.Cut(formTag, ","); formName != "" {
+			name = formName
+		} else if jsonName, _, _ := strings.Cut(jsonTag, ","); jsonName != "" {
+			name = jsonName
 		}
 
 		fieldSchema := g.schemaForType(field.Type)
@@ -485,10 +477,10 @@ func (g *OpenAPIGenerator) schemaForType(t reflect.Type) map[string]any {
 		t = t.Elem()
 	}
 
-	if t == reflect.TypeOf(time.Time{}) {
+	if t == timeType {
 		return map[string]any{"type": "string", "format": "date-time"}
 	}
-	if t == reflect.TypeOf(multipart.FileHeader{}) {
+	if t == fileHeaderType {
 		return map[string]any{"type": "string", "format": "binary"}
 	}
 

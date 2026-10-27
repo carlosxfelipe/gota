@@ -95,6 +95,9 @@ func RenderScalarHTML(cfg ScalarConfig) (string, error) {
 	if cfg.CustomCSS != "" {
 		scalarOptions["customCss"] = cfg.CustomCSS
 	}
+	if len(cfg.Metadata) > 0 {
+		scalarOptions["metadata"] = cfg.Metadata
+	}
 
 	optionsJSON, err := json.Marshal(scalarOptions)
 	if err != nil {
