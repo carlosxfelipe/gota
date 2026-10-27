@@ -25,6 +25,12 @@ type JWTOptions struct {
 	RequireExp bool
 }
 
+func hmacSHA256(secret []byte, data string) []byte {
+	h := hmac.New(sha256.New, secret)
+	h.Write([]byte(data))
+	return h.Sum(nil)
+}
+
 // SignJWT creates an HMAC-SHA256 (HS256) signed JWT token string from the given payload.
 func SignJWT(secret []byte, payload any) (string, error) {
 	if len(secret) == 0 {
@@ -40,9 +46,7 @@ func SignJWT(secret []byte, payload any) (string, error) {
 	payloadEncoded := base64.RawURLEncoding.EncodeToString(payloadBytes)
 
 	signingInput := header + "." + payloadEncoded
-	h := hmac.New(sha256.New, secret)
-	h.Write([]byte(signingInput))
-	signature := base64.RawURLEncoding.EncodeToString(h.Sum(nil))
+	signature := base64.RawURLEncoding.EncodeToString(hmacSHA256(secret, signingInput))
 
 	return signingInput + "." + signature, nil
 }
@@ -66,9 +70,7 @@ func verifyJWT(secret []byte, tokenString string, target any, requireExp bool) e
 	}
 
 	signingInput := parts[0] + "." + parts[1]
-	h := hmac.New(sha256.New, secret)
-	h.Write([]byte(signingInput))
-	expectedSig := h.Sum(nil)
+	expectedSig := hmacSHA256(secret, signingInput)
 
 	actualSig, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil || !hmac.Equal(expectedSig, actualSig) {
@@ -130,22 +132,22 @@ func JWT(secret []byte, opts ...JWTOptions) MiddlewareFunc {
 
 	return func(next HandlerFunc) HandlerFunc {
 		return func(ctx *Context) error {
-			authHeader := ctx.Header("Authorization")
-			if authHeader == "" {
+			unauthorized := func(msg string) error {
 				return ctx.Status(http.StatusUnauthorized).Json(ErrorResponse{
-					Error:     "Authorization header is required",
+					Error:     msg,
 					Status:    http.StatusUnauthorized,
 					RequestID: ctx.RequestID(),
 				})
 			}
 
+			authHeader := ctx.Header("Authorization")
+			if authHeader == "" {
+				return unauthorized("Authorization header is required")
+			}
+
 			parts := strings.SplitN(authHeader, " ", 2)
 			if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-				return ctx.Status(http.StatusUnauthorized).Json(ErrorResponse{
-					Error:     "Invalid authorization format, expected Bearer <token>",
-					Status:    http.StatusUnauthorized,
-					RequestID: ctx.RequestID(),
-				})
+				return unauthorized("Invalid authorization format, expected Bearer <token>")
 			}
 
 			var claims any
@@ -157,11 +159,7 @@ func JWT(secret []byte, opts ...JWTOptions) MiddlewareFunc {
 			}
 
 			if err := verifyJWT(cfg.Secret, parts[1], claims, cfg.RequireExp); err != nil {
-				return ctx.Status(http.StatusUnauthorized).Json(ErrorResponse{
-					Error:     "Invalid or expired token",
-					Status:    http.StatusUnauthorized,
-					RequestID: ctx.RequestID(),
-				})
+				return unauthorized("Invalid or expired token")
 			}
 
 			ctx.Set(cfg.ContextKey, claims)

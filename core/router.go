@@ -45,14 +45,21 @@ func NewRouter() *Router {
 
 // splitPath breaks a path string into normalized path segments.
 func splitPath(path string) []string {
-	var segments []string
 	parts := strings.Split(path, "/")
+	segments := make([]string, 0, len(parts))
 	for _, p := range parts {
 		if p != "" {
 			segments = append(segments, p)
 		}
 	}
 	return segments
+}
+
+func wildcardKey(seg string) string {
+	if len(seg) > 1 {
+		return seg[1:]
+	}
+	return "*"
 }
 
 // Add registers a route into the Trie for the given HTTP method.
@@ -130,13 +137,9 @@ func (r *Router) insert(method, path string) *Node {
 			if strings.HasPrefix(seg, ":") {
 				child.IsParam = true
 				child.ParamKey = seg[1:]
-			} else if seg == "*" || strings.HasPrefix(seg, "*") {
+			} else if strings.HasPrefix(seg, "*") {
 				child.IsWild = true
-				if len(seg) > 1 {
-					child.ParamKey = seg[1:]
-				} else {
-					child.ParamKey = "*"
-				}
+				child.ParamKey = wildcardKey(seg)
 			}
 			current.Children = append(current.Children, child)
 		}
@@ -239,11 +242,8 @@ func (r *Router) URLFor(name string, params map[string]string) (string, error) {
 			}
 			resolved[i] = val
 			used[key] = true
-		} else if seg == "*" || strings.HasPrefix(seg, "*") {
-			key := "*"
-			if len(seg) > 1 {
-				key = seg[1:]
-			}
+		} else if strings.HasPrefix(seg, "*") {
+			key := wildcardKey(seg)
 			val, present := params[key]
 			if !present {
 				return "", fmt.Errorf("gota: missing required wildcard param for route %q", name)

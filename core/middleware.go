@@ -67,6 +67,11 @@ func CORS(opts ...CORSOptions) MiddlewareFunc {
 	methodsStr := strings.Join(cfg.AllowMethods, ", ")
 	headersStr := strings.Join(cfg.AllowHeaders, ", ")
 	exposeStr := strings.Join(cfg.ExposeHeaders, ", ")
+	isWildcard := len(cfg.AllowOrigins) == 1 && cfg.AllowOrigins[0] == "*"
+	maxAgeStr := ""
+	if cfg.MaxAge > 0 {
+		maxAgeStr = strconv.Itoa(cfg.MaxAge)
+	}
 
 	return func(next HandlerFunc) HandlerFunc {
 		return func(ctx *Context) error {
@@ -75,9 +80,8 @@ func CORS(opts ...CORSOptions) MiddlewareFunc {
 
 			origin := r.Header.Get("Origin")
 			if origin != "" {
-				wildcard := len(cfg.AllowOrigins) == 1 && cfg.AllowOrigins[0] == "*"
-				allowed := wildcard
-				if wildcard {
+				allowed := isWildcard
+				if isWildcard {
 					w.Header().Set("Access-Control-Allow-Origin", "*")
 				} else {
 					w.Header().Add("Vary", "Origin")
@@ -105,8 +109,8 @@ func CORS(opts ...CORSOptions) MiddlewareFunc {
 				if headersStr != "" {
 					w.Header().Set("Access-Control-Allow-Headers", headersStr)
 				}
-				if cfg.MaxAge > 0 {
-					w.Header().Set("Access-Control-Max-Age", strconv.Itoa(cfg.MaxAge))
+				if maxAgeStr != "" {
+					w.Header().Set("Access-Control-Max-Age", maxAgeStr)
 				}
 				return ctx.NoContent()
 			}
@@ -142,6 +146,14 @@ func Recover() MiddlewareFunc {
 	}
 }
 
+func resolveResponseStatus(ctx *Context, err error) int {
+	if err != nil && !ctx.Written() {
+		// The error handler runs after this middleware, so resolve the status it will use.
+		return statusFromError(err)
+	}
+	return ctx.StatusCode()
+}
+
 // Logger logs each incoming request with method, path, status, and duration.
 func Logger() MiddlewareFunc {
 	return func(next HandlerFunc) HandlerFunc {
@@ -149,11 +161,7 @@ func Logger() MiddlewareFunc {
 			start := time.Now()
 			err := next(ctx)
 			duration := time.Since(start)
-			status := ctx.StatusCode()
-			if err != nil && !ctx.Written() {
-				// The error handler runs after this middleware, so resolve the status it will use.
-				status = statusFromError(err)
-			}
+			status := resolveResponseStatus(ctx, err)
 			log.Printf("gota: %s %s [%d] %s", ctx.Request.Method, ctx.Request.URL.Path, status, duration)
 			return err
 		}
@@ -237,11 +245,7 @@ func SlogLogger(opts ...SlogLoggerOptions) MiddlewareFunc {
 			start := time.Now()
 			err := next(ctx)
 			duration := time.Since(start)
-
-			status := ctx.StatusCode()
-			if err != nil && !ctx.Written() {
-				status = statusFromError(err)
-			}
+			status := resolveResponseStatus(ctx, err)
 
 			attrs := []any{
 				slog.String("method", ctx.Request.Method),
