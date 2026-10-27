@@ -89,6 +89,51 @@ func splitRules(tag string) []string {
 	return rules
 }
 
+// parseMessageTag parses custom error messages from `msg` or `message` struct tags.
+// Supports both a fallback message ("name is required") and rule-specific messages
+// separated by "|" ("required:name is required|min:name is too short").
+func parseMessageTag(tag string) map[string]string {
+	tag = strings.TrimSpace(tag)
+	if tag == "" {
+		return nil
+	}
+	msgs := make(map[string]string)
+	for _, part := range strings.Split(tag, "|") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if idx := strings.Index(part, ":"); idx != -1 {
+			rule := strings.TrimSpace(part[:idx])
+			msg := strings.TrimSpace(part[idx+1:])
+			if rule != "" && msg != "" {
+				msgs[rule] = msg
+			}
+		} else {
+			msgs["_"] = part
+		}
+	}
+	return msgs
+}
+
+// resolveCustomMessage returns a customized error message if defined, falling back to defaultMsg.
+func resolveCustomMessage(customMsgs map[string]string, ruleName, fullName, defaultMsg string) string {
+	if len(customMsgs) == 0 {
+		return defaultMsg
+	}
+	msg, ok := customMsgs[ruleName]
+	if !ok {
+		msg, ok = customMsgs["_"]
+	}
+	if !ok {
+		return defaultMsg
+	}
+	if strings.Contains(msg, "{field}") {
+		return strings.ReplaceAll(msg, "{field}", fullName)
+	}
+	return msg
+}
+
 // SilenceTagWarnings controls whether startup warning logs are printed for suspicious validation tags
 // (such as validate:"required" on primitive bool or numeric fields).
 var SilenceTagWarnings bool
@@ -125,6 +170,33 @@ func checkTagsInternal(t reflect.Type, seen map[reflect.Type]bool) error {
 		// Anti-pattern check: using path:"id" instead of param:"id"
 		if pathTag := field.Tag.Get("path"); pathTag != "" {
 			return fmt.Errorf("field %q: tag `path:%q` is not supported; Gota uses `param:%q` for route path parameters", name, pathTag, pathTag)
+		}
+
+		msgTag := field.Tag.Get("msg")
+		if msgTag == "" {
+			msgTag = field.Tag.Get("message")
+		}
+		if msgTag != "" {
+			if tag == "" {
+				return fmt.Errorf("field %q: tag `msg` defined without a `validate` tag", name)
+			}
+			declaredRules := make(map[string]bool)
+			for _, r := range splitRules(tag) {
+				parts := strings.SplitN(strings.TrimSpace(r), "=", 2)
+				declaredRules[parts[0]] = true
+			}
+			customMsgs := parseMessageTag(msgTag)
+			for ruleKey := range customMsgs {
+				if ruleKey == "_" {
+					continue
+				}
+				if !isKnownRule(ruleKey) {
+					return fmt.Errorf("field %q: unknown rule %q in `msg` tag", name, ruleKey)
+				}
+				if !declaredRules[ruleKey] {
+					return fmt.Errorf("field %q: `msg` specifies message for rule %q, but rule is not present in `validate:%q`", name, ruleKey, tag)
+				}
+			}
 		}
 
 		if tag != "" {
@@ -426,6 +498,12 @@ func validateStructRecursive(ctx *core.Context, val reflect.Value, prefix string
 		fieldVal := val.Field(i)
 
 		validateTag := field.Tag.Get("validate")
+		msgTag := field.Tag.Get("msg")
+		if msgTag == "" {
+			msgTag = field.Tag.Get("message")
+		}
+		customMsgs := parseMessageTag(msgTag)
+
 		if validateTag != "" {
 			for _, rule := range splitRules(validateTag) {
 				rule = strings.TrimSpace(rule)
@@ -434,6 +512,8 @@ func validateStructRecursive(ctx *core.Context, val reflect.Value, prefix string
 				}
 
 				if err := applyValidationRule(fullName, fieldVal, rule); err != "" {
+					ruleName := strings.SplitN(rule, "=", 2)[0]
+					err = resolveCustomMessage(customMsgs, ruleName, fullName, err)
 					errMap[fullName] = append(errMap[fullName], err)
 				}
 			}
@@ -514,10 +594,17 @@ func validateNilEmbedded(ft reflect.Type, prefix string, errMap map[string][]str
 		}
 		fullName := joinPrefix(prefix, name)
 		tag := f.Tag.Get("validate")
+		msgTag := f.Tag.Get("msg")
+		if msgTag == "" {
+			msgTag = f.Tag.Get("message")
+		}
+		customMsgs := parseMessageTag(msgTag)
 		if tag != "" {
 			for _, rule := range splitRules(tag) {
 				if strings.TrimSpace(rule) == "required" {
-					errMap[fullName] = append(errMap[fullName], fmt.Sprintf("field %s is required", fullName))
+					msg := fmt.Sprintf("field %s is required", fullName)
+					msg = resolveCustomMessage(customMsgs, "required", fullName, msg)
+					errMap[fullName] = append(errMap[fullName], msg)
 				}
 			}
 		}

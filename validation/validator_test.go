@@ -567,3 +567,90 @@ func TestCheckTagWarnings(t *testing.T) {
 		t.Errorf("missing expected field warning: %v", warnings)
 	}
 }
+
+type CustomMsgDTO struct {
+	FullName string `json:"fullName" validate:"required,min=5" msg:"required:your name is required!|min:your name is too short!"`
+	Age      int    `json:"age" validate:"min=18" message:"you are not legal yet!"`
+	Code     string `json:"code" validate:"required" msg:"field {field} must be provided"`
+}
+
+func TestCustomMessageTags(t *testing.T) {
+	ctx := &core.Context{}
+
+	// Test 1: Both required and min fail or succeed
+	dto := CustomMsgDTO{
+		FullName: "Alex", // fails min=5
+		Age:      15,     // fails min=18
+		Code:     "",     // fails required
+	}
+
+	valErr := ValidateStruct(ctx, &dto)
+	if valErr == nil {
+		t.Fatal("expected validation errors, got none")
+	}
+
+	if len(valErr.Errors["fullName"]) != 1 || valErr.Errors["fullName"][0] != "your name is too short!" {
+		t.Errorf("expected 'your name is too short!', got: %v", valErr.Errors["fullName"])
+	}
+
+	if len(valErr.Errors["age"]) != 1 || valErr.Errors["age"][0] != "you are not legal yet!" {
+		t.Errorf("expected 'you are not legal yet!', got: %v", valErr.Errors["age"])
+	}
+
+	if len(valErr.Errors["code"]) != 1 || valErr.Errors["code"][0] != "field code must be provided" {
+		t.Errorf("expected 'field code must be provided', got: %v", valErr.Errors["code"])
+	}
+
+	// Test 2: required on FullName
+	// Test 2: empty FullName triggers both custom messages (required and min)
+	dtoEmpty := CustomMsgDTO{
+		FullName: "",
+		Age:      20,
+		Code:     "ABC",
+	}
+	valErr2 := ValidateStruct(ctx, &dtoEmpty)
+	if valErr2 == nil {
+		t.Fatal("expected validation errors for empty FullName, got none")
+	}
+	expectedMsgs := []string{"your name is required!", "your name is too short!"}
+	if len(valErr2.Errors["fullName"]) != 2 ||
+		valErr2.Errors["fullName"][0] != expectedMsgs[0] ||
+		valErr2.Errors["fullName"][1] != expectedMsgs[1] {
+		t.Errorf("expected %v, got: %v", expectedMsgs, valErr2.Errors["fullName"])
+	}
+}
+
+func TestCheckTagsWithCustomMsg(t *testing.T) {
+	// Valid: correctly matching rules
+	type ValidMsg struct {
+		Name string `validate:"required,min=3" msg:"required:name is required|min:min 3"`
+		Bio  string `validate:"max=100" message:"bio is too long"`
+	}
+	if err := CheckTags(reflect.TypeOf(ValidMsg{})); err != nil {
+		t.Fatalf("expected valid msg tags to pass CheckTags, got: %v", err)
+	}
+
+	// Invalid: msg defined without validate tag
+	type MsgWithoutValidate struct {
+		Name string `msg:"name is required"`
+	}
+	if err := CheckTags(reflect.TypeOf(MsgWithoutValidate{})); err == nil {
+		t.Fatal("expected error for msg without validate tag, got nil")
+	}
+
+	// Invalid: typo in rule name in msg
+	type TypoInMsgRule struct {
+		Name string `validate:"required" msg:"requried:typo here"`
+	}
+	if err := CheckTags(reflect.TypeOf(TypoInMsgRule{})); err == nil {
+		t.Fatal("expected error for typo in msg rule name, got nil")
+	}
+
+	// Invalid: rule in msg not declared in validate
+	type MsgRuleNotDeclared struct {
+		Name string `validate:"min=5" msg:"required:not declared in validate"`
+	}
+	if err := CheckTags(reflect.TypeOf(MsgRuleNotDeclared{})); err == nil {
+		t.Fatal("expected error for rule in msg not declared in validate, got nil")
+	}
+}

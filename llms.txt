@@ -100,6 +100,8 @@ Gota automatically binds fields from five sources using struct tags:
 | `form:"name"`       | Form field or file upload (multipart/urlencoded) | `Avatar *multipart.FileHeader \`form:"avatar"\`` |
 | `json:"name"`       | JSON Request Body                                | `Title string \`json:"title"\``                  |
 | `validate:"rules"`  | Validation rules (comma-separated)               | `validate:"required,min=3,email"`                |
+| `msg:"messages"`    | Custom validation error message(s)               | `msg:"required:name is required\|min:too short"`  |
+| `message:"text"`    | Alias for `msg` tag                              | `message:"invalid age"`                          |
 | `doc:"description"` | OpenAPI parameter/field description              | `doc:"User email address"`                       |
 | `example:"val"`     | OpenAPI example value                            | `example:"jane@example.com"`                     |
 | `format:"fmt"`      | OpenAPI schema format hint                       | `format:"date-time"`                             |
@@ -134,6 +136,22 @@ Nested struct fields (e.g. `Address AddressDTO`) and slices of structs (e.g. `It
 #### OpenAPI schemas for nested types:
 
 Nested struct fields are documented with their full `properties`: named structs (e.g. `Address AddressDTO`, `Items []ItemDTO`) become entries in `components.schemas` referenced via `$ref`, and anonymous inline structs are expanded in place. Self-referencing and mutually recursive types (e.g. `type Node struct { Next *Node }`) are supported and resolved through `$ref`, without infinite recursion. Two types with the same name in different packages get distinct schemas (the second is prefixed with its package name).
+
+#### Custom Validation Error Messages (`msg` / `message` tags):
+
+Fields can customize error messages instead of standard default text. Two formats are supported:
+
+1. **Fallback message for any failed rule on the field:**
+   ```go
+   Age int `json:"age" validate:"min=18" msg:"You must be at least 18 years old."`
+   ```
+
+2. **Rule-specific messages separated by `|` (rule:message):**
+   ```go
+   FullName string `json:"fullName" validate:"required,min=5" msg:"required:Your name is required!|min:Your name is too short!"`
+   ```
+   Optional `{field}` token expands to the field's JSON/param property name (e.g. `msg:"required:field {field} is mandatory"`).
+   The `message` tag is an alias for `msg`. `CheckTags` verifies at startup that all rules referenced in `msg` exist in `validate` to catch typos fast.
 
 #### Custom Struct Validation (`Validator` & `ContextValidator`):
 
