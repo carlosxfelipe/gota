@@ -1,6 +1,7 @@
 package gota
 
 import (
+	"crypto/ecdsa"
 	"crypto/rsa"
 
 	"github.com/carlosxfelipe/gota/core"
@@ -35,6 +36,7 @@ type (
 const (
 	JWTAlgorithmHS256 = core.JWTAlgorithmHS256
 	JWTAlgorithmRS256 = core.JWTAlgorithmRS256
+	JWTAlgorithmES256 = core.JWTAlgorithmES256
 )
 
 // Re-exported Scalar Theme Constants
@@ -111,6 +113,10 @@ func JWTRSA(publicKey *rsa.PublicKey, opts ...JWTOptions) MiddlewareFunc {
 	return core.JWTRSA(publicKey, opts...)
 }
 
+func JWTES256(publicKey *ecdsa.PublicKey, opts ...JWTOptions) MiddlewareFunc {
+	return core.JWTES256(publicKey, opts...)
+}
+
 func SignJWT(secret []byte, payload any) (string, error) {
 	return core.SignJWT(secret, payload)
 }
@@ -119,12 +125,20 @@ func SignJWTRSA(privateKey *rsa.PrivateKey, payload any, keyID ...string) (strin
 	return core.SignJWTRSA(privateKey, payload, keyID...)
 }
 
+func SignJWTES256(privateKey *ecdsa.PrivateKey, payload any, keyID ...string) (string, error) {
+	return core.SignJWTES256(privateKey, payload, keyID...)
+}
+
 func VerifyJWT(secret []byte, tokenString string, target any) error {
 	return core.VerifyJWT(secret, tokenString, target)
 }
 
 func VerifyJWTRSA(publicKey *rsa.PublicKey, tokenString string, target any) error {
 	return core.VerifyJWTRSA(publicKey, tokenString, target)
+}
+
+func VerifyJWTES256(publicKey *ecdsa.PublicKey, tokenString string, target any) error {
+	return core.VerifyJWTES256(publicKey, tokenString, target)
 }
 
 func ParseJWTHeader(tokenString string) (JWTHeader, error) {
@@ -137,6 +151,14 @@ func ParseRSAPrivateKeyFromPEM(pemBytes []byte) (*rsa.PrivateKey, error) {
 
 func ParseRSAPublicKeyFromPEM(pemBytes []byte) (*rsa.PublicKey, error) {
 	return core.ParseRSAPublicKeyFromPEM(pemBytes)
+}
+
+func ParseECPrivateKeyFromPEM(pemBytes []byte) (*ecdsa.PrivateKey, error) {
+	return core.ParseECPrivateKeyFromPEM(pemBytes)
+}
+
+func ParseECPublicKeyFromPEM(pemBytes []byte) (*ecdsa.PublicKey, error) {
+	return core.ParseECPublicKeyFromPEM(pemBytes)
 }
 
 func JWTClaims[T any](ctx *Context, key ...string) (T, bool) {

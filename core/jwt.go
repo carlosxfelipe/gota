@@ -1,6 +1,7 @@
 package core
 
 import (
+	"crypto/ecdsa"
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
@@ -18,6 +19,8 @@ const (
 	JWTAlgorithmHS256 JWTAlgorithm = "HS256"
 	// JWTAlgorithmRS256 represents RSA-SHA256 asymmetric signing.
 	JWTAlgorithmRS256 JWTAlgorithm = "RS256"
+	// JWTAlgorithmES256 represents ECDSA P-256 with SHA-256 asymmetric signing.
+	JWTAlgorithmES256 JWTAlgorithm = "ES256"
 )
 
 // JWTHeader represents the decoded JOSE header of a JWT.
@@ -35,6 +38,8 @@ type JWTOptions struct {
 	Secret []byte
 	// RSAPublicKey is the RSA public key used to verify RS256 tokens.
 	RSAPublicKey *rsa.PublicKey
+	// ECDSAPublicKey is the ECDSA public key used to verify ES256 tokens.
+	ECDSAPublicKey *ecdsa.PublicKey
 	// ContextKey is the key under which claims will be stored in Context (default: "user").
 	ContextKey string
 	// ClaimsFactory is an optional factory function returning a pointer to a custom claims struct.
@@ -135,6 +140,12 @@ func applyJWTOptions(dst *JWTOptions, src JWTOptions) {
 			dst.Algorithm = JWTAlgorithmRS256
 		}
 	}
+	if src.ECDSAPublicKey != nil {
+		dst.ECDSAPublicKey = src.ECDSAPublicKey
+		if dst.Algorithm == "" {
+			dst.Algorithm = JWTAlgorithmES256
+		}
+	}
 	if src.ContextKey != "" {
 		dst.ContextKey = src.ContextKey
 	}
@@ -174,12 +185,18 @@ func createJWTMiddleware(cfg JWTOptions) MiddlewareFunc {
 			}
 
 			var verifyErr error
-			if cfg.Algorithm == JWTAlgorithmRS256 || cfg.RSAPublicKey != nil {
+			switch {
+			case cfg.Algorithm == JWTAlgorithmES256 || cfg.ECDSAPublicKey != nil:
+				if cfg.ECDSAPublicKey == nil {
+					return unauthorized("Invalid or expired token")
+				}
+				verifyErr = verifyJWTES256(cfg.ECDSAPublicKey, parts[1], claims, cfg.RequireExp)
+			case cfg.Algorithm == JWTAlgorithmRS256 || cfg.RSAPublicKey != nil:
 				if cfg.RSAPublicKey == nil {
 					return unauthorized("Invalid or expired token")
 				}
 				verifyErr = verifyJWTRSA(cfg.RSAPublicKey, parts[1], claims, cfg.RequireExp)
-			} else {
+			default:
 				verifyErr = verifyJWT(cfg.Secret, parts[1], claims, cfg.RequireExp)
 			}
 

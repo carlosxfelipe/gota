@@ -26,7 +26,7 @@ Inspired by the ergonomic fluency of [Kite](https://github.com/claudiovictors/ki
 - **Zero External Dependencies**: Built 100% on the Go standard library.
 - **Native OpenAPI 3.1 & Scalar Docs**: Automatic spec generation from Go types, serving interactive Scalar UI (`classic` layout) at `/docs`.
 - **Fluent Route Ergonomics**: Chainable metadata (`.Summary()`, `.Tags()`, `.Middleware()`), route groups, and parameter matching (`:id`, `*wildcard`).
-- **Production-Ready Middlewares**: Built-in JWT (HS256 & RS256), CORS, Panic Recovery, Request ID, Slog logger, timeouts, and graceful shutdown.
+- **Production-Ready Middlewares**: Built-in JWT (HS256, RS256, ES256), CORS, Panic Recovery, Request ID, Slog logger, timeouts, and graceful shutdown.
 
 > 📖 Looking for in-depth patterns, validation recipes, security best practices, and AI guidance? See [llms.txt](llms.txt).
 

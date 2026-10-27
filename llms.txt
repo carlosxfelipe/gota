@@ -394,6 +394,28 @@ protected.Use(gota.JWTRSA(pubKey, gota.JWTOptions{
 }))
 ```
 
+### 6.4 Asymmetric ECDSA Tokens (ES256)
+
+For Apple ecosystem integrations, Passkeys/WebAuthn, and high-performance mobile APIs, Gota supports ES256 (NIST P-256 + SHA-256) with 64-byte compact signatures:
+
+```go
+// Parse keys from PEM:
+privKey, err := gota.ParseECPrivateKeyFromPEM(privPEMBytes)
+pubKey, err := gota.ParseECPublicKeyFromPEM(pubPEMBytes)
+
+// Sign with ECDSA private key:
+token, err := gota.SignJWTES256(privKey, claims, "apple-key-1")
+
+// Verify with ECDSA public key:
+err = gota.VerifyJWTES256(pubKey, tokenString, &claims)
+
+// ES256 Middleware:
+protected.Use(gota.JWTES256(pubKey, gota.JWTOptions{
+	RequireExp: true,
+	ClaimsFactory: func() any { return &CustomClaims{} },
+}))
+```
+
 ---
 
 ## 7. Fluent Route Metadata Chaining
