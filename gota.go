@@ -43,6 +43,10 @@ const (
 	ThemeMars       = core.ThemeMars
 	ThemeLaserwave  = core.ThemeLaserwave
 	ThemeNone       = core.ThemeNone
+
+	DefaultScalarVersion = core.DefaultScalarVersion
+	DefaultScalarCDN     = core.DefaultScalarCDN
+	DefaultScalarSRI     = core.DefaultScalarSRI
 )
 
 // New initializes and returns a new Gota application instance.

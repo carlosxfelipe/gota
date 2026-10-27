@@ -26,6 +26,13 @@ const (
 	ThemeNone       ScalarTheme = "none"
 )
 
+// Default Scalar CDN settings pinned to latest stable release with Subresource Integrity (SRI).
+const (
+	DefaultScalarVersion = "1.76.0"
+	DefaultScalarCDN     = "https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.76.0/dist/browser/standalone.js"
+	DefaultScalarSRI     = "sha384-oH1C0RwqcwbVXkC+r8A+4qRoyEUQdtxAzOwumkxZtQBBcsy61FOoPt7B50OVJYYQ"
+)
+
 // ScalarConfig holds visual and functional settings for Scalar API Reference.
 type ScalarConfig struct {
 	Title        string            `json:"title,omitempty"`
@@ -38,6 +45,8 @@ type ScalarConfig struct {
 	CustomCSS    string            `json:"customCss,omitempty"`
 	SearchHotKey string            `json:"searchHotKey,omitempty"`
 	Metadata     map[string]string `json:"metadata,omitempty"`
+	ScriptURL    string            `json:"scriptUrl,omitempty"`
+	SRI          string            `json:"sri,omitempty"`
 }
 
 // RenderScalarHTML generates the standalone HTML page for Scalar API Reference.
@@ -84,6 +93,20 @@ func RenderScalarHTML(cfg ScalarConfig) (string, error) {
 		return "", err
 	}
 
+	scriptURL := cfg.ScriptURL
+	sri := cfg.SRI
+	if scriptURL == "" {
+		scriptURL = DefaultScalarCDN
+		if sri == "" {
+			sri = DefaultScalarSRI
+		}
+	}
+
+	var integrityAttr string
+	if sri != "" {
+		integrityAttr = fmt.Sprintf("\n      integrity=\"%s\"\n      crossorigin=\"anonymous\"", html.EscapeString(sri))
+	}
+
 	page := fmt.Sprintf(`<!doctype html>
 <html lang="en">
   <head>
@@ -104,10 +127,10 @@ func RenderScalarHTML(cfg ScalarConfig) (string, error) {
       id="api-reference"
       data-url="%s"
       data-configuration='%s'
-      src="https://cdn.jsdelivr.net/npm/@scalar/api-reference">
+      src="%s"%s>
     </script>
   </body>
-</html>`, html.EscapeString(title), html.EscapeString(cfg.SpecURL), html.EscapeString(string(optionsJSON)))
+</html>`, html.EscapeString(title), html.EscapeString(cfg.SpecURL), html.EscapeString(string(optionsJSON)), html.EscapeString(scriptURL), integrityAttr)
 
 	return page, nil
 }

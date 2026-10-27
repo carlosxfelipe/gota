@@ -24,15 +24,17 @@ type ServerConfig struct {
 
 // Config encapsulates settings for the Gota application, OpenAPI, and Scalar UI.
 type Config struct {
-	Title        string         `json:"title,omitempty"`
-	Version      string         `json:"version,omitempty"`
-	Description  string         `json:"description,omitempty"`
-	DocsURL      string         `json:"docsUrl,omitempty"`
-	OpenAPIURL   string         `json:"openApiUrl,omitempty"`
-	ScalarTheme  ScalarTheme    `json:"scalarTheme,omitempty"`
-	ScalarLayout string         `json:"scalarLayout,omitempty"` // Default: "classic"
-	DisableDocs  bool           `json:"disableDocs,omitempty"`
-	Servers      []ServerConfig `json:"servers,omitempty"`
+	Title           string         `json:"title,omitempty"`
+	Version         string         `json:"version,omitempty"`
+	Description     string         `json:"description,omitempty"`
+	DocsURL         string         `json:"docsUrl,omitempty"`
+	OpenAPIURL      string         `json:"openApiUrl,omitempty"`
+	ScalarTheme     ScalarTheme    `json:"scalarTheme,omitempty"`
+	ScalarLayout    string         `json:"scalarLayout,omitempty"` // Default: "classic"
+	ScalarScriptURL string         `json:"scalarScriptUrl,omitempty"`
+	ScalarSRI       string         `json:"scalarSri,omitempty"`
+	DisableDocs     bool           `json:"disableDocs,omitempty"`
+	Servers         []ServerConfig `json:"servers,omitempty"`
 
 	// MaxBodyBytes limits the size of request bodies. Default: 10 MiB.
 	// Use a negative value to disable the limit.
@@ -288,10 +290,12 @@ func (a *App) registerDocs() {
 	// Scalar API Reference UI (Layout: classic by default)
 	docsRoute := a.Get(docsURL, func(ctx *Context) error {
 		html, err := RenderScalarHTML(ScalarConfig{
-			Title:   a.config.Title + " - API Reference",
-			SpecURL: openAPIURL,
-			Theme:   a.config.ScalarTheme,
-			Layout:  a.config.ScalarLayout,
+			Title:     a.config.Title + " - API Reference",
+			SpecURL:   openAPIURL,
+			Theme:     a.config.ScalarTheme,
+			Layout:    a.config.ScalarLayout,
+			ScriptURL: a.config.ScalarScriptURL,
+			SRI:       a.config.ScalarSRI,
 		})
 		if err != nil {
 			return ctx.Status(http.StatusInternalServerError).Send("Failed to render documentation")
