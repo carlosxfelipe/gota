@@ -120,23 +120,7 @@ func checkTagsInternal(t reflect.Type, seen map[reflect.Type]bool) error {
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		tag := field.Tag.Get("validate")
-
-		name := field.Name
-		if formTag := field.Tag.Get("form"); formTag != "" && formTag != "-" {
-			if n := strings.Split(formTag, ",")[0]; n != "" {
-				name = n
-			}
-		} else if jsonTag := field.Tag.Get("json"); jsonTag != "" && jsonTag != "-" {
-			if n := strings.Split(jsonTag, ",")[0]; n != "" {
-				name = n
-			}
-		} else if paramTag := field.Tag.Get("param"); paramTag != "" {
-			name = paramTag
-		} else if queryTag := field.Tag.Get("query"); queryTag != "" {
-			name = queryTag
-		} else if headerTag := field.Tag.Get("header"); headerTag != "" {
-			name = headerTag
-		}
+		name := fieldIdentifier(field)
 
 		if tag != "" {
 			for _, rule := range splitRules(tag) {
@@ -172,16 +156,7 @@ func checkTagsInternal(t reflect.Type, seen map[reflect.Type]bool) error {
 		}
 
 		// Recurse into nested struct or slice of structs
-		ft := field.Type
-		if ft.Kind() == reflect.Pointer {
-			ft = ft.Elem()
-		}
-		if ft.Kind() == reflect.Slice {
-			ft = ft.Elem()
-			if ft.Kind() == reflect.Pointer {
-				ft = ft.Elem()
-			}
-		}
+		ft := unwrapStructType(field.Type)
 		if ft.Kind() == reflect.Struct && !isStdLibStruct(ft) {
 			if err := checkTagsInternal(ft, seen); err != nil {
 				return err
@@ -215,22 +190,7 @@ func checkTagWarningsInternal(t reflect.Type, seen map[reflect.Type]bool, shadow
 	seen[t] = true
 	defer delete(seen, t)
 
-	localOwn := make(map[string]bool)
-	for i := 0; i < t.NumField(); i++ {
-		field := t.Field(i)
-		if _, ok := core.EmbeddedStructType(field); ok {
-			continue
-		}
-		localOwn[fieldIdentifier(field)] = true
-	}
-
-	mergedShadowed := make(map[string]bool, len(shadowed)+len(localOwn))
-	for k, v := range shadowed {
-		mergedShadowed[k] = v
-	}
-	for k, v := range localOwn {
-		mergedShadowed[k] = v
-	}
+	mergedShadowed := collectShadowedFields(t, shadowed)
 
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
@@ -274,16 +234,7 @@ func checkTagWarningsInternal(t reflect.Type, seen map[reflect.Type]bool, shadow
 			*warnings = append(*warnings, msg)
 		}
 
-		ft := field.Type
-		if ft.Kind() == reflect.Pointer {
-			ft = ft.Elem()
-		}
-		if ft.Kind() == reflect.Slice {
-			ft = ft.Elem()
-			if ft.Kind() == reflect.Pointer {
-				ft = ft.Elem()
-			}
-		}
+		ft := unwrapStructType(field.Type)
 		if ft.Kind() == reflect.Struct && !isStdLibStruct(ft) {
 			checkTagWarningsInternal(ft, seen, nil, warnings)
 		}
@@ -400,23 +351,7 @@ func validateStructRecursive(ctx *core.Context, val reflect.Value, prefix string
 	embedding[t] = true
 	defer delete(embedding, t)
 
-	// Collect direct fields of this struct so they shadow any promoted fields from embedded structs.
-	localOwn := make(map[string]bool)
-	for i := 0; i < t.NumField(); i++ {
-		field := t.Field(i)
-		if _, ok := core.EmbeddedStructType(field); ok {
-			continue
-		}
-		localOwn[fieldIdentifier(field)] = true
-	}
-
-	mergedShadowed := make(map[string]bool, len(shadowed)+len(localOwn))
-	for k, v := range shadowed {
-		mergedShadowed[k] = v
-	}
-	for k, v := range localOwn {
-		mergedShadowed[k] = v
-	}
+	mergedShadowed := collectShadowedFields(t, shadowed)
 
 	// 1. Validate own/direct fields
 	for i := 0; i < t.NumField(); i++ {
@@ -432,10 +367,7 @@ func validateStructRecursive(ctx *core.Context, val reflect.Value, prefix string
 		if shadowed[fieldName] {
 			continue
 		}
-		fullName := fieldName
-		if prefix != "" {
-			fullName = prefix + "." + fieldName
-		}
+		fullName := joinPrefix(prefix, fieldName)
 		fieldVal := val.Field(i)
 
 		validateTag := field.Tag.Get("validate")
@@ -525,10 +457,7 @@ func validateNilEmbedded(ft reflect.Type, prefix string, errMap map[string][]str
 		if shadowed[name] {
 			continue
 		}
-		fullName := name
-		if prefix != "" {
-			fullName = prefix + "." + name
-		}
+		fullName := joinPrefix(prefix, name)
 		tag := f.Tag.Get("validate")
 		if tag != "" {
 			for _, rule := range splitRules(tag) {
@@ -572,75 +501,34 @@ func applyValidationRule(field string, val reflect.Value, rule string) string {
 		if ruleParam == "" {
 			return ""
 		}
-		if (val.Kind() == reflect.Pointer || val.Kind() == reflect.Interface) && val.IsNil() {
-			return ""
-		}
 		minVal, err := strconv.ParseFloat(ruleParam, 64)
 		if err != nil {
 			return ""
 		}
-		switch val.Kind() {
-		case reflect.String:
-			if float64(utf8.RuneCountInString(val.String())) < minVal {
-				return fmt.Sprintf("field %s must be at least %v characters", field, minVal)
-			}
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			if float64(val.Uint()) < minVal {
-				return fmt.Sprintf("field %s must be at least %v", field, minVal)
-			}
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			if float64(val.Int()) < minVal {
-				return fmt.Sprintf("field %s must be at least %v", field, minVal)
-			}
-		case reflect.Float32, reflect.Float64:
-			if val.Float() < minVal {
-				return fmt.Sprintf("field %s must be at least %v", field, minVal)
-			}
-		case reflect.Slice:
-			if float64(val.Len()) < minVal {
+		if num, unit, ok := toComparableValue(val); ok && num < minVal {
+			if unit == " items" {
 				return fmt.Sprintf("field %s must contain at least %v items", field, minVal)
 			}
+			return fmt.Sprintf("field %s must be at least %v%s", field, minVal, unit)
 		}
 
 	case "max":
 		if ruleParam == "" {
 			return ""
 		}
-		if (val.Kind() == reflect.Pointer || val.Kind() == reflect.Interface) && val.IsNil() {
-			return ""
-		}
 		maxVal, err := strconv.ParseFloat(ruleParam, 64)
 		if err != nil {
 			return ""
 		}
-		switch val.Kind() {
-		case reflect.String:
-			if float64(utf8.RuneCountInString(val.String())) > maxVal {
-				return fmt.Sprintf("field %s must not exceed %v characters", field, maxVal)
-			}
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			if float64(val.Uint()) > maxVal {
-				return fmt.Sprintf("field %s must not exceed %v", field, maxVal)
-			}
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			if float64(val.Int()) > maxVal {
-				return fmt.Sprintf("field %s must not exceed %v", field, maxVal)
-			}
-		case reflect.Float32, reflect.Float64:
-			if val.Float() > maxVal {
-				return fmt.Sprintf("field %s must not exceed %v", field, maxVal)
-			}
-		case reflect.Slice:
-			if float64(val.Len()) > maxVal {
+		if num, unit, ok := toComparableValue(val); ok && num > maxVal {
+			if unit == " items" {
 				return fmt.Sprintf("field %s must not contain more than %v items", field, maxVal)
 			}
+			return fmt.Sprintf("field %s must not exceed %v%s", field, maxVal, unit)
 		}
 
 	case "len":
 		if ruleParam == "" {
-			return ""
-		}
-		if (val.Kind() == reflect.Pointer || val.Kind() == reflect.Interface) && val.IsNil() {
 			return ""
 		}
 		targetLen, err := strconv.Atoi(ruleParam)
@@ -660,9 +548,6 @@ func applyValidationRule(field string, val reflect.Value, rule string) string {
 
 	case "oneof":
 		if ruleParam == "" {
-			return ""
-		}
-		if (val.Kind() == reflect.Pointer || val.Kind() == reflect.Interface) && val.IsNil() {
 			return ""
 		}
 		if val.Kind() == reflect.String && val.String() == "" {
@@ -742,3 +627,61 @@ func isZero(val reflect.Value) bool {
 		return val.IsZero()
 	}
 }
+
+// unwrapStructType unwraps pointers and slice elements down to the underlying type.
+func unwrapStructType(t reflect.Type) reflect.Type {
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t.Kind() == reflect.Slice {
+		t = t.Elem()
+		if t.Kind() == reflect.Pointer {
+			t = t.Elem()
+		}
+	}
+	return t
+}
+
+// collectShadowedFields records direct field identifiers (skipping embedded structs)
+// and merges them with shadowed fields to prevent outer fields from being overridden.
+func collectShadowedFields(t reflect.Type, shadowed map[string]bool) map[string]bool {
+	merged := make(map[string]bool, len(shadowed)+t.NumField())
+	for k, v := range shadowed {
+		merged[k] = v
+	}
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if _, ok := core.EmbeddedStructType(field); ok {
+			continue
+		}
+		merged[fieldIdentifier(field)] = true
+	}
+	return merged
+}
+
+// joinPrefix concatenates a prefix and a field name using dot notation.
+func joinPrefix(prefix, name string) string {
+	if prefix == "" {
+		return name
+	}
+	return prefix + "." + name
+}
+
+// toComparableValue extracts a float64 representation and message unit from comparable kinds.
+func toComparableValue(val reflect.Value) (float64, string, bool) {
+	switch val.Kind() {
+	case reflect.String:
+		return float64(utf8.RuneCountInString(val.String())), " characters", true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return float64(val.Uint()), "", true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return float64(val.Int()), "", true
+	case reflect.Float32, reflect.Float64:
+		return val.Float(), "", true
+	case reflect.Slice:
+		return float64(val.Len()), " items", true
+	default:
+		return 0, "", false
+	}
+}
+
