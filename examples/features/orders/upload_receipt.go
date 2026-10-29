@@ -11,7 +11,7 @@ import (
 type UploadReceiptRequest struct {
 	OrderId string                `param:"orderId" doc:"Order ID" example:"b1a2c3d4-0001-4000-8000-000000000001" validate:"required"`
 	Receipt *multipart.FileHeader `form:"receipt" doc:"Payment receipt file (PDF, PNG, JPG)" validate:"required"`
-	Notes   string                `form:"notes,omitempty" doc:"Optional notes about the receipt" example:"Paid at store counter"`
+	Notes   string                `form:"notes" doc:"Optional notes about the receipt" example:"Paid at store counter"`
 }
 
 // UploadReceiptResponse describes the uploaded receipt confirmation.

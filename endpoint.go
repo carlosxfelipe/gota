@@ -195,56 +195,7 @@ func introspectEndpoint[Req any, Res any](defaultStatus int) *core.RouteDoc {
 	hasFileFields := false
 
 	if reqType != nil && !isEmptyType(reqType) && reqType.Kind() == reflect.Struct {
-		for i := 0; i < reqType.NumField(); i++ {
-			field := reqType.Field(i)
-
-			// Path param
-			if paramTag := field.Tag.Get("param"); paramTag != "" {
-				doc.Parameters = append(doc.Parameters, core.ParamDoc{
-					In:          "path",
-					Name:        paramTag,
-					Model:       reflect.New(field.Type).Elem().Interface(),
-					Description: field.Tag.Get("doc"),
-					Required:    true,
-				})
-				continue
-			}
-
-			// Query param
-			if queryTag := field.Tag.Get("query"); queryTag != "" {
-				doc.Parameters = append(doc.Parameters, core.ParamDoc{
-					In:          "query",
-					Name:        queryTag,
-					Model:       reflect.New(field.Type).Elem().Interface(),
-					Description: field.Tag.Get("doc"),
-					Required:    hasRequiredRule(field.Tag.Get("validate")),
-				})
-				continue
-			}
-
-			// Header param
-			if headerTag := field.Tag.Get("header"); headerTag != "" {
-				doc.Parameters = append(doc.Parameters, core.ParamDoc{
-					In:          "header",
-					Name:        headerTag,
-					Model:       reflect.New(field.Type).Elem().Interface(),
-					Description: field.Tag.Get("doc"),
-					Required:    hasRequiredRule(field.Tag.Get("validate")),
-				})
-				continue
-			}
-
-			if formTag := field.Tag.Get("form"); formTag != "" {
-				hasFormFields = true
-				if field.Type == fileHeaderPtrType || field.Type == fileHeaderSliceType {
-					hasFileFields = true
-				}
-			}
-
-			if field.IsExported() {
-				hasBodyFields = true
-			}
-		}
+		inspectRequestStruct(reqType, &doc.Parameters, &hasBodyFields, &hasFormFields, &hasFileFields, nil, map[reflect.Type]bool{})
 
 		if hasBodyFields {
 			contentType := "application/json"
@@ -298,6 +249,117 @@ func introspectEndpoint[Req any, Res any](defaultStatus int) *core.RouteDoc {
 	}
 
 	return doc
+}
+
+// inspectRequestStruct extracts path, query, and header parameters from t (including
+// untagged embedded structs, with outer fields shadowing promoted ones) and reports
+// whether t has any request body, form, or file upload fields.
+func inspectRequestStruct(t reflect.Type, params *[]core.ParamDoc, hasBodyFields, hasFormFields, hasFileFields *bool, shadowed map[string]bool, embedding map[reflect.Type]bool) {
+	if embedding[t] {
+		return
+	}
+	embedding[t] = true
+	defer delete(embedding, t)
+
+	mergedShadowed := make(map[string]bool, len(shadowed)+t.NumField()*3)
+	for k, v := range shadowed {
+		mergedShadowed[k] = v
+	}
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if _, ok := core.EmbeddedStructType(f); ok {
+			continue
+		}
+		for _, tag := range [...]string{"param", "query", "header"} {
+			if v := f.Tag.Get(tag); v != "" {
+				mergedShadowed[tag+":"+v] = true
+			}
+		}
+	}
+
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+
+		jsonTag := field.Tag.Get("json")
+		formTag := field.Tag.Get("form")
+		if jsonTag == "-" || formTag == "-" {
+			continue
+		}
+
+		if ft, ok := core.EmbeddedStructType(field); ok {
+			inspectRequestStruct(ft, params, hasBodyFields, hasFormFields, hasFileFields, mergedShadowed, embedding)
+			continue
+		}
+
+		if !field.IsExported() {
+			continue
+		}
+
+		var ex any
+		if exTag := field.Tag.Get("example"); exTag != "" {
+			ex = core.ParseExample(exTag, field.Type)
+		}
+
+		// Path param
+		if paramTag := field.Tag.Get("param"); paramTag != "" {
+			if !shadowed["param:"+paramTag] {
+				*params = append(*params, core.ParamDoc{
+					In:          "path",
+					Name:        paramTag,
+					Model:       reflect.New(field.Type).Elem().Interface(),
+					Description: field.Tag.Get("doc"),
+					Required:    true,
+					Example:     ex,
+				})
+			}
+			if jsonTag == "" && formTag == "" {
+				continue
+			}
+		}
+
+		// Query param
+		if queryTag := field.Tag.Get("query"); queryTag != "" {
+			if !shadowed["query:"+queryTag] {
+				*params = append(*params, core.ParamDoc{
+					In:          "query",
+					Name:        queryTag,
+					Model:       reflect.New(field.Type).Elem().Interface(),
+					Description: field.Tag.Get("doc"),
+					Required:    hasRequiredRule(field.Tag.Get("validate")),
+					Example:     ex,
+				})
+			}
+			if jsonTag == "" && formTag == "" {
+				continue
+			}
+		}
+
+		// Header param
+		if headerTag := field.Tag.Get("header"); headerTag != "" {
+			if !shadowed["header:"+headerTag] {
+				*params = append(*params, core.ParamDoc{
+					In:          "header",
+					Name:        headerTag,
+					Model:       reflect.New(field.Type).Elem().Interface(),
+					Description: field.Tag.Get("doc"),
+					Required:    hasRequiredRule(field.Tag.Get("validate")),
+					Example:     ex,
+				})
+			}
+			if jsonTag == "" && formTag == "" {
+				continue
+			}
+		}
+
+		if formTag != "" {
+			*hasFormFields = true
+			if field.Type == fileHeaderPtrType || field.Type == fileHeaderSliceType {
+				*hasFileFields = true
+			}
+		}
+
+		*hasBodyFields = true
+	}
 }
 
 func registerEndpoint[Req any, Res any](target RouterTarget, method, path string, handler EndpointFunc[Req, Res]) *core.Route {

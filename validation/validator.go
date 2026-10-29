@@ -172,6 +172,14 @@ func checkTagsInternal(t reflect.Type, seen map[reflect.Type]bool) error {
 			return fmt.Errorf("field %q: tag `path:%q` is not supported; Gota uses `param:%q` for route path parameters", name, pathTag, pathTag)
 		}
 
+		// Anti-pattern check: comma-separated options (e.g. ,omitempty or ,required) in param, query, header, or form tags
+		for _, bindTag := range [...]string{"param", "query", "header", "form"} {
+			if raw := field.Tag.Get(bindTag); strings.Contains(raw, ",") {
+				baseName, opt, _ := strings.Cut(raw, ",")
+				return fmt.Errorf("field %q: tag `%s:%q` contains unsupported option %q; use `%s:%q` (options like omitempty are only valid on `json`, and rules belong in `validate`)", field.Name, bindTag, raw, opt, bindTag, baseName)
+			}
+		}
+
 		msgTag := field.Tag.Get("msg")
 		if msgTag == "" {
 			msgTag = field.Tag.Get("message")
@@ -441,10 +449,7 @@ func ValidateStruct(ctx *core.Context, target any) *ValidationError {
 
 func fieldIdentifier(field reflect.StructField) string {
 	if formTag := field.Tag.Get("form"); formTag != "" && formTag != "-" {
-		parts := strings.Split(formTag, ",")
-		if parts[0] != "" {
-			return parts[0]
-		}
+		return formTag
 	} else if jsonTag := field.Tag.Get("json"); jsonTag != "" && jsonTag != "-" {
 		parts := strings.Split(jsonTag, ",")
 		if parts[0] != "" {

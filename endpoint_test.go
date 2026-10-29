@@ -680,3 +680,56 @@ func TestWrapEndpoint_PrimitiveRequiredWarning(t *testing.T) {
 		t.Errorf("expected no warning when SilenceTagWarnings is true, got: %v", logged)
 	}
 }
+
+type EmbeddedPagination struct {
+	Page  *int `query:"page" doc:"Page number" example:"1"`
+	Limit *int `query:"limit" doc:"Items per page" example:"20"`
+}
+
+type ListWithEmbeddedQueryReq struct {
+	EmbeddedPagination
+	Limit *int   `query:"limit" doc:"Overridden limit" example:"50"` // shadows EmbeddedPagination.Limit
+	Tag   string `query:"tag" doc:"Filter tag" example:"golang"`
+}
+
+func TestIntrospectEndpoint_EmbeddedParamsAndExamples(t *testing.T) {
+	app := New(Config{})
+	Get(app, "/items", func(ctx *Context, req ListWithEmbeddedQueryReq) (Empty, error) {
+		return Empty{}, nil
+	})
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest("GET", "/openapi.json", nil))
+
+	var spec map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &spec); err != nil {
+		t.Fatalf("failed to parse OpenAPI spec: %v", err)
+	}
+	op := spec["paths"].(map[string]any)["/items"].(map[string]any)["get"].(map[string]any)
+
+	// Pure query request with embedded struct must NOT generate a requestBody
+	if _, hasBody := op["requestBody"]; hasBody {
+		t.Errorf("did not expect requestBody for pure query request with embedded struct, got: %v", op["requestBody"])
+	}
+
+	params, ok := op["parameters"].([]any)
+	if !ok || len(params) != 3 {
+		t.Fatalf("expected 3 query parameters (page, limit, tag), got: %v", op["parameters"])
+	}
+
+	byName := make(map[string]map[string]any)
+	for _, p := range params {
+		pm := p.(map[string]any)
+		byName[pm["name"].(string)] = pm
+	}
+
+	if byName["page"]["example"] != float64(1) {
+		t.Errorf("expected page example 1, got: %v", byName["page"]["example"])
+	}
+	if byName["limit"]["description"] != "Overridden limit" || byName["limit"]["example"] != float64(50) {
+		t.Errorf("expected outer limit to shadow embedded limit, got: %v", byName["limit"])
+	}
+	if byName["tag"]["example"] != "golang" {
+		t.Errorf("expected tag example 'golang', got: %v", byName["tag"]["example"])
+	}
+}

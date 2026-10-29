@@ -469,7 +469,7 @@ func TestOrderMultipartReceiptUpload(t *testing.T) {
 		t.Fatalf("failed to parse receipt response: %v", err)
 	}
 
-	if res.Filename != "comprovante_pix.pdf" || res.Size != int64(len(fakeContent)) || res.OrderId != orderID {
+	if res.Filename != "comprovante_pix.pdf" || res.Size != int64(len(fakeContent)) || res.OrderId != orderID || res.Notes != "Payment confirmed via Pix QR code" {
 		t.Errorf("unexpected upload response payload: %+v", res)
 	}
 }

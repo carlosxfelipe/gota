@@ -2,22 +2,21 @@
 
 > Minimalist, zero-dependency Go web micro-framework built around the REPR Design Pattern (Request-Endpoint-Response) with native interactive API documentation powered by Scalar and OpenAPI 3.1.
 
-This document contains the definitive specification, patterns, and rules for the **Gota** web framework in Go. Because Gota is a modern, specialized micro-framework, use the patterns, signatures, and constraints defined here rather than guessing or applying patterns from other frameworks (like Gin or Fiber).
+This document is the definitive specification, API reference, and rulebook for the **Gota** web framework in Go. Because Gota has deliberate design choices and fail-fast runtime checks, strictly follow the signatures, struct tags, and constraints documented here rather than guessing or borrowing idioms from Gin, Echo, Fiber, or Chi.
 
 ---
 
 ## 1. Overview & Core Philosophy
 
-**Gota** is a minimalist, zero-dependency Go web micro-framework built around the **REPR Design Pattern (Request-Endpoint-Response)** with native interactive API documentation powered by **Scalar** and automatic **OpenAPI 3.1** generation.
-
-- **Package Import**: `github.com/carlosxfelipe/gota`
-- **Zero External Dependencies**: Built entirely on the Go standard library (`net/http`, `reflect`, `encoding/json`, `sync`, `crypto`).
-- **Implements `net/http.Handler`**: `app` can be passed directly to `http.ListenAndServe`, `httptest.NewServer`, or standard Go middlewares.
-- **Go Version**: Requires Go 1.26+.
+- **Module & Import**: `github.com/carlosxfelipe/gota`
+  - Import **only** `github.com/carlosxfelipe/gota` in application code. Core types (`App`, `Context`, `Config`, `Route`, `RouteGroup`, `HandlerFunc`, `MiddlewareFunc`, `Map`, `Empty`, `HTTPError`, `ErrorResponse`, `ValidationError`, etc.) are re-exported as type aliases on the root `gota` package. (The only exception is `core.ServerConfig` from `github.com/carlosxfelipe/gota/core` if configuring `Config.Servers`.)
+- **Zero External Dependencies**: Built 100% on the Go standard library (`net/http`, `reflect`, `encoding/json`, `log/slog`, `sync`, `crypto/*`).
+- **Standard `net/http.Handler`**: `*gota.App` implements `http.Handler` (`app.ServeHTTP(w, r)`), so it works directly with `httptest`, `http.Server`, or standard `net/http` tooling.
+- **Go Version**: Requires **Go 1.26+**.
 
 ---
 
-## 2. Application Bootstrap
+## 2. Application Bootstrap & Configuration
 
 `gota.New` accepts **exactly one `gota.Config` struct** (it is **not** variadic):
 
@@ -32,188 +31,256 @@ import (
 )
 
 func main() {
-	// All fields have sensible defaults; pass gota.Config{} if defaults are sufficient
+	// Pass gota.Config{} to use all defaults, or customize fields as needed:
 	app := gota.New(gota.Config{
-		Title:        "My API",
-		Version:      "1.0.0",
-		Description:  "REST API built with Gota REPR pattern",
-		DocsURL:      "/docs",         // Default: /docs
-		OpenAPIURL:   "/openapi.json", // Default: /openapi.json
-		ScalarTheme:  gota.ThemeFastify, // Default: ThemeFastify (Themes: ThemeFastify, ThemeDefault, ThemeMoon, etc.)
-		ScalarLayout: "classic",      // "classic" (Swagger-style) or "modern"
-		MaxBodyBytes: 10 << 20,       // 10MB limit (default: 10MB, negative to disable)
-		MaxMultipartMemory: 32 << 20, // memory used to parse multipart forms (default: 32MB; negative to disable limit)
-		TrustProxyHeaders: false,     // true ONLY behind a trusted reverse proxy: makes ctx.ClientIP() honor X-Forwarded-For/X-Real-IP
-		// Scalar UI script is pinned to a fixed version with SRI (gota.DefaultScalarCDN / DefaultScalarSRI).
-		// Override to self-host or use another CDN; set ScalarSRI together with ScalarScriptURL (empty SRI = no integrity check).
-		// ScalarScriptURL: "/static/scalar.js", ScalarSRI: "sha384-...",
-		ReadTimeout:  30 * time.Second, // Default: 30s
-		WriteTimeout: 30 * time.Second, // Default: 30s
-		IdleTimeout:  120 * time.Second, // Default: 120s
+		Title:              "My API",          // Default: "Gota API"
+		Version:            "1.0.0",           // Default: "1.0.0"
+		Description:        "REST API built with Gota REPR pattern",
+		DocsURL:            "/docs",           // Default: "/docs"
+		OpenAPIURL:         "/openapi.json",   // Default: "/openapi.json"
+		ScalarTheme:        gota.ThemeFastify, // Default: gota.ThemeFastify
+		ScalarLayout:       "classic",         // Default: "classic" ("classic" or "modern")
+		DisableDocs:        false,             // Set true to disable /docs and /openapi.json routes
+		MaxBodyBytes:       10 << 20,          // Default: 10 MiB (negative value disables limit)
+		MaxMultipartMemory: 32 << 20,          // Default: 32 MiB RAM for multipart parsing (negative disables limit)
+		TrustProxyHeaders:  false,             // true ONLY behind a trusted reverse proxy (X-Forwarded-For / X-Real-IP)
+		ReadTimeout:        30 * time.Second,  // Default: 30s (negative disables; ReadHeaderTimeout is fixed at 10s)
+		WriteTimeout:       30 * time.Second,  // Default: 30s (negative disables; automatically lifted for streams)
+		IdleTimeout:        120 * time.Second, // Default: 120s (negative disables)
+		SilenceTagWarnings: false,             // Set true to suppress non-fatal startup validation tag warnings
+		// Servers:         []core.ServerConfig{{URL: "https://api.example.com", Description: "Production"}},
+		// ScalarScriptURL: "/static/scalar.js",
+		// ScalarSRI:       "sha384-...",
 	})
 
-	// Global Middlewares
-	app.Use(gota.RequestID())  // RFC 4122 UUID v4 correlation ID
-	app.Use(gota.SlogLogger()) // Structured log/slog logging
-	app.Use(gota.Recover())    // Panic recovery
+	// Global Middlewares — MUST be registered BEFORE any routes or groups!
+	app.Use(gota.RequestID())  // RFC 4122 UUID v4 in X-Request-ID header & ctx.RequestID()
+	app.Use(gota.SlogLogger()) // Structured log/slog logger (or gota.Logger() for stdlib log)
+	app.Use(gota.Recover())    // Catches handler panics inside the middleware chain -> 500 JSON
 	app.Use(gota.CORS())       // Cross-Origin Resource Sharing
 
-	// Start server with Graceful Shutdown (catches SIGINT/SIGTERM)
+	// Start server with Graceful Shutdown (catches os.Interrupt / SIGTERM, 10s drain timeout)
 	log.Fatal(app.ListenGraceful(":3000"))
 }
 ```
 
-#### Scalar script (pinned version + SRI)
+### Server Lifecycle Methods on `*gota.App`
 
-The `/docs` page loads the Scalar UI script from a CDN. Gota pins it to a **fixed version with Subresource Integrity (SRI)** (`gota.DefaultScalarCDN`, `gota.DefaultScalarSRI`, version in `gota.DefaultScalarVersion`), so the browser refuses to run the script if its content ever differs (compromised CDN/package, unexpected upgrade). No configuration is needed.
+- `app.Listen(addr string) error`: Starts the HTTP server (`":3000"`, `"3000"`, or `"127.0.0.1:3000"`).
+- `app.ListenGraceful(addr string, stopSignals ...os.Signal) error`: Starts the server and gracefully drains connections (10s timeout) on `os.Interrupt` / `syscall.SIGTERM` (or custom signals).
+- `app.Shutdown(ctx context.Context) error`: Gracefully shuts down a running server started via `Listen`.
+- `app.ServeHTTP(w http.ResponseWriter, r *http.Request)`: Dispatches a request directly (ideal for `httptest`).
+- `app.Server() *http.Server`, `app.Config() gota.Config`, `app.Router() *core.Router`.
 
-Override it only to self-host or use another CDN (e.g. air-gapped/corporate networks):
+### Available `ScalarTheme` Constants
 
-```go
-app := gota.New(gota.Config{
-	ScalarScriptURL: "/static/scalar.js", // your own URL
-	ScalarSRI:       "sha384-...",        // optional; empty = no integrity check
-})
-```
+`gota.ThemeFastify` (default), `gota.ThemeDefault`, `gota.ThemeAlternate`, `gota.ThemeMoon`, `gota.ThemePurple`, `gota.ThemeSolarized`, `gota.ThemeBluePlanet`, `gota.ThemeDeepSpace`, `gota.ThemeSaturn`, `gota.ThemeKepler`, `gota.ThemeElysiaJS`, `gota.ThemeMars`, `gota.ThemeLaserwave`, `gota.ThemeNone`.
 
-Rules: `ScalarSRI` only applies together with `ScalarScriptURL` (it is ignored otherwise, since a custom hash would not match the default script). Do not point `ScalarScriptURL` at a floating/`latest` URL while keeping an SRI hash: the hash would break on the next release.
+### Scalar Script Pinning & Subresource Integrity (SRI)
+
+By default, `/docs` loads Scalar from a pinned CDN URL with Subresource Integrity (`gota.DefaultScalarCDN`, `gota.DefaultScalarSRI`, `gota.DefaultScalarVersion`; helper `gota.ScalarCDNURL(version)` builds a jsDelivr URL for another version).
+To self-host or use a custom CDN:
+- Set `ScalarScriptURL` (and optionally `ScalarSRI`; leaving `ScalarSRI` empty skips the integrity attribute).
+- `ScalarSRI` is ignored unless `ScalarScriptURL` is also set. Never pair an SRI hash with a floating `@latest` URL.
 
 ---
 
-## 3. The REPR Pattern in Gota
+## 3. The REPR Pattern in Gota (Request – Endpoint – Response)
 
-Instead of monolithic controllers with manual parsing, Gota organizes every route into a cohesive unit:
+Every endpoint is modeled as a self-contained unit with three parts:
+1. **Request DTO (`Req`)**: Typed struct declaring inputs across path, query, headers, form, or JSON body, plus declarative validation and OpenAPI metadata. Use `gota.Empty` (or `struct{}`) when an endpoint takes no input.
+2. **Endpoint**: Handler function `func(ctx *gota.Context, req Req) (Res, error)` or struct implementing `gota.Endpoint[Req, Res]`.
+3. **Response DTO (`Res`)**: Typed output serialized automatically (JSON, `204 No Content`, chunked stream, or SSE stream).
 
-1. **Request DTO**: Strongly typed input contract with binding and validation tags.
-2. **Endpoint**: Single responsibility handler logic.
-3. **Response DTO**: Strongly typed output contract serialized automatically into JSON.
+### 3.1 Request Struct Tags & Model Binding
 
-### 3.1 Request Struct Tags
+Gota binds fields from five HTTP sources and enriches validation/OpenAPI using struct tags:
 
-Gota automatically binds fields from five sources using struct tags:
+| Tag                 | Purpose / Source                                                         | Example                                          |
+| :------------------ | :----------------------------------------------------------------------- | :----------------------------------------------- |
+| `param:"name"`      | Route path parameter (`:name` or `*filepath` wildcard). **No options.**  | ``ID string `param:"id"` ``                      |
+| `query:"name"`      | URL query parameter (`?name=...`). **No options.**                       | ``Page *int `query:"page"` ``                    |
+| `header:"Name"`     | HTTP request header (case-insensitive). **No options.**                  | ``Token string `header:"X-Api-Key"` ``           |
+| `form:"name"`       | Multipart or URL-encoded form field / file upload. **No options.**       | ``File *multipart.FileHeader `form:"file"` ``    |
+| `json:"name"`       | JSON request/response body field (standard `encoding/json` options ok).  | ``Title string `json:"title,omitempty"` ``       |
+| `validate:"rules"`  | Declarative validation rules (comma-separated).                          | ``Email string `json:"email" validate:"required,email"` `` |
+| `msg:"messages"`    | Custom validation error message(s) (`fallback` or `rule:text\|rule:text`). | ``Name string `json:"name" validate:"required,min=3" msg:"required:Name required\|min:Too short"` `` |
+| `message:"text"`    | Alias for `msg`.                                                         | ``Age int `json:"age" validate:"min=18" message:"Must be 18+"` `` |
+| `doc:"description"` | OpenAPI description (works on `param`, `query`, `header`, `form`, `json`). | ``Q string `query:"q" doc:"Search term"` ``     |
+| `example:"val"`     | OpenAPI example (works on `param`, `query`, `header`, `form`, `json`).   | ``Email string `json:"email" example:"a@b.com"` `` |
+| `format:"fmt"`      | OpenAPI format hint on `json`/`form` body & response schema properties.  | ``Born string `json:"born" format:"date"` ``     |
+| `default:"val"`     | OpenAPI default value on `json`/`form` body & response schema properties.| ``Role string `json:"role" default:"member"` ``  |
+| `gota:"nowarn"`     | Silences startup validation warnings on a specific field.                | ``Active bool `json:"active" validate:"required" gota:"nowarn"` `` |
 
-| Tag                 | Source                                           | Example                                          |
-| :------------------ | :----------------------------------------------- | :----------------------------------------------- |
-| `param:"name"`      | Path parameter (`:name` or `*wildcard`)          | `ID string \`param:"id"\``                       |
-| `query:"name"`      | Query string parameter (`?name=...`)             | `Page int \`query:"page"\``                      |
-| `header:"Name"`     | HTTP Request Header                              | `Token string \`header:"Authorization"\``        |
-| `form:"name"`       | Form field or file upload (multipart/urlencoded) | `Avatar *multipart.FileHeader \`form:"avatar"\`` |
-| `json:"name"`       | JSON Request Body                                | `Title string \`json:"title"\``                  |
-| `validate:"rules"`  | Validation rules (comma-separated)               | `validate:"required,min=3,email"`                |
-| `msg:"messages"`    | Custom validation error message(s)               | `msg:"required:name is required\|min:too short"`  |
-| `message:"text"`    | Alias for `msg` tag                              | `message:"invalid age"`                          |
-| `doc:"description"` | OpenAPI parameter/field description              | `doc:"User email address"`                       |
-| `example:"val"`     | OpenAPI example value                            | `example:"jane@example.com"`                     |
-| `format:"fmt"`      | OpenAPI schema format hint                       | `format:"date-time"`                             |
-| `default:"val"`     | OpenAPI default value                            | `default:"10"`                                   |
+> **CRITICAL — Never put `,omitempty` or options in `param`, `query`, `header`, or `form` tags**: Unlike `encoding/json`, `param`, `query`, `header`, and `form` tags only accept the field name (e.g. ``form:"notes"``). Writing ``form:"notes,omitempty"`` or ``query:"page,required"`` triggers a fail-fast startup **panic** in `validation.CheckTags` (only `json:"notes,omitempty"` supports `,omitempty`, and validation rules belong in `validate:"..."`).
 
-#### Optional values and pointer fields:
+#### Supported Field Types for `param`, `query`, `header`, and `form`
 
-Pointer fields (`*int`, `*bool`, `*string`, ...) are supported for **every** source (`param`, `query`, `header`, `form`, `json`). When the value is absent the pointer stays `nil`; when present it points to the parsed value, even if it is `0`, `false` or `""`. Use pointers whenever "not provided" must be distinguished from a zero value (e.g. `Limit *int \`query:"limit"\`` so `?limit=0` differs from no `limit`). Non-pointer fields cannot make that distinction.
+- **Strings**: `string`, `*string`
+- **Integers**: `int`, `int8`, `int16`, `int32`, `int64`, `uint`, `uint8`, `uint16`, `uint32`, `uint64` (and pointers `*int`, etc.)
+- **Floats**: `float32`, `float64` (and pointers `*float64`, etc.)
+- **Booleans**: `bool`, `*bool` — accepts `"true"`, `"1"`, `"t"`, `"yes"`, `"y"` and `"false"`, `"0"`, `"f"`, `"no"`, `"n"` (case-insensitive); other strings return `400 Bad Request`.
+- **String Slices (`[]string`)**:
+  - `query`: supports both repeated keys (`?tag=go&tag=web`) and comma-separated values (`?tag=go,web`, trimmed).
+  - `form`: collects repeated form fields (`tags=go` & `tags=web`).
+  - `param` / `header`: splits comma-separated values (`a,b,c`, trimmed).
+  - *Note*: Non-string slices (e.g. `[]int`, `[]ItemDTO`) are only supported in `json` bodies, not in `query`/`param`/`header`/`form`.
+- **File Uploads (`form` tag with `multipart/form-data`)**:
+  - Single file: `*multipart.FileHeader`
+  - Multiple files under the same key: `[]*multipart.FileHeader`
 
-#### Supported `validate` Rules:
+#### Binding Precedence, Security Isolation & Errors
 
-- `required`: Field must not be zero-value, empty string, or nil. On Go primitives (`int`, `bool`), `0` and `false` are zero-values and fail `required`; use pointer types (`*int`, `*bool`) with `required` when `0` or `false` are valid and distinguish presence from absence.
-- `min=N`: Minimum string length (runes), slice length, or numeric value (e.g. `min=3`, `min=10.5`).
-- `max=N`: Maximum string length (runes), slice length, or numeric value (e.g. `max=100`).
-- `len=N`: Exact string rune count or slice/array/map item count (e.g. `len=6`).
-- `oneof=A,B,C`: Value must match one of the allowed choices (comma- or space-separated).
-- `email`: Valid email format via `mail.ParseAddress`.
-- `url`: Valid URL format via `url.ParseRequestURI`.
-- `uuid`: Valid UUID format (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`).
+1. Body is parsed first according to `Content-Type` (`multipart/form-data`, `application/x-www-form-urlencoded`, or JSON).
+2. **Cross-Source Spoofing Protection**: Any field tagged with `param`, `query`, `header`, or `form` (without an explicit `json:"name"` tag) is zeroed after JSON unmarshaling and populated **exclusively** from its declared source, so a JSON body like `{"UserID": 1}` can never spoof a `header:"X-User-Id"` or `param:"id"` field.
+3. **Binding Errors**: Malformed JSON or type conversion failures (e.g. `?page=abc` for an `int`) automatically return `HTTP 400 Bad Request` (`gota.ErrorResponse`). Payloads exceeding `Config.MaxBodyBytes` return `HTTP 413 Request Entity Too Large` (`gota.ErrorResponse`).
 
-#### Recursive Struct & Slice Validation:
+#### Embedded Structs (Reusable DTO Composition / Mixins)
 
-Nested struct fields (e.g. `Address AddressDTO`) and slices of structs (e.g. `Items []ItemDTO`) are validated automatically and recursively. Validation errors preserve property hierarchy paths (e.g. `address.street` and `items[0].price`).
+Anonymous untagged embedded structs (value or pointer) are flattened across **binding, validation, and OpenAPI** just like `encoding/json`:
 
-> **Fail-Fast Tag Verification & Suggestions**: Gota verifies all tags at startup during route registration via `validation.CheckTags`, recursing into nested structs. If an unsupported tag is used (e.g. `path:"id"` instead of `param:"id"`), a rule name is misspelled (e.g. `validate:"requried"`), or a numeric parameter is missing or invalid (e.g. `min=abc`), Gota **panics immediately** upon registration with actionable hints (e.g. suggesting `min` for `gte`, `max` for `lte`, etc.) to prevent silent bugs.
->
-> **Startup Tag Warnings**: Gota logs non-fatal warnings at startup to educate developers and AI agents on common anti-patterns:
-> 1. `validate:"omitempty"`: In Gota, fields are optional by default unless marked with `required`. `omitempty` is accepted as a no-op but logs a reminder warning that it can be safely removed.
-> 2. Primitive `required`: In Go, primitive non-pointer types (`bool`, `int`, etc.) default to zero values (`false`, `0`), which fail `validate:"required"`. Gota logs a warning advising pointers (`*bool`, `*int`).
-> Warnings can be silenced per-field with `validate:"...,nowarn"` or `gota:"nowarn"`, or globally via `Config.SilenceTagWarnings: true` / `gota.SilenceTagWarnings(true)`.
+```go
+type PaginationQuery struct {
+	Page  *int `query:"page" doc:"Page number" validate:"min=1"`
+	Limit *int `query:"limit" doc:"Items per page" validate:"min=1,max=100"`
+}
 
-#### OpenAPI schemas for nested types:
+type ListUsersRequest struct {
+	PaginationQuery // Promoted: binds ?page=&limit=, validates as "page"/"limit", flattens in OpenAPI
+	Role string     `query:"role" validate:"oneof=Admin,Customer"`
+}
+```
 
-Nested struct fields are documented with their full `properties`: named structs (e.g. `Address AddressDTO`, `Items []ItemDTO`) become entries in `components.schemas` referenced via `$ref`, and anonymous inline structs are expanded in place. Self-referencing and mutually recursive types (e.g. `type Node struct { Next *Node }`) are supported and resolved through `$ref`, without infinite recursion. Two types with the same name in different packages get distinct schemas (the second is prefixed with its package name).
+- Fields declared on the outer struct shadow promoted fields with the same tag/name.
+- Embedded pointer structs (e.g. `*AuditHeaders`) stay `nil` when none of their fields are present in the request, while still enforcing `required` rules on any unshadowed inner fields.
 
-#### Custom Validation Error Messages (`msg` / `message` tags):
+---
 
-Fields can customize error messages instead of standard default text. Two formats are supported:
+### 3.2 Declarative & Custom Validation
 
-1. **Fallback message for any failed rule on the field:**
+#### Supported `validate` Rules
+
+- `required`: Fails if the value is zero/empty:
+  - `string`: empty or whitespace-only (`strings.TrimSpace(s) == ""` fails!).
+  - `slice` / `map`: `nil` or `len == 0`.
+  - `pointer` / `interface`: `nil`.
+  - Primitives (`int`, `float64`, `bool`, structs like `time.Time`): Go zero value (`0`, `0.0`, `false`, `time.Time{}`).
+- `min=N`: Minimum rune count (`string`), element count (`slice`), or numeric value (`int*`, `uint*`, `float*`). Supports decimals (e.g. `min=0.01`).
+- `max=N`: Maximum rune count (`string`), element count (`slice`), or numeric value (`int*`, `uint*`, `float*`).
+- `len=N`: Exact UTF-8 rune count (`string`) or item count (`slice`, `array`, `map`). Integer `N` only.
+- `oneof=A,B,C` (or space-separated `oneof=A B C`): Exact match against allowed values (works on strings and numbers via `%v` formatting).
+- `email`: Valid email address (`net/mail.ParseAddress`, containing `@` and `.`).
+- `url`: Valid absolute URL with scheme and host (`net/url.ParseRequestURI`).
+- `uuid`: Valid 36-char UUID (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`).
+- `nowarn`: Suppresses startup warnings for this field.
+
+#### Optional Fields, Zero Values & Pointers (CRITICAL)
+
+Understand how Gota evaluates optional fields (fields **without** `required`):
+- **Pointer fields (`*string`, `*int`, `*bool`, `*float64`, `*AddressDTO`)**:
+  - Stay `nil` when omitted from `param`, `query`, `header`, `form`, or `json`.
+  - When `nil`, **every rule except `required` is skipped**, and nil nested struct pointers are not recursed into.
+  - When non-nil (even `&0`, `&false`, or `&""`), `required` passes and all other rules validate the dereferenced value.
+- **Non-pointer fields (`string`, `int`, `bool`, `AddressDTO`)**:
+  - Default to Go's zero value (`""`, `0`, `false`) when omitted.
+  - `email`, `url`, `uuid`, and string `oneof` skip empty strings `""`.
+  - **`min=N`, `len=N`, and numeric `oneof` DO NOT skip zero values on non-pointer fields!** For example, an omitted ``Code string `json:"code" validate:"len=6"` `` has value `""` (length 0) and **will fail `len=6`**. Use ``Code *string `json:"code" validate:"len=6"` `` whenever the field is optional!
+  - **Non-pointer nested structs** (`Address AddressDTO`) are **always** recursed into. If `Address` itself is optional but its inner fields have `validate:"required"`, make it a pointer: ``Address *AddressDTO `json:"address,omitempty"` ``.
+  - **Primitives with `required`**: Because `0` and `false` are Go zero values, `validate:"required"` on `int` or `bool` rejects `0` and `false`. Use `*int` or `*bool` with `validate:"required"` when `0` or `false` are valid inputs.
+
+#### Recursive Struct & Slice Validation
+
+Nested structs (`Address AddressDTO`, `*AddressDTO`) and slices of structs (`Items []ItemDTO`, `[]*ItemDTO`) are validated automatically without any `dive` tag. Error keys preserve full paths (e.g. `"address.street"`, `"items[0].price"`). Standard library structs (`time.Time`, `multipart.FileHeader`, `net/*`, `io/*`) are not recursed into.
+
+#### Fail-Fast Startup Tag Checks & Warnings
+
+At route registration, `WrapEndpoint` runs `validation.CheckTags`:
+- **Intentional Panics**: Unsupported tags like `path:"id"`, unknown validation rules (e.g. `requried`, `gte=5`, `lte=10`, `length=5`, `dive`, `isdefault`), bad rule parameters (`min=abc`), or `msg` referencing undeclared rules **panic immediately at startup** with corrective suggestions.
+- **Startup Warnings**: Non-fatal warnings are logged once per type for `validate:"omitempty"` (no-op in Gota) and `validate:"required"` on non-pointer numeric/bool primitives. Silence per-field with `validate:"...,nowarn"` or `gota:"nowarn"`, or globally with `Config{SilenceTagWarnings: true}` or `gota.SilenceTagWarnings(true)`.
+
+#### Custom Error Messages (`msg` / `message` Tags)
+
+1. **Single fallback message for any failed rule on the field**:
    ```go
    Age int `json:"age" validate:"min=18" msg:"You must be at least 18 years old."`
    ```
-
-2. **Rule-specific messages separated by `|` (rule:message):**
+2. **Per-rule messages separated by `|`** (`{field}` expands to the field's property path):
    ```go
-   FullName string `json:"fullName" validate:"required,min=5" msg:"required:Your name is required!|min:Your name is too short!"`
+   Name string `json:"name" validate:"required,min=3" msg:"required:{field} is mandatory|min:{field} must have 3+ chars"`
    ```
-   Optional `{field}` token expands to the field's JSON/param property name (e.g. `msg:"required:field {field} is mandatory"`).
-   The `message` tag is an alias for `msg`. `CheckTags` verifies at startup that all rules referenced in `msg` exist in `validate` to catch typos fast.
 
-#### Custom Struct Validation (`Validator` & `ContextValidator`):
+#### Custom Business Validation (`Validator` & `ContextValidator`)
 
-Beyond declarative struct tags, request structs can implement custom business validation via either of two interfaces:
+A request struct (or any nested struct) can implement **one** of these two methods (use `*gota.Context`, which is an alias for `*core.Context`):
 
 ```go
-// 1. Standard Validator
+// Option A: Context-free custom validation
 func (r *CreateOrderRequest) Validate() error {
-	if r.Quantity <= 0 {
-		return errors.New("quantity must be greater than zero")
+	if r.EndDate.Before(r.StartDate) {
+		return errors.New("endDate must be after startDate")
 	}
 	return nil
 }
 
-// 2. ContextValidator (for checks that need HTTP Context, auth, headers, etc.)
-func (r *CreateOrderRequest) Validate(ctx *core.Context) error {
+// Option B: Context-aware validation (access headers, auth claims, store values)
+func (r *CreateOrderRequest) Validate(ctx *gota.Context) error {
 	if ctx.Header("X-Tenant-ID") == "" {
-		return errors.New("missing tenant header")
+		return errors.New("missing X-Tenant-ID header")
 	}
 	return nil
 }
 ```
 
-> **Validation Failure**: Automatically returns `HTTP 422 Unprocessable Entity` with a structured `ValidationError` JSON response. Tag validation failures are keyed by field name (or JSON property name), and custom validator errors are placed under `_general`.
+- Root struct custom validation errors are added under `"_general"`.
+- Nested struct custom validation errors are added under that nested field's path (e.g. `"shippingAddress"`).
 
-### 3.2 Response Struct & Special Types
+---
 
-- **JSON Response**: Any Go struct with `json` tags is automatically serialized into JSON with `HTTP 200 OK`.
-- **No Content**: Use `gota.Empty{}` (or `struct{}{}`) as the Response type to automatically return `HTTP 204 No Content`.
-- **Explicit Status**: Chain `.Status(201)` on the route registration, or call `ctx.Status(http.StatusCreated)` inside the handler.
-- **Typed Streaming (`gota.StreamFunc`)**: Return a `gota.StreamFunc` to stream chunked bytes using `http.Flusher`. Documented in OpenAPI as `application/octet-stream`.
-- **Server-Sent Events (`gota.SSEStream`)**: Return a `gota.SSEStream` with an `<-chan gota.SSEvent` to stream live events. Documented in OpenAPI as `text/event-stream`.
+### 3.3 Response Types, File Uploads & Streaming
 
-### 3.3 File Upload & Streaming Examples
+| Return Type (`Res`)                    | Behavior & OpenAPI Representation                                                        |
+| :------------------------------------- | :--------------------------------------------------------------------------------------- |
+| Struct / Slice / `gota.Map` / Generic  | Serialized as `application/json` with `200 OK` (or the status set via `.Status(code)` / `ctx.Status(code)`). Named structs become `$ref` entries in `components.schemas` (generics like `Page[User]` sanitize to `Page_User`); `time.Time` -> `date-time`, `[]byte` -> `byte`. |
+| `gota.Empty` (or `struct{}`)           | Returns `HTTP 204 No Content` with an empty body (`return gota.Empty{}, nil`).           |
+| `gota.StreamFunc` (or `gota.Streamer`) | Lifts server `WriteTimeout` and streams chunked bytes (`application/octet-stream`).      |
+| `gota.SSEStream`                       | Lifts server `WriteTimeout` and streams `gota.SSEvent` items as `text/event-stream`.     |
 
-#### Multipart Form File Upload:
+#### Example 1: Multipart File Upload (`*multipart.FileHeader` & `[]*multipart.FileHeader`)
 
 ```go
 type UploadReceiptRequest struct {
-	OrderID string                `param:"orderId" validate:"required"`
-	Receipt *multipart.FileHeader `form:"receipt" doc:"Receipt file (PDF/PNG)" validate:"required"`
-	Notes   string                `form:"notes,omitempty"`
+	OrderID     string                  `param:"orderId" validate:"required"`
+	Receipt     *multipart.FileHeader   `form:"receipt" doc:"Main receipt (PDF/PNG)" validate:"required"`
+	Attachments []*multipart.FileHeader `form:"attachments" doc:"Optional extra files"`
+	Notes       string                  `form:"notes" doc:"Optional notes"` // NO ,omitempty on form tags!
 }
 
 type UploadReceiptResponse struct {
 	Filename string `json:"filename"`
 	Size     int64  `json:"size"`
+	Notes    string `json:"notes,omitempty"`
 }
 
 gota.Post(app, "/api/orders/:orderId/receipt", func(ctx *gota.Context, req UploadReceiptRequest) (UploadReceiptResponse, error) {
+	file, err := req.Receipt.Open()
+	if err != nil {
+		return UploadReceiptResponse{}, gota.BadRequest("Failed to open uploaded file")
+	}
+	defer file.Close()
+
 	return UploadReceiptResponse{
 		Filename: req.Receipt.Filename,
 		Size:     req.Receipt.Size,
+		Notes:    req.Notes,
 	}, nil
 }).
 	Summary("Upload order receipt").
 	Tags("Orders")
 ```
 
-> **Memory limit**: `Config.MaxMultipartMemory` (default 32 MiB) bounds how much of a multipart form is kept in memory while parsing; the rest goes to temporary files (a negative value disables this limit, keeping parts in memory up to `MaxBodyBytes`). Lower it in memory-constrained containers. It applies to the automatic binder and to `ctx.FormFile` / `ctx.MultipartForm`. `ctx.MaxMultipartMemory()` reads the effective value; `ctx.SetMaxMultipartMemory(n)` only has effect if called (e.g. in a middleware) **before** the form is first parsed, which for typed endpoints happens before the handler runs. The total body size is still capped by `MaxBodyBytes`.
+> **Multipart memory**: `Config.MaxMultipartMemory` (default 32 MiB) caps how much multipart data stays in RAM before spilling to temp files; total payload size is still capped by `Config.MaxBodyBytes` (default 10 MiB — raise `MaxBodyBytes` when accepting uploads larger than 10 MiB!). To override multipart RAM per-route, call `ctx.SetMaxMultipartMemory(bytes)` in a middleware (before automatic REPR binding runs).
 
-#### Server-Sent Events (SSE) Streaming:
+#### Example 2: Server-Sent Events (`gota.SSEStream`)
 
 ```go
 type TrackOrderRequest struct {
@@ -221,290 +288,422 @@ type TrackOrderRequest struct {
 }
 
 gota.Get(app, "/api/orders/:orderId/track", func(ctx *gota.Context, req TrackOrderRequest) (gota.SSEStream, error) {
-	events := make(chan gota.SSEvent, 2)
-	events <- gota.SSEvent{Event: "order_status", Data: gota.Map{"status": "Processing"}}
-	events <- gota.SSEvent{Event: "order_status", Data: gota.Map{"status": "Completed"}}
-	close(events)
-
+	events := make(chan gota.SSEvent)
+	go func() {
+		defer close(events)
+		// Always respect client disconnect via ctx.Request.Context().Done()
+		select {
+		case <-ctx.Request.Context().Done():
+			return
+		case events <- gota.SSEvent{Event: "order_status", Data: gota.Map{"status": "Processing"}}:
+		}
+	}()
 	return gota.SSEStream{Events: events}, nil
 }).
-	Summary("Track order status stream").
+	Summary("Stream order updates via SSE").
 	Tags("Orders")
+```
+
+*(Note: `SSEvent.Data` writes `string` and `[]byte` directly, and JSON-marshals any other Go value.)*
+
+#### Example 3: Chunked Byte Streaming (`gota.StreamFunc`)
+
+```go
+gota.Get(app, "/api/export", func(ctx *gota.Context, _ gota.Empty) (gota.StreamFunc, error) {
+	return func(c *gota.Context) error {
+		c.SetHeader("Content-Type", "application/x-ndjson")
+		i := 0
+		return c.Stream(func(w io.Writer) bool {
+			if i >= 3 {
+				return false // stop streaming
+			}
+			_, _ = fmt.Fprintf(w, "{\"row\":%d}\n", i)
+			i++
+			return true // flush chunk and continue
+		})
+	}, nil
+})
 ```
 
 ---
 
-## 4. Route Registration
+## 4. Route Registration, Groups & Routing Rules
 
-### 4.1 Function-Based Endpoints (Generics)
+### 4.1 Function-Based REPR Endpoints
 
-Use package-level functions `gota.Get`, `gota.Post`, `gota.Put`, `gota.Patch`, `gota.Delete`.
-Signature: `func(ctx *gota.Context, req Req) (Res, error)`
+Use top-level generic functions `gota.Get`, `gota.Post`, `gota.Put`, `gota.Patch`, `gota.Delete`:
 
 ```go
-type CreateUserRequest struct {
-	Name  string `json:"name" doc:"User full name" validate:"required,min=3"`
-	Email string `json:"email" doc:"User email" validate:"required,email"`
-}
-
-type UserResponse struct {
-	ID    int    `json:"id" example:"1"`
-	Name  string `json:"name" example:"Jane Doe"`
-	Email string `json:"email" example:"jane@example.com"`
-}
-
 gota.Post(app, "/api/users", func(ctx *gota.Context, req CreateUserRequest) (UserResponse, error) {
-	// req is already bound and validated!
 	return UserResponse{ID: 1, Name: req.Name, Email: req.Email}, nil
 }).
-	Summary("Create new user").
-	Description("Registers a user and returns their profile.").
+	Summary("Create user").
+	Description("Registers a new user account.").
 	Tags("Users").
-	Status(http.StatusCreated) // HTTP 201 Created
+	Status(http.StatusCreated) // Changes default 200 to 201 in both HTTP response and OpenAPI!
 ```
 
-### 4.2 Struct-Based Endpoints (`Endpoint[Req, Res]`)
+### 4.2 Struct-Based REPR Endpoints (`gota.Endpoint[Req, Res]`)
 
-Ideal for vertical slice architecture, dependency injection, and keeping handlers isolated in separate files:
+Recommended for vertical-slice architecture and dependency injection:
 
 ```go
 type GetUserEndpoint struct {
-	DB *sql.DB // Inject dependencies
+	DB *sql.DB
 }
 
 func (e *GetUserEndpoint) Handle(ctx *gota.Context, req GetUserRequest) (UserResponse, error) {
-	user, err := e.findUser(ctx.Request.Context(), req.ID)
+	user, err := findUser(ctx.Request.Context(), e.DB, req.ID)
 	if err != nil {
 		return UserResponse{}, gota.NotFound("User not found")
 	}
 	return user, nil
 }
 
-// Registration:
+// Register with gota.HandleEndpoint:
 gota.HandleEndpoint(app, http.MethodGet, "/api/users/:id", &GetUserEndpoint{DB: db}).
 	Summary("Get user by ID").
 	Tags("Users")
 ```
 
-### 4.3 Route Groups & Prefixes
+### 4.3 Route Groups & Modular `gota.RouterTarget`
 
-Route groups share common URL prefixes and middlewares:
+Both `*gota.App` and `*gota.RouteGroup` implement `gota.RouterTarget`, allowing feature packages to accept either:
 
 ```go
-api := app.Group("/api")
-v1 := api.Group("/v1")
+func RegisterOrderRoutes(target gota.RouterTarget, store *Store) {
+	gota.Get(target, "/orders", listOrdersHandler).Tags("Orders")
+	gota.Get(target, "/orders/:orderId", getOrderHandler).Tags("Orders")
+}
 
-gota.Get(v1, "/ping", func(ctx *gota.Context, _ gota.Empty) (gota.Map, error) {
-	return gota.Map{"message": "pong"}, nil
-})
+// Prefix group:
+v1 := app.Group("/api/v1")
+v1.Use(gota.JWT(secret)) // Group middlewares MUST be added before registering routes on the group!
+RegisterOrderRoutes(v1, store)
+
+// Empty-prefix group (applies middleware to a subset of routes without adding a URL prefix):
+protected := app.Group("")
+protected.Use(gota.JWT(secret))
+```
+
+### 4.4 Path Parameters, Wildcards & Router Constraints
+
+- **Named parameters (`:param`)**: Matches a single path segment (e.g. `/users/:userId/posts/:postId` -> ``param:"userId"``, ``param:"postId"``).
+- **Wildcards (`*name`)**: Must be the **final** segment of a route; captures all remaining segments joined by `/` (e.g. `/files/*filepath` matching `/files/a/b/c.pdf` binds `"a/b/c.pdf"` to ``Filepath string `param:"filepath"` `` and documents `{filepath}` in OpenAPI). Always name wildcards (`*filepath`) rather than bare `*`.
+- **Consistent Parameter Names Across Methods (CRITICAL)**: Never register conflicting parameter names at the same segment position, **even across different HTTP methods** (e.g. `GET /users/:id` and `DELETE /users/:userId` **will panic at startup** because Gota registers automatic `OPTIONS` handlers for every route in a shared `OPTIONS` Trie). Always use the same parameter name (e.g. `:userId` everywhere).
+- **Duplicate Routes**: Registering the exact same `METHOD /path` twice panics at startup.
+- **Automatic `OPTIONS` & `405 Method Not Allowed`**: Every non-`OPTIONS` route automatically gets a hidden `OPTIONS` handler (`204 No Content`) wrapped in base middlewares for CORS preflights. Requests to an existing path with an unregistered HTTP method return `405 Method Not Allowed` with the `Allow` header. Unmatched paths return `404 Not Found` (global middlewares still run on `404` and `405`).
+
+---
+
+## 5. Middlewares (Built-in & Custom)
+
+### 5.1 Built-in Middlewares
+
+```go
+// 1. Correlation Request ID (validates incoming header [1..128 safe chars] or generates UUID v4)
+app.Use(gota.RequestID()) // Optional: gota.RequestID(gota.RequestIDOptions{Header: "X-Correlation-ID", Generator: fn})
+
+// 2. Logging (choose one)
+app.Use(gota.SlogLogger()) // Optional: gota.SlogLogger(gota.SlogLoggerOptions{Logger: customSlog})
+app.Use(gota.Logger())     // Standard log.Printf logger
+
+// 3. Panic Recovery (logs stacktrace and returns 500 ErrorResponse JSON)
+app.Use(gota.Recover())
+
+// 4. CORS (default allows "*", common methods/headers, MaxAge 86400s)
+app.Use(gota.CORS(gota.CORSOptions{
+	AllowOrigins:     []string{"https://app.example.com"}, // MUST NOT be "*" when AllowCredentials is true!
+	AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"},
+	AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization"},
+	ExposeHeaders:    []string{"X-Request-ID"},
+	AllowCredentials: true,
+	MaxAge:           86400,
+}))
+```
+
+### 5.2 Writing Custom Middlewares (`gota.MiddlewareFunc`)
+
+Gota does **not** use `ctx.Next()`. A `gota.MiddlewareFunc` wraps a `gota.HandlerFunc` (`func(ctx *gota.Context) error`):
+
+```go
+func RequireRole(role string) gota.MiddlewareFunc {
+	return func(next gota.HandlerFunc) gota.HandlerFunc {
+		return func(ctx *gota.Context) error {
+			claims, ok := gota.JWTClaims[*CustomClaims](ctx)
+			if !ok || claims.Role != role {
+				return gota.Forbidden("Insufficient permissions")
+			}
+			// Store request-scoped data for downstream handlers:
+			ctx.Set("actor_id", claims.UserID)
+			return next(ctx)
+		}
+	}
+}
+
+// Apply globally, per-group, or per-route:
+// app.Use(RequireRole("Admin"))
+// adminGroup.Use(RequireRole("Admin"))
+// gota.Delete(app, "/api/users/:id", deleteUser).Middleware(RequireRole("Admin"))
 ```
 
 ---
 
-## 5. Error Handling
+## 6. Error Handling & JSON Error Schemas
 
-Always return `(Res{}, error)` from REPR handlers. Gota automatically renders standard error responses:
+Gota uses **two** distinct JSON error schemas:
 
-### 5.1 Built-in HTTP Errors
+### 6.1 `gota.ErrorResponse` (400, 401, 403, 404, 405, 413, 500 & `HTTPError`)
 
-Use the built-in constructors to return specific HTTP status codes:
+Use the 6 built-in constructors in handlers or middlewares:
 
 ```go
-return Res{}, gota.BadRequest("Invalid input parameters.")       // 400
-return Res{}, gota.Unauthorized("Bearer token required.")       // 401
-return Res{}, gota.Forbidden("Insufficient permissions.")        // 403
-return Res{}, gota.NotFound("Resource not found.")              // 404
-return Res{}, gota.UnprocessableEntity("Semantic error.")       // 422
-return Res{}, gota.InternalServerError("Server failure.")       // 500
+return Res{}, gota.BadRequest("Invalid parameters")         // 400
+return Res{}, gota.Unauthorized("Authentication required")  // 401
+return Res{}, gota.Forbidden("Insufficient permissions")    // 403
+return Res{}, gota.NotFound("User not found")               // 404
+return Res{}, gota.UnprocessableEntity("Semantic conflict") // 422 (ErrorResponse shape)
+return Res{}, gota.InternalServerError("Service error")     // 500
 ```
 
-All of these produce standard JSON responses:
+For **any other HTTP status code** (e.g. `409 Conflict`, `429 Too Many Requests`, `503 Service Unavailable`), return `&gota.HTTPError` directly (there are no `gota.Conflict` or `gota.NewHTTPError` functions on the `gota` package):
 
-```json
-{
-  "error": "Resource not found.",
-  "status": 404
+```go
+return Res{}, &gota.HTTPError{
+	Status:  http.StatusConflict,
+	Message: "Email is already registered",
 }
 ```
 
-### 5.2 Unexpected Errors (500 Protection)
+Wrapped `HTTPError` values (`fmt.Errorf("step failed: %w", gota.NotFound("..."))`) are unwrapped via `errors.As` and preserve their HTTP status.
 
-If a raw Go `error` (e.g., database connection failure) is returned, Gota logs the actual error and stacktrace internally and returns a sanitized `500 Internal Server Error` to prevent information leakage (and includes correlation `requestId` if `gota.RequestID()` is used):
+Rendered JSON (`gota.ErrorResponse`):
+```json
+{
+  "error": "User not found",
+  "status": 404,
+  "requestId": "b1a2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
+}
+```
+*(`requestId` is automatically populated whenever `gota.RequestID()` is active or a valid `X-Request-ID` header is present.)*
+
+### 6.2 `gota.ValidationError` (422 Struct Validation Failures)
+
+When declarative struct tags or `Validator` / `ContextValidator` fail, Gota automatically returns `HTTP 422 Unprocessable Entity` with `gota.ValidationError`:
 
 ```json
 {
-  "error": "internal server error",
-  "status": 500,
-  "requestId": "b1a2c3d4-..."
+  "message": "validation failed",
+  "errors": {
+    "email": ["field email must be a valid email address"],
+    "items[0].price": ["field items[0].price must be at least 0.01"],
+    "_general": ["endDate must be after startDate"]
+  },
+  "status": 422
 }
 ```
+*(You may also return `&gota.ValidationError{Message: "validation failed", Errors: ...}` manually from a handler to produce the same 422 schema.)*
+
+### 6.3 Sanitized 500 Protection & Custom Handlers
+
+- **Unexpected Go errors**: Returning a non-`HTTPError` (e.g. `sql.ErrConnDone`) logs the real error internally (`gota: handler error ...`) and returns a sanitized `500` JSON `{"error":"internal server error","status":500}` so internal details never leak to clients.
+- **Panics**: Panics log the full `debug.Stack()` stacktrace and return the same sanitized `500` JSON (both in `gota.Recover()` and in `App.ServeHTTP`'s outer safety net).
+- **Customizing fallback handlers**: Override `app.ErrorHandler = func(ctx *gota.Context, err error) { ... }` or `app.NotFoundHandler = func(ctx *gota.Context) error { ... }` on `*gota.App`.
 
 ---
 
-## 6. Authentication & JWT
+## 7. Authentication & JWT (HS256, RS256, ES256)
 
-Gota includes zero-dependency HS256 JWT utilities:
+Gota includes zero-dependency JWT signing, verification, PEM key parsers, and Bearer middlewares for **HS256**, **RS256**, and **ES256**.
 
-### 6.1 Signing and Verifying Tokens
+### 7.1 Symmetric HMAC-SHA256 (HS256)
 
 ```go
-// Never hardcode the secret: load it from the environment or a secret manager.
-var Secret = []byte(os.Getenv("JWT_SECRET"))
+var jwtSecret = []byte(os.Getenv("JWT_SECRET")) // Never hardcode secrets!
 
 type CustomClaims struct {
-	UserID   int    `json:"userId"`
-	Username string `json:"username"`
-	Role     string `json:"role"`
-	Exp      int64  `json:"exp"`
+	UserID int    `json:"userId"`
+	Role   string `json:"role"`
+	Exp    int64  `json:"exp"`
 }
 
-// Sign JWT:
-token, err := gota.SignJWT(Secret, CustomClaims{
-	UserID:   1,
-	Username: "carlos",
-	Role:     "Admin",
-	Exp:      time.Now().Add(24 * time.Hour).Unix(),
+// Sign token:
+token, err := gota.SignJWT(jwtSecret, CustomClaims{
+	UserID: 42,
+	Role:   "Admin",
+	Exp:    time.Now().Add(24 * time.Hour).Unix(),
 })
 
-// Verify raw JWT:
+// Verify standalone token (enforces exp/nbf if present; pass nil target to verify signature/time only):
 var claims CustomClaims
-err := gota.VerifyJWT(Secret, tokenString, &claims)
+err = gota.VerifyJWT(jwtSecret, tokenString, &claims)
 ```
 
-### 6.2 Securing Routes with JWT Middleware
+### 7.2 Protecting Routes & Extracting Claims
 
 ```go
-// Protected group
-protected := app.Group("/api/protected")
-// Call Use BEFORE registering routes on the group (it panics otherwise).
-// RequireExp rejects tokens without an `exp` claim; `exp`/`nbf` are always enforced when present.
-protected.Use(gota.JWT(Secret, gota.JWTOptions{
-	RequireExp: true,
+protected := app.Group("/api")
+protected.Use(gota.JWT(jwtSecret, gota.JWTOptions{
+	RequireExp: true, // Rejects tokens that omit a positive 'exp' claim
+	// CRITICAL: ClaimsFactory MUST return a POINTER (&CustomClaims{}), NOT a value!
 	ClaimsFactory: func() any { return &CustomClaims{} },
+	// ContextKey: "user", // Default is "user"
 }))
 
-// In any protected endpoint, extract claims from ctx:
-gota.Get(protected, "/profile", func(ctx *gota.Context, _ gota.Empty) (UserResponse, error) {
-	claims, ok := gota.JWTClaims[*CustomClaims](ctx)
+gota.Get(protected, "/me", func(ctx *gota.Context, _ gota.Empty) (UserResponse, error) {
+	claims, ok := gota.JWTClaims[*CustomClaims](ctx) // Also supports gota.JWTClaims[CustomClaims](ctx)
 	if !ok {
 		return UserResponse{}, gota.Unauthorized("Unauthorized")
 	}
-	return UserResponse{ID: claims.UserID, Name: claims.Username}, nil
+	return UserResponse{ID: claims.UserID}, nil
 })
 ```
 
-### 6.3 Asymmetric RSA Tokens (RS256)
+- **Without `ClaimsFactory`**: Claims decode into `map[string]any` and can be retrieved via `claims, ok := gota.JWTClaims[map[string]any](ctx)`.
+- **Custom `ContextKey`**: If `ContextKey: "admin"` was set in `JWTOptions`, pass it as the second argument: `gota.JWTClaims[*CustomClaims](ctx, "admin")`.
+- **Raw Token & JOSE Header**: Authenticated requests also store the raw Bearer token at `ctx.Get("jwt_token")`. Use `hdr, err := gota.ParseJWTHeader(tokenString)` to inspect `Alg`, `Typ`, and `Kid` prior to verification.
 
-Gota also natively supports RS256 with zero external dependencies (using Go stdlib `crypto/rsa` and `crypto/x509`):
+### 7.3 Asymmetric RSA (RS256) & ECDSA P-256 (ES256)
 
 ```go
-// Parse keys from PEM:
-privKey, err := gota.ParseRSAPrivateKeyFromPEM(privPEMBytes)
-pubKey, err := gota.ParseRSAPublicKeyFromPEM(pubPEMBytes)
+// --- RS256 (PKCS#1 / PKCS#8 private PEM; PKIX / PKCS#1 / X.509 cert public PEM) ---
+rsaPriv, err := gota.ParseRSAPrivateKeyFromPEM(privPEM)
+rsaPub, err := gota.ParseRSAPublicKeyFromPEM(pubPEM)
 
-// Sign with RSA private key (optional keyID for 'kid' header):
-token, err := gota.SignJWTRSA(privKey, claims, "key-2026-1")
-
-// Verify with RSA public key:
-err = gota.VerifyJWTRSA(pubKey, tokenString, &claims)
-
-// RS256 Middleware:
-protected.Use(gota.JWTRSA(pubKey, gota.JWTOptions{
-	RequireExp: true,
+token, err := gota.SignJWTRSA(rsaPriv, claims, "kid-2026-01") // keyID is optional
+err = gota.VerifyJWTRSA(rsaPub, token, &claims)
+protected.Use(gota.JWTRSA(rsaPub, gota.JWTOptions{
+	RequireExp:    true,
 	ClaimsFactory: func() any { return &CustomClaims{} },
 }))
-```
 
-### 6.4 Asymmetric ECDSA Tokens (ES256)
+// --- ES256 (NIST P-256 curve; SEC 1 / PKCS#8 private PEM; PKIX / X.509 cert public PEM) ---
+ecPriv, err := gota.ParseECPrivateKeyFromPEM(ecPrivPEM)
+ecPub, err := gota.ParseECPublicKeyFromPEM(ecPubPEM)
 
-For Apple ecosystem integrations, Passkeys/WebAuthn, and high-performance mobile APIs, Gota supports ES256 (NIST P-256 + SHA-256) with 64-byte compact signatures:
-
-```go
-// Parse keys from PEM:
-privKey, err := gota.ParseECPrivateKeyFromPEM(privPEMBytes)
-pubKey, err := gota.ParseECPublicKeyFromPEM(pubPEMBytes)
-
-// Sign with ECDSA private key:
-token, err := gota.SignJWTES256(privKey, claims, "apple-key-1")
-
-// Verify with ECDSA public key:
-err = gota.VerifyJWTES256(pubKey, tokenString, &claims)
-
-// ES256 Middleware:
-protected.Use(gota.JWTES256(pubKey, gota.JWTOptions{
-	RequireExp: true,
+token, err = gota.SignJWTES256(ecPriv, claims, "apple-key-1") // 64-byte R||S RFC 7518 signature
+err = gota.VerifyJWTES256(ecPub, token, &claims)
+protected.Use(gota.JWTES256(ecPub, gota.JWTOptions{
+	RequireExp:    true,
 	ClaimsFactory: func() any { return &CustomClaims{} },
 }))
 ```
 
 ---
 
-## 7. Fluent Route Metadata Chaining
+## 8. Fluent Route Metadata & Reverse URL Lookup
 
-Methods returned by `gota.Get`, `gota.Post`, `gota.HandleEndpoint`, etc.:
+Every route registration (`gota.Get`, `gota.HandleEndpoint`, `app.Get`, etc.) returns `*gota.Route`:
 
 ```go
-route.Summary("Short summary for OpenAPI")
-route.Description("Detailed description of what the endpoint does")
-route.Tags("Auth", "Orders")           // Group in Scalar UI
-route.Status(http.StatusAccepted)      // Change default success status
-route.Deprecated()                     // Mark as deprecated in OpenAPI
-route.Hidden()                         // Omit from OpenAPI and Scalar UI
-route.Middleware(authMiddleware)       // Add route-specific middleware
-route.Name("getUserById")              // Name route for reverse lookup via app.URLFor
+gota.Get(app, "/api/users/:id", getUserHandler).
+	Summary("Get user by ID").
+	Description("Fetches a single user profile.").
+	Tags("Users").
+	Status(http.StatusOK).                                           // Overrides default success status & OpenAPI code
+	Response(http.StatusNotFound, gota.ErrorResponse{}, "Not found"). // Documents extra OpenAPI status codes
+	Middleware(auditMiddleware).                                     // Appends route-specific middleware(s)
+	Name("users.show")                                               // Registers route name for app.URLFor
+	// Also available:
+	// .Deprecated()                                                 // Marks deprecated in OpenAPI
+	// .Hidden()                                                     // Hides route from OpenAPI & Scalar UI
+	// .Body(model, desc...), .Query(name, model, desc...), .Header(name, model, desc...) // Manual docs for low-level routes
 ```
 
-Reverse URL lookup example:
+**Reverse URL Lookup (`app.URLFor`)**:
+Replaces `:param` and `*wildcard` segments; any extra keys in the map are automatically URL-encoded as query parameters:
 
 ```go
-url, err := app.URLFor("getUserById", map[string]string{"id": "42"})
-// Returns: "/api/users/42"
+url, err := app.URLFor("users.show", map[string]string{
+	"id":  "42",
+	"tab": "activity",
+})
+// url == "/api/users/42?tab=activity"
 ```
 
 ---
 
-## 8. Non-REPR Low-Level Routes (Escape Hatch)
+## 9. `gota.Context` Reference & Low-Level Escape Hatch
 
-For infrastructure routes that do not need DTO contracts or OpenAPI generation (e.g. redirects, static file serving, simple healthchecks):
+### 9.1 Low-Level Non-REPR Routes
+
+For redirects, plain-text healthchecks, webhooks needing raw bytes, or custom responses without DTOs, use `app.Get` / `Post` / `Put` / `Patch` / `Delete` / `RegisterRoute` (or the same methods on `*gota.RouteGroup`) with `func(ctx *gota.Context) error`:
 
 ```go
-// Standard Context handler: func(ctx *gota.Context) error
 app.Get("/", func(ctx *gota.Context) error {
-	return ctx.Redirect("/docs")
+	return ctx.Redirect("/docs") // Default 302 Found; pass optional status e.g. ctx.Redirect("/docs", http.StatusMovedPermanently)
 }).Hidden()
 
 app.Get("/healthz", func(ctx *gota.Context) error {
 	return ctx.Send("OK")
-})
+}).Hidden()
+```
+
+### 9.2 `*gota.Context` Fields & Methods
+
+*(Note method casing: **`ctx.Json(...)`** and **`ctx.BindJson(...)`**, NOT `ctx.JSON`!)*
+
+- **Underlying `net/http`**:
+  - `ctx.Request` (`*http.Request` — use `ctx.Request.Context()` for `context.Context`!)
+  - `ctx.ResponseWriter` (`http.ResponseWriter`)
+  - `ctx.Params` (`map[string]string`)
+- **Request-Scoped Key-Value Store (thread-safe)**:
+  - `ctx.Set(key string, val any)`
+  - `ctx.Get(key string) (any, bool)`
+- **Input Helpers** *(prefer REPR DTO tags in REPR endpoints)*:
+  - Path: `ctx.Param(name) string`, `ctx.HasParam(name) bool`, `ctx.ParamInt(name, def) int`, `ctx.ParamInt64(name, def) int64`
+  - Query: `ctx.Query(name) string`, `ctx.QueryDefault(name, def) string`, `ctx.QueryInt(name, def) int`, `ctx.QueryBool(name, def) bool`
+  - Headers & Cookies: `ctx.Header(name) string`, `ctx.Cookie(name) (*http.Cookie, error)`
+  - Client & Correlation: `ctx.ClientIP() string`, `ctx.RequestID() string`
+  - Body & Forms: `ctx.Body() ([]byte, error)` *(cached, safe to call multiple times)*, `ctx.BindJson(targetPtr) error`, `ctx.Form(name) string`, `ctx.FormFile(name) (*multipart.FileHeader, error)`, `ctx.MultipartForm() (*multipart.Form, error)`, `ctx.MaxMultipartMemory() int64`, `ctx.SetMaxMultipartMemory(limit int64)`
+- **Response Helpers**:
+  - Status & Headers: `ctx.Status(code int) *gota.Context`, `ctx.StatusCode() int`, `ctx.StatusExplicit() bool`, `ctx.SetHeader(key, val string) *gota.Context`, `ctx.SetCookie(cookie *http.Cookie) *gota.Context`, `ctx.Written() bool`
+  - Writers: `ctx.Json(data any) error`, `ctx.Send(text string) error`, `ctx.SendBytes(data []byte) error`, `ctx.NoContent() error`, `ctx.Redirect(url string, code ...int) error`
+  - Streaming: `ctx.Stream(step func(w io.Writer) bool) error`, `ctx.SSEvent(event string, data any) error`
+
+---
+
+## 10. Testing Gota Applications
+
+Because `*gota.App` implements `http.Handler`, test endpoints directly in-memory with `net/http/httptest` (no TCP ports or `time.Sleep` needed):
+
+```go
+func TestCreateUser(t *testing.T) {
+	app := gota.New(gota.Config{DisableDocs: true, SilenceTagWarnings: true})
+	gota.Post(app, "/users", createUserHandler).Status(http.StatusCreated)
+
+	body := strings.NewReader(`{"name":"Jane Doe","email":"jane@example.com"}`)
+	req := httptest.NewRequest(http.MethodPost, "/users", body)
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
 ```
 
 ---
 
-## 9. Critical Rules & Anti-Patterns for AI Agents
+## 11. Critical Rules & Anti-Patterns for AI Agents
 
 > [!CAUTION]
-> **DO NOT DO THE FOLLOWING:**
+> **STRICT CHECKLIST — VIOLATING THESE CAUSES COMPILE ERRORS, STARTUP PANICS, OR SILENT BUGS:**
 
-1. ❌ **Do NOT use variadic config**: `gota.New()` does **NOT** accept `...Config`. Always pass a single struct: `app := gota.New(gota.Config{...})` or `app := gota.New(gota.Config{})`.
-2. ❌ **Do NOT attempt generic methods on `app`**: `app.Get[Req, Res]` is invalid Go syntax. Always call `gota.Get(app, path, handler)` or `gota.Post(app, path, handler)`.
-3. ❌ **Do NOT use `path:"id"` tag**: Path parameters in Gota use the tag `param:"id"`, NOT `path:"id"`. (Supports `:param` and `*wildcard`).
-4. ❌ **Do NOT manually parse params/query/body inside REPR handlers**: Define them in the `Req` struct using tags; Gota automatically parses, converts, and validates them before invoking the handler.
-5. ❌ **Do NOT manually encode JSON responses in REPR**: Return the response struct directly: `return MyResponse{...}, nil`.
-6. ❌ **Do NOT omit error from handler returns**: Handlers must always return `(Res, error)`.
-7. ❌ **Do NOT import third-party packages for Gota features**: Gota has built-in CORS, JWT, Logger, Recover, Validator, Scalar UI, and OpenAPI generator without requiring any external module dependencies.
-8. ❌ **Do NOT mistype validation tags**: Gota validates all struct and `validate` tags at startup; unknown rules, invalid arguments, or anti-patterns like `path:"id"` trigger an intentional `panic` with corrective hints during route registration.
-9. ❌ **Do NOT use `omitempty` in `validate:` tags**: Fields in Gota are optional by default unless marked with `required`. Adding `omitempty` is redundant; Gota accepts it as a no-op but logs a startup warning reminding you that it can be safely removed.
-
----
-
-## 10. Security Notes & Best Practices
-
-- **Middleware Order**: Call `app.Use` and `group.Use` **before** registering routes. Middlewares are bound to routes at registration time; calling `Use` after routes have already been registered triggers an intentional `panic` to prevent routes from remaining unprotected silently.
-- **JWT Authentication**: `exp` and `nbf` claims are strictly enforced whenever present, and malformed values reject the token. Use `gota.JWTOptions{RequireExp: true}` to reject tokens without an expiration timestamp. Always load signing keys from environment variables or secrets managers, never hardcode them.
-- **Client IP & Reverse Proxies**: `ctx.ClientIP()` returns `RemoteAddr` by default. Only enable `Config{TrustProxyHeaders: true}` when running behind a trusted reverse proxy (e.g. NGINX, Cloudflare, AWS ALB), as `X-Forwarded-For` and `X-Real-IP` can otherwise be trivially spoofed by untrusted clients.
-- **CORS Configuration**: Setting `AllowCredentials: true` with `AllowOrigins: []string{"*"}` is forbidden by the CORS specification and triggers an intentional `panic` in `gota.CORS`; always specify explicit origin domains when credentials are allowed.
-- **Model Binding Isolation**: Fields tagged exclusively with `param`, `query`, `header`, or `form` (without an explicit `json` tag) are never populated from the JSON request body, preventing cross-source payload injection.
-- **Privilege & DTO Design**: Never accept administrative or privilege fields (such as `role`, `isAdmin`, or `permissions`) in public request DTOs. Always authenticate the caller and assign permissions server-side.
-- **Streaming & Timeouts**: Handlers returning `gota.SSEStream` or `gota.StreamFunc` automatically lift the server's `WriteTimeout` and terminate cleanly when the client disconnects or the context is cancelled.
-- **Validation `required` on Primitives**: Go zero-values (`0`, `false`) fail `validate:"required"`. When `0` or `false` are valid inputs that must be distinguished from absent values, use pointer types (e.g. `*int`, `*bool`) with `validate:"required"`. Absent values remain `nil`, while explicit zeros pass validation.
-
+1. ❌ **Do NOT omit `gota.Config` or pass variadic args**: `gota.New()` does not compile. Always pass one struct: `gota.New(gota.Config{})`.
+2. ❌ **Do NOT call generic methods on `app` or `group`**: `app.Get[Req, Res](...)` is invalid Go. Always use `gota.Get(app, path, fn)`, `gota.Post(group, path, fn)`, or `gota.HandleEndpoint(target, method, path, ep)`.
+3. ❌ **Do NOT call `app.Use` or `group.Use` AFTER registering routes**: Middlewares bind at route registration time; calling `Use` late triggers an intentional **panic**.
+4. ❌ **Do NOT use `path:"id"`**: Gota uses ``param:"id"`` for path parameters. `path:"id"` triggers an intentional startup **panic**.
+5. ❌ **Do NOT add `,omitempty` or options to `param`, `query`, `header`, or `form` tags**: Writing ``form:"notes,omitempty"`` or ``query:"page,required"`` triggers an intentional startup **panic**. Only `json:"notes,omitempty"` supports `,omitempty`, and validation rules belong in `validate:"..."`.
+6. ❌ **Do NOT use non-pointer optional fields with `min=N`, `len=N`, or optional nested structs**: Zero values (`""`, `0`) fail `min`/`len`, and non-pointer nested structs are always recursed into. Use pointer types (`*string`, `*int`, `*AddressDTO`) for optional constrained fields, and `*int` / `*bool` when `0` or `false` must pass `validate:"required"`.
+7. ❌ **Do NOT mix different path param names at the same URL position**: Registering `GET /orders/:id` and `DELETE /orders/:orderId` **panics** at startup (shared automatic `OPTIONS` Trie). Use `:orderId` consistently across all methods.
+8. ❌ **Do NOT return a non-pointer from `JWTOptions.ClaimsFactory`**: Always write `ClaimsFactory: func() any { return &CustomClaims{} }`. Returning a value (`CustomClaims{}`) makes `json.Unmarshal` fail and rejects all tokens with `401`.
+9. ❌ **Do NOT invent non-existent Gota methods or helpers**:
+   - There is **no** `ctx.Next()` — custom middlewares use `func(next gota.HandlerFunc) gota.HandlerFunc`.
+   - Use `ctx.Json(...)` and `ctx.BindJson(...)`, **not** `ctx.JSON(...)`.
+   - Only 6 error constructors exist (`BadRequest`, `Unauthorized`, `Forbidden`, `NotFound`, `UnprocessableEntity`, `InternalServerError`). For other statuses (409, 429, etc.), return `&gota.HTTPError{Status: code, Message: msg}`.
+   - Do **not** use `go-playground/validator` rules (`gte`, `lte`, `gt`, `lt`, `dive`, `omitempty`); Gota panics on unknown rules (use `min`/`max`, automatic recursion, and pointer types instead).
+10. ❌ **Do NOT combine `CORSOptions{AllowCredentials: true}` with `AllowOrigins: []string{"*"}`**: Gota intentionally **panics**; list explicit origins instead.
+11. ❌ **Do NOT accept privilege fields (`role`, `isAdmin`, `permissions`) in public request DTOs**: Always derive identity and roles server-side from verified JWT claims.

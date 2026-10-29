@@ -86,7 +86,7 @@ func bindFieldsInternal(ctx *core.Context, elem reflect.Value, shadowed map[stri
 			continue
 		}
 		for _, tag := range [...]string{"param", "query", "header", "form"} {
-			if v := f.Tag.Get(tag); v != "" {
+			if v := f.Tag.Get(tag); v != "" && v != "-" {
 				mergedShadowed[tag+":"+v] = true
 			}
 		}
@@ -137,7 +137,7 @@ func bindFieldsInternal(ctx *core.Context, elem reflect.Value, shadowed map[stri
 		}
 
 		// Check form tag: form:"avatar" or form:"name"
-		if formTag := field.Tag.Get("form"); formTag != "" && !shadowed["form:"+formTag] {
+		if formTag := field.Tag.Get("form"); formTag != "" && formTag != "-" && !shadowed["form:"+formTag] {
 			if field.Type == fileHeaderPtrType {
 				if files := getFormFiles(ctx, formTag); len(files) > 0 {
 					fieldVal.Set(reflect.ValueOf(files[0]))
@@ -218,7 +218,7 @@ func clearNonBodyFields(elem reflect.Value) {
 			continue
 		}
 		if field.Tag.Get("param") != "" || field.Tag.Get("query") != "" ||
-			field.Tag.Get("header") != "" || field.Tag.Get("form") != "" {
+			field.Tag.Get("header") != "" || (field.Tag.Get("form") != "" && field.Tag.Get("form") != "-") {
 			elem.Field(i).SetZero()
 		}
 	}

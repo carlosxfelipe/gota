@@ -654,3 +654,33 @@ func TestCheckTagsWithCustomMsg(t *testing.T) {
 		t.Fatal("expected error for rule in msg not declared in validate, got nil")
 	}
 }
+
+func TestCheckTagsRejectsCommaOptionsOnBindingTags(t *testing.T) {
+	type FormWithOmitempty struct {
+		Notes string `form:"notes,omitempty"`
+	}
+	if err := CheckTags(reflect.TypeOf(FormWithOmitempty{})); err == nil || !strings.Contains(err.Error(), `form:"notes,omitempty"`) {
+		t.Fatalf("expected error for form tag with omitempty, got: %v", err)
+	}
+
+	type QueryWithRequired struct {
+		Page int `query:"page,required"`
+	}
+	if err := CheckTags(reflect.TypeOf(QueryWithRequired{})); err == nil || !strings.Contains(err.Error(), `query:"page,required"`) {
+		t.Fatalf("expected error for query tag with required, got: %v", err)
+	}
+
+	type ParamWithOption struct {
+		ID string `param:"id,omitempty"`
+	}
+	if err := CheckTags(reflect.TypeOf(ParamWithOption{})); err == nil || !strings.Contains(err.Error(), `param:"id,omitempty"`) {
+		t.Fatalf("expected error for param tag with option, got: %v", err)
+	}
+
+	type HeaderWithOption struct {
+		Token string `header:"X-Token,required"`
+	}
+	if err := CheckTags(reflect.TypeOf(HeaderWithOption{})); err == nil || !strings.Contains(err.Error(), `header:"X-Token,required"`) {
+		t.Fatalf("expected error for header tag with option, got: %v", err)
+	}
+}

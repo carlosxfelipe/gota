@@ -419,8 +419,8 @@ func (g *OpenAPIGenerator) collectStructFields(t reflect.Type, properties map[st
 		}
 
 		name := field.Name
-		if formName, _, _ := strings.Cut(formTag, ","); formName != "" {
-			name = formName
+		if formTag != "" {
+			name = formTag
 		} else if jsonName, _, _ := strings.Cut(jsonTag, ","); jsonName != "" {
 			name = jsonName
 		}
@@ -431,13 +431,13 @@ func (g *OpenAPIGenerator) collectStructFields(t reflect.Type, properties map[st
 			fieldSchema["description"] = docTag
 		}
 		if exTag := field.Tag.Get("example"); exTag != "" {
-			fieldSchema["example"] = parseExample(exTag, field.Type)
+			fieldSchema["example"] = ParseExample(exTag, field.Type)
 		}
 		if formatTag := field.Tag.Get("format"); formatTag != "" {
 			fieldSchema["format"] = formatTag
 		}
 		if defTag := field.Tag.Get("default"); defTag != "" {
-			fieldSchema["default"] = parseExample(defTag, field.Type)
+			fieldSchema["default"] = ParseExample(defTag, field.Type)
 		}
 
 		valTag := field.Tag.Get("validate")
@@ -543,7 +543,9 @@ func (g *OpenAPIGenerator) schemaForType(t reflect.Type) map[string]any {
 	}
 }
 
-func parseExample(val string, t reflect.Type) any {
+// ParseExample converts a string tag value (such as `example` or `default`) into a typed
+// scalar value matching t when possible, falling back to the raw string.
+func ParseExample(val string, t reflect.Type) any {
 	if t == nil {
 		return val
 	}
