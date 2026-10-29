@@ -4,7 +4,6 @@ import (
 	"crypto/ed25519"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
 	"encoding/pem"
 	"errors"
 )
@@ -16,25 +15,10 @@ func SignJWTEdDSA(privateKey ed25519.PrivateKey, payload any, keyID ...string) (
 		return "", errors.New("jwt: invalid Ed25519 private key size")
 	}
 
-	var headerJSON []byte
-	if len(keyID) > 0 && keyID[0] != "" {
-		headerJSON, _ = json.Marshal(JWTHeader{
-			Alg: string(JWTAlgorithmEdDSA),
-			Typ: "JWT",
-			Kid: keyID[0],
-		})
-	} else {
-		headerJSON = []byte(`{"alg":"EdDSA","typ":"JWT"}`)
-	}
-	header := base64.RawURLEncoding.EncodeToString(headerJSON)
-
-	payloadBytes, err := json.Marshal(payload)
+	signingInput, err := encodeJWTSigningInput(JWTAlgorithmEdDSA, payload, keyID...)
 	if err != nil {
 		return "", err
 	}
-	payloadEncoded := base64.RawURLEncoding.EncodeToString(payloadBytes)
-
-	signingInput := header + "." + payloadEncoded
 	sigBytes := ed25519.Sign(privateKey, []byte(signingInput))
 	signature := base64.RawURLEncoding.EncodeToString(sigBytes)
 

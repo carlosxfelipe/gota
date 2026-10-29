@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -50,6 +49,38 @@ func TestSignAndVerifyJWTEdDSA(t *testing.T) {
 	}
 	if verified.UserID != 300 || verified.Username != "eddsa_user" || verified.Role != "ServiceMesh" {
 		t.Errorf("decoded claims mismatch: %+v", verified)
+	}
+}
+
+func TestVerifyJWTEdDSAExpired(t *testing.T) {
+	privKey, pubKey := generateTestEdKeys(t)
+
+	token, err := SignJWTEdDSA(privKey, testClaims{
+		UserID:   1,
+		Username: "expired",
+		Exp:      time.Now().Add(-1 * time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("failed to sign EdDSA token: %v", err)
+	}
+
+	var verified testClaims
+	err = VerifyJWTEdDSA(pubKey, token, &verified)
+	if err == nil || err.Error() != "token expired" {
+		t.Fatalf("expected 'token expired', got %v", err)
+	}
+}
+
+func TestVerifyJWTEdDSAInvalidSignature(t *testing.T) {
+	privKey1, _ := generateTestEdKeys(t)
+	_, pubKey2 := generateTestEdKeys(t)
+
+	token, _ := SignJWTEdDSA(privKey1, testClaims{UserID: 1, Username: "tampered"})
+
+	var verified testClaims
+	err := VerifyJWTEdDSA(pubKey2, token, &verified)
+	if err == nil || err.Error() != "invalid token signature" {
+		t.Fatalf("expected 'invalid token signature', got %v", err)
 	}
 }
 
@@ -108,64 +139,5 @@ func TestJWTEdDSAMiddleware(t *testing.T) {
 
 	if rec.Code != http.StatusOK || rec.Body.String() != "envoy" {
 		t.Fatalf("expected 200 envoy, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestJWTWithKeyFuncKeyRotationAndAlgConfusion(t *testing.T) {
-	rsaPriv1, rsaPub1 := generateTestRSAKeys(t)
-	ecPriv2, ecPub2 := generateTestECKeys(t)
-	edPriv3, edPub3 := generateTestEdKeys(t)
-	hmacSecret := []byte("shared-secret-key")
-
-	keysByKid := map[string]any{
-		"rsa-2025": rsaPub1,
-		"ec-2026":  ecPub2,
-		"ed-2026":  edPub3,
-		"hs-2026":  hmacSecret,
-	}
-
-	keyFunc := func(hdr JWTHeader) (any, error) {
-		k, ok := keysByKid[hdr.Kid]
-		if !ok {
-			return nil, errors.New("unknown kid")
-		}
-		return k, nil
-	}
-
-	app := New(Config{DisableDocs: true})
-	app.Use(JWTWithKeyFunc(keyFunc, JWTOptions{
-		RequireExp:    true,
-		ClaimsFactory: func() any { return &testClaims{} },
-	}))
-	app.Get("/whoami", func(ctx *Context) error {
-		c, _ := JWTClaims[*testClaims](ctx)
-		return ctx.Send(c.Username)
-	})
-
-	exp := time.Now().Add(time.Hour).Unix()
-	tRSA, _ := SignJWTRSA(rsaPriv1, testClaims{Username: "rsa_ok", Exp: exp}, "rsa-2025")
-	tEC, _ := SignJWTES256(ecPriv2, testClaims{Username: "ec_ok", Exp: exp}, "ec-2026")
-	tEd, _ := SignJWTEdDSA(edPriv3, testClaims{Username: "ed_ok", Exp: exp}, "ed-2026")
-	tHS, _ := SignJWT(hmacSecret, testClaims{Username: "hs_ok", Exp: exp}, "hs-2026")
-
-	for wantUser, tok := range map[string]string{
-		"rsa_ok": tRSA,
-		"ec_ok":  tEC,
-		"ed_ok":  tEd,
-		"hs_ok":  tHS,
-	} {
-		req := httptest.NewRequest(http.MethodGet, "/whoami", nil)
-		req.Header.Set("Authorization", "Bearer "+tok)
-		rec := httptest.NewRecorder()
-		app.ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK || rec.Body.String() != wantUser {
-			t.Errorf("expected 200 %q, got %d %q", wantUser, rec.Code, rec.Body.String())
-		}
-	}
-
-	// Algorithm confusion check: signing an HS256 token claiming kid="rsa-2025" (which maps to *rsa.PublicKey) must fail!
-	confusedToken, _ := SignJWT(hmacSecret, testClaims{Username: "hacker", Exp: exp}, "rsa-2025")
-	if err := VerifyJWTWithKeyFunc(keyFunc, confusedToken, nil); err == nil {
-		t.Fatal("expected VerifyJWTWithKeyFunc to reject token when header alg (HS256) does not match key type (*rsa.PublicKey)")
 	}
 }

@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
 	"encoding/pem"
 	"errors"
 )
@@ -19,25 +18,10 @@ func SignJWTRSA(privateKey *rsa.PrivateKey, payload any, keyID ...string) (strin
 		return "", errors.New("jwt: RSA private key cannot be nil")
 	}
 
-	var headerJSON []byte
-	if len(keyID) > 0 && keyID[0] != "" {
-		headerJSON, _ = json.Marshal(JWTHeader{
-			Alg: string(JWTAlgorithmRS256),
-			Typ: "JWT",
-			Kid: keyID[0],
-		})
-	} else {
-		headerJSON = []byte(`{"alg":"RS256","typ":"JWT"}`)
-	}
-	header := base64.RawURLEncoding.EncodeToString(headerJSON)
-
-	payloadBytes, err := json.Marshal(payload)
+	signingInput, err := encodeJWTSigningInput(JWTAlgorithmRS256, payload, keyID...)
 	if err != nil {
 		return "", err
 	}
-	payloadEncoded := base64.RawURLEncoding.EncodeToString(payloadBytes)
-
-	signingInput := header + "." + payloadEncoded
 	hashed := sha256.Sum256([]byte(signingInput))
 
 	signatureBytes, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hashed[:])

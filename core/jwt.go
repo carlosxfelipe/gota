@@ -78,6 +78,28 @@ func ParseJWTHeader(tokenString string) (JWTHeader, error) {
 	return hdr, nil
 }
 
+func encodeJWTSigningInput(alg JWTAlgorithm, payload any, keyID ...string) (string, error) {
+	var headerJSON []byte
+	if len(keyID) > 0 && keyID[0] != "" {
+		headerJSON, _ = json.Marshal(JWTHeader{
+			Alg: string(alg),
+			Typ: "JWT",
+			Kid: keyID[0],
+		})
+	} else {
+		headerJSON = []byte(`{"alg":"` + string(alg) + `","typ":"JWT"}`)
+	}
+	header := base64.RawURLEncoding.EncodeToString(headerJSON)
+
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	payloadEncoded := base64.RawURLEncoding.EncodeToString(payloadBytes)
+
+	return header + "." + payloadEncoded, nil
+}
+
 func verifyToken(tokenString string, target any, requireExp bool, expectedAlg string, verifySig func(signingInput string, sig []byte) error) error {
 	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 {

@@ -4,7 +4,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 )
 
@@ -21,25 +20,10 @@ func SignJWT(secret []byte, payload any, keyID ...string) (string, error) {
 		return "", errors.New("jwt: secret key cannot be empty")
 	}
 
-	var headerJSON []byte
-	if len(keyID) > 0 && keyID[0] != "" {
-		headerJSON, _ = json.Marshal(JWTHeader{
-			Alg: string(JWTAlgorithmHS256),
-			Typ: "JWT",
-			Kid: keyID[0],
-		})
-	} else {
-		headerJSON = []byte(`{"alg":"HS256","typ":"JWT"}`)
-	}
-	header := base64.RawURLEncoding.EncodeToString(headerJSON)
-
-	payloadBytes, err := json.Marshal(payload)
+	signingInput, err := encodeJWTSigningInput(JWTAlgorithmHS256, payload, keyID...)
 	if err != nil {
 		return "", err
 	}
-	payloadEncoded := base64.RawURLEncoding.EncodeToString(payloadBytes)
-
-	signingInput := header + "." + payloadEncoded
 	signature := base64.RawURLEncoding.EncodeToString(hmacSHA256(secret, signingInput))
 
 	return signingInput + "." + signature, nil

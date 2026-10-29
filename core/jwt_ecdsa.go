@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"math/big"
@@ -23,25 +22,10 @@ func SignJWTES256(privateKey *ecdsa.PrivateKey, payload any, keyID ...string) (s
 		return "", errors.New("jwt: private key curve must be P-256 for ES256")
 	}
 
-	var headerJSON []byte
-	if len(keyID) > 0 && keyID[0] != "" {
-		headerJSON, _ = json.Marshal(JWTHeader{
-			Alg: string(JWTAlgorithmES256),
-			Typ: "JWT",
-			Kid: keyID[0],
-		})
-	} else {
-		headerJSON = []byte(`{"alg":"ES256","typ":"JWT"}`)
-	}
-	header := base64.RawURLEncoding.EncodeToString(headerJSON)
-
-	payloadBytes, err := json.Marshal(payload)
+	signingInput, err := encodeJWTSigningInput(JWTAlgorithmES256, payload, keyID...)
 	if err != nil {
 		return "", err
 	}
-	payloadEncoded := base64.RawURLEncoding.EncodeToString(payloadBytes)
-
-	signingInput := header + "." + payloadEncoded
 	hashed := sha256.Sum256([]byte(signingInput))
 
 	r, s, err := ecdsa.Sign(rand.Reader, privateKey, hashed[:])

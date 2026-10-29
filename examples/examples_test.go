@@ -323,6 +323,26 @@ func TestDocsAndRedirectRoutes(t *testing.T) {
 			t.Errorf("expected endpoint %s in OpenAPI spec", ep)
 		}
 	}
+
+	// Verify automatic BearerAuth security scheme & protected route security in OpenAPI 3.1
+	components, ok := spec["components"].(map[string]any)
+	if !ok {
+		t.Fatal("expected components in OpenAPI spec")
+	}
+	secSchemes, ok := components["securitySchemes"].(map[string]any)
+	if !ok || secSchemes["BearerAuth"] == nil {
+		t.Errorf("expected automatic BearerAuth in components.securitySchemes, got %v", secSchemes)
+	}
+	ordersPath, _ := paths["/api/orders"].(map[string]any)
+	ordersGet, _ := ordersPath["get"].(map[string]any)
+	if ordersGet["security"] == nil {
+		t.Errorf("expected protected route GET /api/orders to have security requirement in OpenAPI spec")
+	}
+	loginPath, _ := paths["/api/auth/login"].(map[string]any)
+	loginPost, _ := loginPath["post"].(map[string]any)
+	if loginPost["security"] != nil {
+		t.Errorf("expected public route POST /api/auth/login not to have security requirement, got %v", loginPost["security"])
+	}
 }
 
 func TestOrderRichValidationAndObservability(t *testing.T) {
