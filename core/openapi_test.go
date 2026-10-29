@@ -374,3 +374,71 @@ func TestOpenAPIMapAndAnySchemas(t *testing.T) {
 		t.Errorf("expected additionalProperties with $ref to AddressDTO, got: %v", modelMap)
 	}
 }
+
+type ValidatedSchemaDTO struct {
+	Username string   `json:"username" validate:"required,min=3,max=20"`
+	Pin      string   `json:"pin" validate:"len=6"`
+	Age      int      `json:"age" validate:"min=18,max=120"`
+	Price    float64  `json:"price" validate:"min=0.5,max=999.99"`
+	Tags     []string `json:"tags" validate:"min=1,max=5"`
+	Role     string   `json:"role" validate:"oneof=Admin,Customer,Manager,required"`
+	Priority *int     `json:"priority" validate:"oneof=1,2,3"`
+	Email    string   `json:"email" validate:"email"`
+	Website  string   `json:"website" validate:"url"`
+	UserID   string   `json:"userId" validate:"uuid"`
+}
+
+func TestOpenAPIValidationRulesInSchema(t *testing.T) {
+	g := NewOpenAPIGenerator(Config{})
+	g.registerOrRef(ValidatedSchemaDTO{})
+
+	schema := g.schemas["ValidatedSchemaDTO"]
+	props := schema["properties"].(map[string]any)
+
+	username := props["username"].(map[string]any)
+	if username["minLength"] != 3 || username["maxLength"] != 20 {
+		t.Errorf("expected username minLength=3 maxLength=20, got %v", username)
+	}
+
+	pin := props["pin"].(map[string]any)
+	if pin["minLength"] != 6 || pin["maxLength"] != 6 {
+		t.Errorf("expected pin minLength=6 maxLength=6, got %v", pin)
+	}
+
+	age := props["age"].(map[string]any)
+	if age["minimum"] != 18 || age["maximum"] != 120 {
+		t.Errorf("expected age minimum=18 maximum=120, got %v", age)
+	}
+
+	price := props["price"].(map[string]any)
+	if price["minimum"] != 0.5 || price["maximum"] != 999.99 {
+		t.Errorf("expected price minimum=0.5 maximum=999.99, got %v", price)
+	}
+
+	tags := props["tags"].(map[string]any)
+	if tags["minItems"] != 1 || tags["maxItems"] != 5 {
+		t.Errorf("expected tags minItems=1 maxItems=5, got %v", tags)
+	}
+
+	role := props["role"].(map[string]any)
+	roleEnum, ok := role["enum"].([]any)
+	if !ok || len(roleEnum) != 3 || roleEnum[0] != "Admin" || roleEnum[2] != "Manager" {
+		t.Errorf("expected role enum [Admin, Customer, Manager], got %v", role["enum"])
+	}
+
+	priority := props["priority"].(map[string]any)
+	prioEnum, ok := priority["enum"].([]any)
+	if !ok || len(prioEnum) != 3 || prioEnum[0] != 1 || prioEnum[2] != 3 {
+		t.Errorf("expected priority typed int enum [1, 2, 3], got %v", priority["enum"])
+	}
+
+	if props["email"].(map[string]any)["format"] != "email" {
+		t.Errorf("expected email format=email, got %v", props["email"])
+	}
+	if props["website"].(map[string]any)["format"] != "uri" {
+		t.Errorf("expected website format=uri, got %v", props["website"])
+	}
+	if props["userId"].(map[string]any)["format"] != "uuid" {
+		t.Errorf("expected userId format=uuid, got %v", props["userId"])
+	}
+}

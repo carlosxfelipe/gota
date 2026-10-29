@@ -2,6 +2,7 @@ package core
 
 import (
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
@@ -21,6 +22,8 @@ const (
 	JWTAlgorithmRS256 JWTAlgorithm = "RS256"
 	// JWTAlgorithmES256 represents ECDSA P-256 with SHA-256 asymmetric signing.
 	JWTAlgorithmES256 JWTAlgorithm = "ES256"
+	// JWTAlgorithmEdDSA represents Ed25519 asymmetric signing.
+	JWTAlgorithmEdDSA JWTAlgorithm = "EdDSA"
 )
 
 // JWTHeader represents the decoded JOSE header of a JWT.
@@ -29,6 +32,10 @@ type JWTHeader struct {
 	Typ string `json:"typ"`
 	Kid string `json:"kid,omitempty"`
 }
+
+// JWTKeyFunc dynamically resolves the verification key (e.g. []byte for HS256, *rsa.PublicKey for RS256,
+// *ecdsa.PublicKey for ES256, or ed25519.PublicKey for EdDSA) from the decoded JOSE header (such as 'kid').
+type JWTKeyFunc func(header JWTHeader) (any, error)
 
 // JWTOptions provides configuration for JWT generation, verification, and middleware.
 type JWTOptions struct {
@@ -40,6 +47,10 @@ type JWTOptions struct {
 	RSAPublicKey *rsa.PublicKey
 	// ECDSAPublicKey is the ECDSA public key used to verify ES256 tokens.
 	ECDSAPublicKey *ecdsa.PublicKey
+	// EdDSAPublicKey is the Ed25519 public key used to verify EdDSA tokens.
+	EdDSAPublicKey ed25519.PublicKey
+	// KeyFunc dynamically selects a verification key based on the token header (e.g. Kid).
+	KeyFunc JWTKeyFunc
 	// ContextKey is the key under which claims will be stored in Context (default: "user").
 	ContextKey string
 	// ClaimsFactory is an optional factory function returning a pointer to a custom claims struct.
@@ -146,6 +157,15 @@ func applyJWTOptions(dst *JWTOptions, src JWTOptions) {
 			dst.Algorithm = JWTAlgorithmES256
 		}
 	}
+	if len(src.EdDSAPublicKey) > 0 {
+		dst.EdDSAPublicKey = src.EdDSAPublicKey
+		if dst.Algorithm == "" {
+			dst.Algorithm = JWTAlgorithmEdDSA
+		}
+	}
+	if src.KeyFunc != nil {
+		dst.KeyFunc = src.KeyFunc
+	}
 	if src.ContextKey != "" {
 		dst.ContextKey = src.ContextKey
 	}
@@ -155,8 +175,70 @@ func applyJWTOptions(dst *JWTOptions, src JWTOptions) {
 	dst.RequireExp = src.RequireExp
 }
 
+// VerifyJWTWithKeyFunc verifies a JWT token by resolving the verification key dynamically via keyFunc.
+// To prevent algorithm confusion attacks, the key type returned by keyFunc must strictly match the header's 'alg':
+// []byte for HS256, *rsa.PublicKey for RS256, *ecdsa.PublicKey for ES256, or ed25519.PublicKey for EdDSA.
+func VerifyJWTWithKeyFunc(keyFunc JWTKeyFunc, tokenString string, target any) error {
+	return verifyJWTWithKeyFunc(keyFunc, tokenString, target, false)
+}
+
+func verifyJWTWithKeyFunc(keyFunc JWTKeyFunc, tokenString string, target any, requireExp bool) error {
+	if keyFunc == nil {
+		return errors.New("jwt: keyFunc cannot be nil")
+	}
+	hdr, err := ParseJWTHeader(tokenString)
+	if err != nil {
+		return err
+	}
+	key, err := keyFunc(hdr)
+	if err != nil {
+		return err
+	}
+	switch JWTAlgorithm(hdr.Alg) {
+	case JWTAlgorithmHS256:
+		secret, ok := key.([]byte)
+		if !ok {
+			return errors.New("invalid token signature")
+		}
+		return verifyJWT(secret, tokenString, target, requireExp)
+	case JWTAlgorithmRS256:
+		pub, ok := key.(*rsa.PublicKey)
+		if !ok {
+			return errors.New("invalid token signature")
+		}
+		return verifyJWTRSA(pub, tokenString, target, requireExp)
+	case JWTAlgorithmES256:
+		pub, ok := key.(*ecdsa.PublicKey)
+		if !ok {
+			return errors.New("invalid token signature")
+		}
+		return verifyJWTES256(pub, tokenString, target, requireExp)
+	case JWTAlgorithmEdDSA:
+		pub, ok := key.(ed25519.PublicKey)
+		if !ok {
+			return errors.New("invalid token signature")
+		}
+		return verifyJWTEdDSA(pub, tokenString, target, requireExp)
+	default:
+		return errors.New("invalid token signature")
+	}
+}
+
+// JWTWithKeyFunc returns a built-in middleware for Bearer token validation using a dynamic JWTKeyFunc
+// (ideal for key rotation by 'kid' or multi-issuer verification).
+func JWTWithKeyFunc(keyFunc JWTKeyFunc, opts ...JWTOptions) MiddlewareFunc {
+	cfg := JWTOptions{
+		KeyFunc:    keyFunc,
+		ContextKey: "user",
+	}
+	if len(opts) > 0 {
+		applyJWTOptions(&cfg, opts[0])
+	}
+	return createJWTMiddleware(cfg)
+}
+
 func createJWTMiddleware(cfg JWTOptions) MiddlewareFunc {
-	return func(next HandlerFunc) HandlerFunc {
+	mw := func(next HandlerFunc) HandlerFunc {
 		return func(ctx *Context) error {
 			unauthorized := func(msg string) error {
 				return ctx.Status(http.StatusUnauthorized).Json(ErrorResponse{
@@ -186,6 +268,13 @@ func createJWTMiddleware(cfg JWTOptions) MiddlewareFunc {
 
 			var verifyErr error
 			switch {
+			case cfg.KeyFunc != nil:
+				verifyErr = verifyJWTWithKeyFunc(cfg.KeyFunc, parts[1], claims, cfg.RequireExp)
+			case cfg.Algorithm == JWTAlgorithmEdDSA || len(cfg.EdDSAPublicKey) > 0:
+				if len(cfg.EdDSAPublicKey) == 0 {
+					return unauthorized("Invalid or expired token")
+				}
+				verifyErr = verifyJWTEdDSA(cfg.EdDSAPublicKey, parts[1], claims, cfg.RequireExp)
 			case cfg.Algorithm == JWTAlgorithmES256 || cfg.ECDSAPublicKey != nil:
 				if cfg.ECDSAPublicKey == nil {
 					return unauthorized("Invalid or expired token")
@@ -209,6 +298,7 @@ func createJWTMiddleware(cfg JWTOptions) MiddlewareFunc {
 			return next(ctx)
 		}
 	}
+	return registerMiddlewareSecurity(mw, "BearerAuth")
 }
 
 // JWTClaims retrieves the authenticated claims from Context into type T.

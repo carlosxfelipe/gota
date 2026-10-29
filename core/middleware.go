@@ -2,13 +2,17 @@ package core
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"fmt"
 	"log"
 	"log/slog"
+	"math"
 	"net/http"
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -270,6 +274,169 @@ func SlogLogger(opts ...SlogLoggerOptions) MiddlewareFunc {
 			}
 
 			return err
+		}
+	}
+}
+
+// BasicAuthOptions configures the BasicAuth middleware.
+type BasicAuthOptions struct {
+	// Realm sets the WWW-Authenticate realm (default: "Restricted").
+	Realm string
+	// Validator is an optional custom function to validate username and password.
+	// When nil, constant-time comparison against the provided username and password is used.
+	Validator func(username, password string) bool
+	// ContextKey is the context store key where the authenticated username is saved (default: "user").
+	ContextKey string
+}
+
+// BasicAuth returns an HTTP Basic Authentication middleware using constant-time credential comparison.
+// Automatically documents the "BasicAuth" security scheme in OpenAPI 3.1 when applied to routes or groups.
+func BasicAuth(username, password string, opts ...BasicAuthOptions) MiddlewareFunc {
+	realm := "Restricted"
+	contextKey := "user"
+	var validator func(u, p string) bool
+
+	if len(opts) > 0 {
+		if opts[0].Realm != "" {
+			realm = opts[0].Realm
+		}
+		if opts[0].ContextKey != "" {
+			contextKey = opts[0].ContextKey
+		}
+		validator = opts[0].Validator
+	}
+
+	expectedUserHash := sha256.Sum256([]byte(username))
+	expectedPassHash := sha256.Sum256([]byte(password))
+	wwwAuth := fmt.Sprintf("Basic realm=%q", realm)
+
+	mw := func(next HandlerFunc) HandlerFunc {
+		return func(ctx *Context) error {
+			u, p, ok := ctx.Request.BasicAuth()
+			if ok {
+				var valid bool
+				if validator != nil {
+					valid = validator(u, p)
+				} else {
+					uHash := sha256.Sum256([]byte(u))
+					pHash := sha256.Sum256([]byte(p))
+					userMatch := subtle.ConstantTimeCompare(uHash[:], expectedUserHash[:]) == 1
+					passMatch := subtle.ConstantTimeCompare(pHash[:], expectedPassHash[:]) == 1
+					valid = userMatch && passMatch
+				}
+				if valid {
+					ctx.Set(contextKey, u)
+					return next(ctx)
+				}
+			}
+
+			ctx.SetHeader("WWW-Authenticate", wwwAuth)
+			return ctx.Status(http.StatusUnauthorized).Json(ErrorResponse{
+				Error:     "Unauthorized",
+				Status:    http.StatusUnauthorized,
+				RequestID: ctx.RequestID(),
+			})
+		}
+	}
+	return registerMiddlewareSecurity(mw, "BasicAuth")
+}
+
+// RateLimiterOptions configures the in-memory RateLimiter middleware.
+type RateLimiterOptions struct {
+	// Max is the maximum number of requests allowed per Window (default: 60).
+	Max int
+	// Window is the time window for the rate limit (default: 1 minute).
+	Window time.Duration
+	// KeyFunc extracts the rate-limiting key from the request (default: ctx.ClientIP()).
+	KeyFunc func(ctx *Context) string
+}
+
+type rateBucket struct {
+	tokens     float64
+	lastRefill time.Time
+}
+
+// RateLimiter returns a zero-dependency in-memory Token Bucket rate limiter middleware.
+// When a client exceeds Max requests per Window, it returns HTTP 429 Too Many Requests with Retry-After.
+func RateLimiter(opts ...RateLimiterOptions) MiddlewareFunc {
+	maxReqs := 60
+	window := time.Minute
+	keyFunc := func(ctx *Context) string { return ctx.ClientIP() }
+
+	if len(opts) > 0 {
+		if opts[0].Max > 0 {
+			maxReqs = opts[0].Max
+		}
+		if opts[0].Window > 0 {
+			window = opts[0].Window
+		}
+		if opts[0].KeyFunc != nil {
+			keyFunc = opts[0].KeyFunc
+		}
+	}
+
+	maxTokens := float64(maxReqs)
+	refillRate := maxTokens / window.Seconds()
+	limitStr := strconv.Itoa(maxReqs)
+
+	var (
+		mu          sync.Mutex
+		buckets     = make(map[string]*rateBucket)
+		lastCleanup = time.Now()
+	)
+
+	return func(next HandlerFunc) HandlerFunc {
+		return func(ctx *Context) error {
+			key := keyFunc(ctx)
+			now := time.Now()
+
+			mu.Lock()
+			// Periodic lazy eviction of idle buckets to bound memory usage
+			if len(buckets) > 1024 && now.Sub(lastCleanup) > window {
+				for k, b := range buckets {
+					if now.Sub(b.lastRefill) > 2*window {
+						delete(buckets, k)
+					}
+				}
+				lastCleanup = now
+			}
+
+			b, exists := buckets[key]
+			if !exists {
+				b = &rateBucket{tokens: maxTokens, lastRefill: now}
+				buckets[key] = b
+			} else {
+				elapsed := now.Sub(b.lastRefill).Seconds()
+				if elapsed > 0 {
+					b.tokens = math.Min(maxTokens, b.tokens+elapsed*refillRate)
+					b.lastRefill = now
+				}
+			}
+
+			if b.tokens < 1.0 {
+				retryAfter := int(math.Ceil((1.0 - b.tokens) / refillRate))
+				if retryAfter < 1 {
+					retryAfter = 1
+				}
+				mu.Unlock()
+
+				ctx.SetHeader("X-RateLimit-Limit", limitStr)
+				ctx.SetHeader("X-RateLimit-Remaining", "0")
+				ctx.SetHeader("Retry-After", strconv.Itoa(retryAfter))
+				return ctx.Status(http.StatusTooManyRequests).Json(ErrorResponse{
+					Error:     "too many requests",
+					Status:    http.StatusTooManyRequests,
+					RequestID: ctx.RequestID(),
+				})
+			}
+
+			b.tokens -= 1.0
+			remaining := int(b.tokens)
+			mu.Unlock()
+
+			ctx.SetHeader("X-RateLimit-Limit", limitStr)
+			ctx.SetHeader("X-RateLimit-Remaining", strconv.Itoa(remaining))
+			return next(ctx)
 		}
 	}
 }

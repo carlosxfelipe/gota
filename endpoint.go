@@ -31,6 +31,66 @@ func isEmptyType(t reflect.Type) bool {
 	return t == emptyType || t == emptyStructType
 }
 
+func hasResponseHeaders(t reflect.Type) bool {
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == nil || t.Kind() != reflect.Struct || isEmptyType(t) {
+		return false
+	}
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if ft, ok := core.EmbeddedStructType(f); ok {
+			if hasResponseHeaders(ft) {
+				return true
+			}
+			continue
+		}
+		if f.IsExported() && f.Tag.Get("header") != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func writeResponseHeaders(ctx *core.Context, val reflect.Value) {
+	for val.IsValid() && val.Kind() == reflect.Pointer {
+		if val.IsNil() {
+			return
+		}
+		val = val.Elem()
+	}
+	if !val.IsValid() || val.Kind() != reflect.Struct {
+		return
+	}
+	t := val.Type()
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		fv := val.Field(i)
+		if _, ok := core.EmbeddedStructType(f); ok {
+			writeResponseHeaders(ctx, fv)
+			continue
+		}
+		if !f.IsExported() {
+			continue
+		}
+		hdr := f.Tag.Get("header")
+		if hdr == "" {
+			continue
+		}
+		for fv.Kind() == reflect.Pointer {
+			if fv.IsNil() {
+				break
+			}
+			fv = fv.Elem()
+		}
+		if !fv.IsValid() || fv.Kind() == reflect.Pointer || fv.IsZero() {
+			continue
+		}
+		ctx.SetHeader(hdr, fmt.Sprintf("%v", fv.Interface()))
+	}
+}
+
 // Streamer defines the contract for streaming responses in REPR endpoints.
 type Streamer interface {
 	Stream(ctx *core.Context) error
@@ -121,6 +181,7 @@ func WrapEndpoint[Req any, Res any](handler EndpointFunc[Req, Res], defaultStatu
 	}
 
 	doc := introspectEndpoint[Req, Res](defaultStatus)
+	resHasHeaders := hasResponseHeaders(reflect.TypeOf(*new(Res)))
 
 	handlerFunc := func(ctx *core.Context) error {
 		var req Req
@@ -162,6 +223,9 @@ func WrapEndpoint[Req any, Res any](handler EndpointFunc[Req, Res], defaultStatu
 		}
 
 		if !ctx.Written() {
+			if resHasHeaders {
+				writeResponseHeaders(ctx, reflect.ValueOf(res))
+			}
 			resType := reflect.TypeOf(res)
 			if isEmptyType(resType) {
 				return ctx.NoContent()
@@ -282,12 +346,11 @@ func inspectRequestStruct(t reflect.Type, params *[]core.ParamDoc, hasBodyFields
 
 		jsonTag := field.Tag.Get("json")
 		formTag := field.Tag.Get("form")
-		if jsonTag == "-" || formTag == "-" {
-			continue
-		}
 
 		if ft, ok := core.EmbeddedStructType(field); ok {
-			inspectRequestStruct(ft, params, hasBodyFields, hasFormFields, hasFileFields, mergedShadowed, embedding)
+			if jsonTag != "-" && formTag != "-" {
+				inspectRequestStruct(ft, params, hasBodyFields, hasFormFields, hasFileFields, mergedShadowed, embedding)
+			}
 			continue
 		}
 
@@ -299,6 +362,12 @@ func inspectRequestStruct(t reflect.Type, params *[]core.ParamDoc, hasBodyFields
 		if exTag := field.Tag.Get("example"); exTag != "" {
 			ex = core.ParseExample(exTag, field.Type)
 		}
+		var def any
+		if defTag := field.Tag.Get("default"); defTag != "" {
+			def = core.ParseExample(defTag, field.Type)
+		}
+		formatTag := field.Tag.Get("format")
+		validateTag := field.Tag.Get("validate")
 
 		// Path param
 		if paramTag := field.Tag.Get("param"); paramTag != "" {
@@ -310,9 +379,12 @@ func inspectRequestStruct(t reflect.Type, params *[]core.ParamDoc, hasBodyFields
 					Description: field.Tag.Get("doc"),
 					Required:    true,
 					Example:     ex,
+					Default:     def,
+					Format:      formatTag,
+					Validate:    validateTag,
 				})
 			}
-			if jsonTag == "" && formTag == "" {
+			if (jsonTag == "" || jsonTag == "-") && (formTag == "" || formTag == "-") {
 				continue
 			}
 		}
@@ -325,11 +397,14 @@ func inspectRequestStruct(t reflect.Type, params *[]core.ParamDoc, hasBodyFields
 					Name:        queryTag,
 					Model:       reflect.New(field.Type).Elem().Interface(),
 					Description: field.Tag.Get("doc"),
-					Required:    hasRequiredRule(field.Tag.Get("validate")),
+					Required:    hasRequiredRule(validateTag),
 					Example:     ex,
+					Default:     def,
+					Format:      formatTag,
+					Validate:    validateTag,
 				})
 			}
-			if jsonTag == "" && formTag == "" {
+			if (jsonTag == "" || jsonTag == "-") && (formTag == "" || formTag == "-") {
 				continue
 			}
 		}
@@ -342,13 +417,20 @@ func inspectRequestStruct(t reflect.Type, params *[]core.ParamDoc, hasBodyFields
 					Name:        headerTag,
 					Model:       reflect.New(field.Type).Elem().Interface(),
 					Description: field.Tag.Get("doc"),
-					Required:    hasRequiredRule(field.Tag.Get("validate")),
+					Required:    hasRequiredRule(validateTag),
 					Example:     ex,
+					Default:     def,
+					Format:      formatTag,
+					Validate:    validateTag,
 				})
 			}
-			if jsonTag == "" && formTag == "" {
+			if (jsonTag == "" || jsonTag == "-") && (formTag == "" || formTag == "-") {
 				continue
 			}
+		}
+
+		if jsonTag == "-" || formTag == "-" {
+			continue
 		}
 
 		if formTag != "" {

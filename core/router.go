@@ -66,7 +66,7 @@ func wildcardKey(seg string) string {
 // It panics if the same method and path were already registered explicitly,
 // or if a parameter/wildcard name conflicts with an existing sibling.
 func (r *Router) Add(method, path string, handler HandlerFunc) *Node {
-	current := r.insert(method, path)
+	current := r.insert(method, path, false)
 	if current.Handler != nil && !current.auto {
 		panic(fmt.Sprintf("gota: route %s %s is already registered", method, path))
 	}
@@ -86,7 +86,7 @@ func (r *Router) Add(method, path string, handler HandlerFunc) *Node {
 // addAuto registers an implicit route unless one already exists.
 // Implicit routes are hidden from the generated documentation.
 func (r *Router) addAuto(method, path string, handler HandlerFunc) {
-	current := r.insert(method, path)
+	current := r.insert(method, path, true)
 	if current.Handler != nil {
 		return
 	}
@@ -96,6 +96,20 @@ func (r *Router) addAuto(method, path string, handler HandlerFunc) {
 	current.Method = method
 	current.FullPath = path
 	current.Doc = &RouteDoc{Hidden: true, Responses: make(map[int]*ResponseDoc)}
+}
+
+// onlyAutoSubtree reports whether n and all of its descendants only carry implicitly
+// registered handlers (such as automatic OPTIONS routes).
+func onlyAutoSubtree(n *Node) bool {
+	if n.Handler != nil && !n.auto {
+		return false
+	}
+	for _, c := range n.Children {
+		if !onlyAutoSubtree(c) {
+			return false
+		}
+	}
+	return true
 }
 
 // Allowed returns the sorted HTTP methods that have a handler matching path.
@@ -111,7 +125,7 @@ func (r *Router) Allowed(path string) []string {
 }
 
 // insert finds or creates the Trie node for method and path.
-func (r *Router) insert(method, path string) *Node {
+func (r *Router) insert(method, path string, isAuto bool) *Node {
 	root, ok := r.trees[method]
 	if !ok {
 		root = &Node{Segment: "/"}
@@ -129,6 +143,23 @@ func (r *Router) insert(method, path string) *Node {
 				break
 			}
 			if (c.IsParam && strings.HasPrefix(seg, ":")) || (c.IsWild && strings.HasPrefix(seg, "*")) {
+				if isAuto {
+					// Automatic OPTIONS routes share a single tree across all HTTP methods and do not
+					// read path parameters, so reuse the existing param/wildcard node.
+					child = c
+					break
+				}
+				if onlyAutoSubtree(c) {
+					// An explicit route overrides the parameter name created by an earlier auto route.
+					c.Segment = seg
+					if strings.HasPrefix(seg, ":") {
+						c.ParamKey = seg[1:]
+					} else {
+						c.ParamKey = wildcardKey(seg)
+					}
+					child = c
+					break
+				}
 				panic(fmt.Sprintf("gota: route %s %s: %q conflicts with existing %q", method, path, seg, c.Segment))
 			}
 		}

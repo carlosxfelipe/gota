@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"mime/multipart"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/carlosxfelipe/gota/core"
 )
@@ -332,5 +334,56 @@ func TestBinderEmbeddedJSONCannotSpoofNonBodyFields(t *testing.T) {
 	}
 	if dto.Name != "Sam" {
 		t.Errorf("expected Name=Sam, got %q", dto.Name)
+	}
+}
+
+type customSlug string
+
+func (s *customSlug) UnmarshalText(text []byte) error {
+	*s = customSlug(strings.ToUpper(string(text)))
+	return nil
+}
+
+type TestTimeAndSlicesDTO struct {
+	From   time.Time  `query:"from"`
+	To     *time.Time `query:"to"`
+	Absent *time.Time `query:"absent"`
+	IDs    []int      `query:"ids"`
+	Scores []float64  `query:"scores"`
+	Flags  []bool     `query:"flags"`
+	Slug   customSlug `param:"slug"`
+}
+
+func TestBinderTimeSlicesAndTextUnmarshaler(t *testing.T) {
+	req := httptest.NewRequest("GET", "/posts/hello-world?from=2026-05-01T10:30:00Z&to=2026-05-10&ids=10,20,30&scores=1.5&scores=2.5&flags=true,0,yes", nil)
+	ctx := core.NewContext(httptest.NewRecorder(), req, map[string]string{"slug": "hello-world"})
+
+	var dto TestTimeAndSlicesDTO
+	if err := BindRequest(ctx, &dto); err != nil {
+		t.Fatalf("bind failed: %v", err)
+	}
+
+	wantFrom, _ := time.Parse(time.RFC3339, "2026-05-01T10:30:00Z")
+	if !dto.From.Equal(wantFrom) {
+		t.Errorf("expected From=%v, got %v", wantFrom, dto.From)
+	}
+	wantTo, _ := time.Parse("2006-01-02", "2026-05-10")
+	if dto.To == nil || !dto.To.Equal(wantTo) {
+		t.Errorf("expected To=%v, got %v", wantTo, dto.To)
+	}
+	if dto.Absent != nil {
+		t.Errorf("expected Absent=nil, got %v", dto.Absent)
+	}
+	if len(dto.IDs) != 3 || dto.IDs[0] != 10 || dto.IDs[1] != 20 || dto.IDs[2] != 30 {
+		t.Errorf("expected IDs=[10 20 30], got %v", dto.IDs)
+	}
+	if len(dto.Scores) != 2 || dto.Scores[0] != 1.5 || dto.Scores[1] != 2.5 {
+		t.Errorf("expected Scores=[1.5 2.5], got %v", dto.Scores)
+	}
+	if len(dto.Flags) != 3 || !dto.Flags[0] || dto.Flags[1] || !dto.Flags[2] {
+		t.Errorf("expected Flags=[true false true], got %v", dto.Flags)
+	}
+	if dto.Slug != "HELLO-WORLD" {
+		t.Errorf("expected custom TextUnmarshaler Slug=HELLO-WORLD, got %q", dto.Slug)
 	}
 }

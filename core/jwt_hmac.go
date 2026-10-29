@@ -15,12 +15,23 @@ func hmacSHA256(secret []byte, data string) []byte {
 }
 
 // SignJWT creates an HMAC-SHA256 (HS256) signed JWT token string from the given payload.
-func SignJWT(secret []byte, payload any) (string, error) {
+// An optional keyID can be provided to populate the 'kid' field in the JWT header.
+func SignJWT(secret []byte, payload any, keyID ...string) (string, error) {
 	if len(secret) == 0 {
 		return "", errors.New("jwt: secret key cannot be empty")
 	}
 
-	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
+	var headerJSON []byte
+	if len(keyID) > 0 && keyID[0] != "" {
+		headerJSON, _ = json.Marshal(JWTHeader{
+			Alg: string(JWTAlgorithmHS256),
+			Typ: "JWT",
+			Kid: keyID[0],
+		})
+	} else {
+		headerJSON = []byte(`{"alg":"HS256","typ":"JWT"}`)
+	}
+	header := base64.RawURLEncoding.EncodeToString(headerJSON)
 
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {

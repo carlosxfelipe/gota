@@ -2,6 +2,7 @@ package gota
 
 import (
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/rsa"
 
 	"github.com/carlosxfelipe/gota/core"
@@ -10,26 +11,34 @@ import (
 
 // Re-exported Core Types
 type (
-	App               = core.App
-	Context           = core.Context
-	Config            = core.Config
-	Route             = core.Route
-	RouteGroup        = core.RouteGroup
-	HandlerFunc       = core.HandlerFunc
-	MiddlewareFunc    = core.MiddlewareFunc
-	Map               = core.Map
-	Empty             = core.Empty
-	HTTPError         = core.HTTPError
-	ErrorResponse     = core.ErrorResponse
-	ValidationError   = validation.ValidationError
-	ScalarTheme       = core.ScalarTheme
-	CORSOptions       = core.CORSOptions
-	JWTAlgorithm      = core.JWTAlgorithm
-	JWTHeader         = core.JWTHeader
-	JWTOptions        = core.JWTOptions
-	OpenAPISpec       = core.OpenAPISpec
-	RequestIDOptions  = core.RequestIDOptions
-	SlogLoggerOptions = core.SlogLoggerOptions
+	App                   = core.App
+	Context               = core.Context
+	Config                = core.Config
+	Route                 = core.Route
+	RouteGroup            = core.RouteGroup
+	HandlerFunc           = core.HandlerFunc
+	MiddlewareFunc        = core.MiddlewareFunc
+	Map                   = core.Map
+	Empty                 = core.Empty
+	HTTPError             = core.HTTPError
+	ErrorResponse         = core.ErrorResponse
+	ValidationError       = validation.ValidationError
+	ScalarTheme           = core.ScalarTheme
+	CORSOptions           = core.CORSOptions
+	JWTAlgorithm          = core.JWTAlgorithm
+	JWTHeader             = core.JWTHeader
+	JWTKeyFunc            = core.JWTKeyFunc
+	JWTOptions            = core.JWTOptions
+	OpenAPISpec           = core.OpenAPISpec
+	RequestIDOptions      = core.RequestIDOptions
+	SlogLoggerOptions     = core.SlogLoggerOptions
+	BasicAuthOptions      = core.BasicAuthOptions
+	RateLimiterOptions    = core.RateLimiterOptions
+	ServerConfig          = core.ServerConfig
+	RouteDoc              = core.RouteDoc
+	OpenAPISecurityScheme = core.OpenAPISecurityScheme
+	OpenAPIParam          = core.OpenAPIParam
+	OpenAPIHeader         = core.OpenAPIHeader
 )
 
 // Re-exported JWT Algorithm Constants
@@ -37,6 +46,7 @@ const (
 	JWTAlgorithmHS256 = core.JWTAlgorithmHS256
 	JWTAlgorithmRS256 = core.JWTAlgorithmRS256
 	JWTAlgorithmES256 = core.JWTAlgorithmES256
+	JWTAlgorithmEdDSA = core.JWTAlgorithmEdDSA
 )
 
 // Re-exported Scalar Theme Constants
@@ -104,6 +114,14 @@ func SlogLogger(opts ...SlogLoggerOptions) MiddlewareFunc {
 	return core.SlogLogger(opts...)
 }
 
+func BasicAuth(username, password string, opts ...BasicAuthOptions) MiddlewareFunc {
+	return core.BasicAuth(username, password, opts...)
+}
+
+func RateLimiter(opts ...RateLimiterOptions) MiddlewareFunc {
+	return core.RateLimiter(opts...)
+}
+
 // Built-in JWT Authentication helpers
 func JWT(secret []byte, opts ...JWTOptions) MiddlewareFunc {
 	return core.JWT(secret, opts...)
@@ -117,8 +135,16 @@ func JWTES256(publicKey *ecdsa.PublicKey, opts ...JWTOptions) MiddlewareFunc {
 	return core.JWTES256(publicKey, opts...)
 }
 
-func SignJWT(secret []byte, payload any) (string, error) {
-	return core.SignJWT(secret, payload)
+func JWTEdDSA(publicKey ed25519.PublicKey, opts ...JWTOptions) MiddlewareFunc {
+	return core.JWTEdDSA(publicKey, opts...)
+}
+
+func JWTWithKeyFunc(keyFunc JWTKeyFunc, opts ...JWTOptions) MiddlewareFunc {
+	return core.JWTWithKeyFunc(keyFunc, opts...)
+}
+
+func SignJWT(secret []byte, payload any, keyID ...string) (string, error) {
+	return core.SignJWT(secret, payload, keyID...)
 }
 
 func SignJWTRSA(privateKey *rsa.PrivateKey, payload any, keyID ...string) (string, error) {
@@ -127,6 +153,10 @@ func SignJWTRSA(privateKey *rsa.PrivateKey, payload any, keyID ...string) (strin
 
 func SignJWTES256(privateKey *ecdsa.PrivateKey, payload any, keyID ...string) (string, error) {
 	return core.SignJWTES256(privateKey, payload, keyID...)
+}
+
+func SignJWTEdDSA(privateKey ed25519.PrivateKey, payload any, keyID ...string) (string, error) {
+	return core.SignJWTEdDSA(privateKey, payload, keyID...)
 }
 
 func VerifyJWT(secret []byte, tokenString string, target any) error {
@@ -139,6 +169,14 @@ func VerifyJWTRSA(publicKey *rsa.PublicKey, tokenString string, target any) erro
 
 func VerifyJWTES256(publicKey *ecdsa.PublicKey, tokenString string, target any) error {
 	return core.VerifyJWTES256(publicKey, tokenString, target)
+}
+
+func VerifyJWTEdDSA(publicKey ed25519.PublicKey, tokenString string, target any) error {
+	return core.VerifyJWTEdDSA(publicKey, tokenString, target)
+}
+
+func VerifyJWTWithKeyFunc(keyFunc JWTKeyFunc, tokenString string, target any) error {
+	return core.VerifyJWTWithKeyFunc(keyFunc, tokenString, target)
 }
 
 func ParseJWTHeader(tokenString string) (JWTHeader, error) {
@@ -159,6 +197,14 @@ func ParseECPrivateKeyFromPEM(pemBytes []byte) (*ecdsa.PrivateKey, error) {
 
 func ParseECPublicKeyFromPEM(pemBytes []byte) (*ecdsa.PublicKey, error) {
 	return core.ParseECPublicKeyFromPEM(pemBytes)
+}
+
+func ParseEdPrivateKeyFromPEM(pemBytes []byte) (ed25519.PrivateKey, error) {
+	return core.ParseEdPrivateKeyFromPEM(pemBytes)
+}
+
+func ParseEdPublicKeyFromPEM(pemBytes []byte) (ed25519.PublicKey, error) {
+	return core.ParseEdPublicKeyFromPEM(pemBytes)
 }
 
 func JWTClaims[T any](ctx *Context, key ...string) (T, bool) {

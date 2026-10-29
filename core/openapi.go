@@ -18,6 +18,7 @@ type RouteDoc struct {
 	Tags        []string
 	Deprecated  bool
 	Hidden      bool
+	Security    []string
 	RequestBody *BodyDoc
 	Responses   map[int]*ResponseDoc
 	Parameters  []ParamDoc
@@ -46,6 +47,19 @@ type ParamDoc struct {
 	Description string
 	Required    bool
 	Example     any
+	Default     any
+	Format      string
+	Validate    string
+}
+
+// OpenAPISecurityScheme defines an OpenAPI 3.1 security scheme in components.securitySchemes.
+type OpenAPISecurityScheme struct {
+	Type         string `json:"type"`
+	Scheme       string `json:"scheme,omitempty"`
+	BearerFormat string `json:"bearerFormat,omitempty"`
+	Description  string `json:"description,omitempty"`
+	Name         string `json:"name,omitempty"`
+	In           string `json:"in,omitempty"`
 }
 
 // OpenAPISpec represents the root OpenAPI 3.1.0 document.
@@ -74,6 +88,7 @@ type OpenAPIOp struct {
 	Description string                     `json:"description,omitempty"`
 	OperationID string                     `json:"operationId,omitempty"`
 	Tags        []string                   `json:"tags,omitempty"`
+	Security    []map[string][]string      `json:"security,omitempty"`
 	Parameters  []OpenAPIParam             `json:"parameters,omitempty"`
 	RequestBody *OpenAPIRequestBody        `json:"requestBody,omitempty"`
 	Responses   map[string]OpenAPIResponse `json:"responses"`
@@ -95,8 +110,15 @@ type OpenAPIRequestBody struct {
 	Content     map[string]OpenAPIMediaType `json:"content"`
 }
 
+type OpenAPIHeader struct {
+	Description string         `json:"description,omitempty"`
+	Schema      map[string]any `json:"schema,omitempty"`
+	Example     any            `json:"example,omitempty"`
+}
+
 type OpenAPIResponse struct {
 	Description string                      `json:"description"`
+	Headers     map[string]OpenAPIHeader    `json:"headers,omitempty"`
 	Content     map[string]OpenAPIMediaType `json:"content,omitempty"`
 }
 
@@ -106,21 +128,28 @@ type OpenAPIMediaType struct {
 }
 
 type OpenAPIComponents struct {
-	Schemas map[string]map[string]any `json:"schemas,omitempty"`
+	Schemas         map[string]map[string]any        `json:"schemas,omitempty"`
+	SecuritySchemes map[string]OpenAPISecurityScheme `json:"securitySchemes,omitempty"`
 }
 
 // OpenAPIGenerator converts registered routes into an OpenAPI 3.1 schema.
 type OpenAPIGenerator struct {
-	config      Config
-	schemas     map[string]map[string]any
-	schemaTypes map[string]reflect.Type
+	config          Config
+	schemas         map[string]map[string]any
+	schemaTypes     map[string]reflect.Type
+	securitySchemes map[string]OpenAPISecurityScheme
 }
 
 func NewOpenAPIGenerator(cfg Config) *OpenAPIGenerator {
+	secSchemes := make(map[string]OpenAPISecurityScheme, len(cfg.SecuritySchemes))
+	for k, v := range cfg.SecuritySchemes {
+		secSchemes[k] = v
+	}
 	return &OpenAPIGenerator{
-		config:      cfg,
-		schemas:     make(map[string]map[string]any),
-		schemaTypes: make(map[string]reflect.Type),
+		config:          cfg,
+		schemas:         make(map[string]map[string]any),
+		schemaTypes:     make(map[string]reflect.Type),
+		securitySchemes: secSchemes,
 	}
 }
 
@@ -193,9 +222,10 @@ func (g *OpenAPIGenerator) Generate(routes []*Node) *OpenAPISpec {
 		spec.Paths[openAPIPath][methodLower] = op
 	}
 
-	if len(g.schemas) > 0 {
+	if len(g.schemas) > 0 || len(g.securitySchemes) > 0 {
 		spec.Components = OpenAPIComponents{
-			Schemas: g.schemas,
+			Schemas:         g.schemas,
+			SecuritySchemes: g.securitySchemes,
 		}
 	}
 
@@ -216,6 +246,30 @@ func toOpenAPIPath(path string) string {
 	return res
 }
 
+func (g *OpenAPIGenerator) ensureSecurityScheme(scheme string) {
+	if _, exists := g.securitySchemes[scheme]; exists {
+		return
+	}
+	switch scheme {
+	case "BearerAuth":
+		g.securitySchemes[scheme] = OpenAPISecurityScheme{
+			Type:         "http",
+			Scheme:       "bearer",
+			BearerFormat: "JWT",
+		}
+	case "BasicAuth":
+		g.securitySchemes[scheme] = OpenAPISecurityScheme{
+			Type:   "http",
+			Scheme: "basic",
+		}
+	default:
+		g.securitySchemes[scheme] = OpenAPISecurityScheme{
+			Type:   "http",
+			Scheme: "bearer",
+		}
+	}
+}
+
 func (g *OpenAPIGenerator) buildOperation(rt *Node) OpenAPIOp {
 	doc := rt.Doc
 	if doc == nil {
@@ -230,19 +284,42 @@ func (g *OpenAPIGenerator) buildOperation(rt *Node) OpenAPIOp {
 		Responses:   make(map[string]OpenAPIResponse),
 	}
 
+	if len(doc.Security) > 0 {
+		seen := make(map[string]bool, len(doc.Security))
+		for _, scheme := range doc.Security {
+			if scheme == "" || seen[scheme] {
+				continue
+			}
+			seen[scheme] = true
+			g.ensureSecurityScheme(scheme)
+			op.Security = append(op.Security, map[string][]string{scheme: {}})
+		}
+	}
+
 	// 1. Path parameters from route URL (:id)
 	pathParams := extractPathParams(rt.FullPath)
 	documentedParams := make(map[string]bool)
 
 	for _, p := range doc.Parameters {
 		documentedParams[p.Name] = true
+		pType := reflect.TypeOf(p.Model)
+		pSchema := g.schemaForType(pType)
+		if p.Format != "" {
+			pSchema["format"] = p.Format
+		}
+		if p.Default != nil {
+			pSchema["default"] = p.Default
+		}
+		if p.Validate != "" {
+			applyValidationRulesToSchema(pSchema, pType, p.Validate)
+		}
 		param := OpenAPIParam{
 			Name:        p.Name,
 			In:          p.In,
 			Description: p.Description,
 			Required:    p.Required || p.In == "path",
 			Example:     p.Example,
-			Schema:      g.schemaForType(reflect.TypeOf(p.Model)),
+			Schema:      pSchema,
 		}
 		op.Parameters = append(op.Parameters, param)
 	}
@@ -293,6 +370,9 @@ func (g *OpenAPIGenerator) buildOperation(rt *Node) OpenAPIOp {
 			if cType == "" {
 				cType = "application/json"
 			}
+			if hdrs := g.extractResponseHeaders(reflect.TypeOf(respDoc.Model), map[reflect.Type]bool{}); len(hdrs) > 0 {
+				openAPIResp.Headers = hdrs
+			}
 			schema := g.registerOrRef(respDoc.Model)
 			openAPIResp.Content = map[string]OpenAPIMediaType{
 				cType: {Schema: schema},
@@ -330,6 +410,53 @@ func pathParamName(segment string) (string, bool) {
 		return "wildcard", true
 	}
 	return "", false
+}
+
+func (g *OpenAPIGenerator) extractResponseHeaders(t reflect.Type, embedding map[reflect.Type]bool) map[string]OpenAPIHeader {
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == nil || t.Kind() != reflect.Struct || embedding[t] {
+		return nil
+	}
+	embedding[t] = true
+	defer delete(embedding, t)
+
+	var headers map[string]OpenAPIHeader
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if ft, ok := EmbeddedStructType(f); ok {
+			for k, v := range g.extractResponseHeaders(ft, embedding) {
+				if headers == nil {
+					headers = make(map[string]OpenAPIHeader)
+				}
+				if _, exists := headers[k]; !exists {
+					headers[k] = v
+				}
+			}
+			continue
+		}
+		if !f.IsExported() {
+			continue
+		}
+		hdrName := f.Tag.Get("header")
+		if hdrName == "" {
+			continue
+		}
+		if headers == nil {
+			headers = make(map[string]OpenAPIHeader)
+		}
+		var ex any
+		if exTag := f.Tag.Get("example"); exTag != "" {
+			ex = ParseExample(exTag, f.Type)
+		}
+		headers[hdrName] = OpenAPIHeader{
+			Description: f.Tag.Get("doc"),
+			Schema:      g.schemaForType(f.Type),
+			Example:     ex,
+		}
+	}
+	return headers
 }
 
 func (g *OpenAPIGenerator) registerOrRef(model any) map[string]any {
@@ -442,11 +569,14 @@ func (g *OpenAPIGenerator) collectStructFields(t reflect.Type, properties map[st
 
 		valTag := field.Tag.Get("validate")
 		isRequired := false
-		for _, rule := range strings.Split(valTag, ",") {
+		for _, rule := range splitOpenAPIRules(valTag) {
 			if strings.TrimSpace(rule) == "required" {
 				isRequired = true
 				break
 			}
+		}
+		if valTag != "" {
+			applyValidationRulesToSchema(fieldSchema, field.Type, valTag)
 		}
 
 		properties[name] = fieldSchema
@@ -557,6 +687,10 @@ func ParseExample(val string, t reflect.Type) any {
 		if i, err := strconv.Atoi(val); err == nil {
 			return i
 		}
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		if u, err := strconv.ParseUint(val, 10, 64); err == nil {
+			return int(u)
+		}
 	case reflect.Float32, reflect.Float64:
 		if f, err := strconv.ParseFloat(val, 64); err == nil {
 			return f
@@ -567,4 +701,159 @@ func ParseExample(val string, t reflect.Type) any {
 		}
 	}
 	return val
+}
+
+func isKnownOpenAPIRule(s string) bool {
+	if s == "required" || s == "email" || s == "url" || s == "uuid" || s == "nowarn" || s == "omitempty" {
+		return true
+	}
+	parts := strings.SplitN(s, "=", 2)
+	switch parts[0] {
+	case "min", "max", "len", "oneof":
+		return true
+	default:
+		return false
+	}
+}
+
+func splitOpenAPIRules(tag string) []string {
+	var rules []string
+	for _, part := range strings.Split(tag, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if len(rules) > 0 && strings.HasPrefix(rules[len(rules)-1], "oneof=") && !isKnownOpenAPIRule(part) {
+			rules[len(rules)-1] += "," + part
+		} else {
+			rules = append(rules, part)
+		}
+	}
+	return rules
+}
+
+func parseNumericConstraint(param string, t reflect.Type) (any, bool) {
+	switch t.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		if i, err := strconv.Atoi(param); err == nil {
+			return i, true
+		}
+		if f, err := strconv.ParseFloat(param, 64); err == nil {
+			return f, true
+		}
+	case reflect.Float32, reflect.Float64:
+		if f, err := strconv.ParseFloat(param, 64); err == nil {
+			return f, true
+		}
+	}
+	return nil, false
+}
+
+// applyValidationRulesToSchema enriches an OpenAPI property or parameter schema with constraints
+// derived from the struct field's `validate` tag (`min`, `max`, `len`, `oneof`, `email`, `url`, `uuid`).
+func applyValidationRulesToSchema(schema map[string]any, t reflect.Type, valTag string) {
+	if schema == nil || valTag == "" {
+		return
+	}
+	if _, isRef := schema["$ref"]; isRef {
+		return
+	}
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+
+	for _, rule := range splitOpenAPIRules(valTag) {
+		parts := strings.SplitN(rule, "=", 2)
+		ruleName := parts[0]
+		ruleParam := ""
+		if len(parts) > 1 {
+			ruleParam = parts[1]
+		}
+
+		switch ruleName {
+		case "min":
+			if t == nil || ruleParam == "" {
+				continue
+			}
+			switch t.Kind() {
+			case reflect.String:
+				if n, err := strconv.Atoi(ruleParam); err == nil {
+					schema["minLength"] = n
+				}
+			case reflect.Slice, reflect.Array:
+				if n, err := strconv.Atoi(ruleParam); err == nil {
+					schema["minItems"] = n
+				}
+			default:
+				if v, ok := parseNumericConstraint(ruleParam, t); ok {
+					schema["minimum"] = v
+				}
+			}
+		case "max":
+			if t == nil || ruleParam == "" {
+				continue
+			}
+			switch t.Kind() {
+			case reflect.String:
+				if n, err := strconv.Atoi(ruleParam); err == nil {
+					schema["maxLength"] = n
+				}
+			case reflect.Slice, reflect.Array:
+				if n, err := strconv.Atoi(ruleParam); err == nil {
+					schema["maxItems"] = n
+				}
+			default:
+				if v, ok := parseNumericConstraint(ruleParam, t); ok {
+					schema["maximum"] = v
+				}
+			}
+		case "len":
+			if t == nil || ruleParam == "" {
+				continue
+			}
+			if n, err := strconv.Atoi(ruleParam); err == nil {
+				switch t.Kind() {
+				case reflect.String:
+					schema["minLength"] = n
+					schema["maxLength"] = n
+				case reflect.Slice, reflect.Array:
+					schema["minItems"] = n
+					schema["maxItems"] = n
+				}
+			}
+		case "oneof":
+			if ruleParam == "" {
+				continue
+			}
+			var rawOpts []string
+			if strings.Contains(ruleParam, ",") {
+				rawOpts = strings.Split(ruleParam, ",")
+			} else {
+				rawOpts = strings.Fields(ruleParam)
+			}
+			enumVals := make([]any, 0, len(rawOpts))
+			for _, opt := range rawOpts {
+				opt = strings.TrimSpace(opt)
+				if opt != "" {
+					enumVals = append(enumVals, ParseExample(opt, t))
+				}
+			}
+			if len(enumVals) > 0 {
+				schema["enum"] = enumVals
+			}
+		case "email":
+			if _, exists := schema["format"]; !exists {
+				schema["format"] = "email"
+			}
+		case "url":
+			if _, exists := schema["format"]; !exists {
+				schema["format"] = "uri"
+			}
+		case "uuid":
+			if _, exists := schema["format"]; !exists {
+				schema["format"] = "uuid"
+			}
+		}
+	}
 }

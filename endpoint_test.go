@@ -733,3 +733,139 @@ func TestIntrospectEndpoint_EmbeddedParamsAndExamples(t *testing.T) {
 		t.Errorf("expected tag example 'golang', got: %v", byName["tag"]["example"])
 	}
 }
+
+type ConstrainedQueryReq struct {
+	ID     string `param:"id" validate:"uuid"`
+	Limit  *int   `query:"limit" default:"20" validate:"min=1,max=100"`
+	Status string `query:"status" validate:"oneof=open,closed"`
+}
+
+func TestOpenAPISecuritySchemesAndParamConstraints(t *testing.T) {
+	app := New(Config{
+		Servers: []ServerConfig{{URL: "https://api.example.com", Description: "Prod"}},
+	})
+
+	protected := app.Group("/api")
+	protected.Use(JWT([]byte("secret")))
+
+	Get(protected, "/orders/:id", func(ctx *Context, req ConstrainedQueryReq) (Empty, error) {
+		return Empty{}, nil
+	}).Summary("Get Order")
+
+	Get(app, "/custom-auth", func(ctx *Context, req Empty) (Empty, error) {
+		return Empty{}, nil
+	}).BearerAuth()
+
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest("GET", "/openapi.json", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var spec OpenAPISpec
+	if err := json.Unmarshal(w.Body.Bytes(), &spec); err != nil {
+		t.Fatalf("failed to unmarshal spec: %v", err)
+	}
+
+	// Verify BearerAuth in components.securitySchemes
+	bearer, ok := spec.Components.SecuritySchemes["BearerAuth"]
+	if !ok || bearer.Type != "http" || bearer.Scheme != "bearer" || bearer.BearerFormat != "JWT" {
+		t.Errorf("expected BearerAuth security scheme in components, got: %+v", spec.Components.SecuritySchemes)
+	}
+
+	// Verify automatic security on JWT-protected group route
+	orderOp := spec.Paths["/api/orders/{id}"]["get"]
+	if len(orderOp.Security) != 1 || orderOp.Security[0]["BearerAuth"] == nil {
+		t.Errorf("expected automatic BearerAuth security on /api/orders/{id}, got: %+v", orderOp.Security)
+	}
+
+	// Verify explicit .BearerAuth() on route
+	customOp := spec.Paths["/custom-auth"]["get"]
+	if len(customOp.Security) != 1 || customOp.Security[0]["BearerAuth"] == nil {
+		t.Errorf("expected explicit BearerAuth security on /custom-auth, got: %+v", customOp.Security)
+	}
+
+	// Verify parameter validation constraints in schema
+	paramByName := make(map[string]OpenAPIParam)
+	for _, p := range orderOp.Parameters {
+		paramByName[p.Name] = p
+	}
+	if paramByName["id"].Schema["format"] != "uuid" {
+		t.Errorf("expected id param format=uuid, got: %v", paramByName["id"].Schema)
+	}
+	if paramByName["limit"].Schema["minimum"] != float64(1) || paramByName["limit"].Schema["maximum"] != float64(100) || paramByName["limit"].Schema["default"] != float64(20) {
+		t.Errorf("expected limit param min=1 max=100 default=20, got: %v", paramByName["limit"].Schema)
+	}
+	if enum, ok := paramByName["status"].Schema["enum"].([]any); !ok || len(enum) != 2 {
+		t.Errorf("expected status param enum [open, closed], got: %v", paramByName["status"].Schema)
+	}
+}
+
+type GetByIDReq struct {
+	ID string `param:"id"`
+}
+
+type DeleteByUserIDReq struct {
+	UserID string `param:"userId"`
+}
+
+type CreatedWithHeaderRes struct {
+	Location   string `header:"Location" json:"-" doc:"Resource URI"`
+	TotalCount int    `header:"X-Total-Count" json:"-" doc:"Total count" example:"42"`
+	ID         string `json:"id"`
+}
+
+func TestCrossMethodDifferentParamNamesAndResponseHeaders(t *testing.T) {
+	app := New(Config{})
+
+	// Different param names at the same URL segment across GET and DELETE must NOT panic on auto OPTIONS!
+	Get(app, "/users/:id", func(ctx *Context, req GetByIDReq) (CreatedWithHeaderRes, error) {
+		return CreatedWithHeaderRes{
+			Location:   "/users/" + req.ID,
+			TotalCount: 42,
+			ID:         req.ID,
+		}, nil
+	})
+	Delete(app, "/users/:userId", func(ctx *Context, req DeleteByUserIDReq) (Empty, error) {
+		return Empty{}, nil
+	})
+
+	// Test GET response headers & body
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest("GET", "/users/abc", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if w.Header().Get("Location") != "/users/abc" || w.Header().Get("X-Total-Count") != "42" {
+		t.Errorf("expected response headers Location=/users/abc and X-Total-Count=42, got %v", w.Header())
+	}
+
+	// Test DELETE with :userId
+	wDel := httptest.NewRecorder()
+	app.ServeHTTP(wDel, httptest.NewRequest("DELETE", "/users/xyz", nil))
+	if wDel.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 for DELETE, got %d", wDel.Code)
+	}
+
+	// Test OPTIONS preflight on /users/abc
+	wOpt := httptest.NewRecorder()
+	app.ServeHTTP(wOpt, httptest.NewRequest("OPTIONS", "/users/abc", nil))
+	if wOpt.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 for OPTIONS, got %d", wOpt.Code)
+	}
+
+	// Verify response headers documented in OpenAPI 3.1
+	wSpec := httptest.NewRecorder()
+	app.ServeHTTP(wSpec, httptest.NewRequest("GET", "/openapi.json", nil))
+	var spec OpenAPISpec
+	if err := json.Unmarshal(wSpec.Body.Bytes(), &spec); err != nil {
+		t.Fatalf("failed to parse spec: %v", err)
+	}
+	resp200 := spec.Paths["/users/{id}"]["get"].Responses["200"]
+	if _, ok := resp200.Headers["Location"]; !ok {
+		t.Errorf("expected Location in OpenAPI response headers, got %+v", resp200.Headers)
+	}
+	if hdr, ok := resp200.Headers["X-Total-Count"]; !ok || hdr.Example != float64(42) {
+		t.Errorf("expected X-Total-Count with example 42 in OpenAPI response headers, got %+v", resp200.Headers)
+	}
+}

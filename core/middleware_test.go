@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRequestIDMiddleware(t *testing.T) {
@@ -225,5 +226,85 @@ func TestRequestIDRejectsUnsafeClientValue(t *testing.T) {
 	app.ServeHTTP(rec, req)
 	if got := rec.Header().Get("X-Request-ID"); got != "trace-123.abc" {
 		t.Errorf("expected valid ID to be kept, got %q", got)
+	}
+}
+
+func TestBasicAuthMiddleware(t *testing.T) {
+	app := New(Config{})
+	admin := app.Group("/admin")
+	admin.Use(BasicAuth("admin", "s3cr3t", BasicAuthOptions{Realm: "AdminPanel"}))
+	admin.Get("/dashboard", func(ctx *Context) error {
+		u, _ := ctx.Get("user")
+		return ctx.Send("welcome " + u.(string))
+	})
+
+	// 1. Missing credentials -> 401 + WWW-Authenticate
+	rec1 := httptest.NewRecorder()
+	app.ServeHTTP(rec1, httptest.NewRequest("GET", "/admin/dashboard", nil))
+	if rec1.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec1.Code)
+	}
+	if got := rec1.Header().Get("WWW-Authenticate"); got != `Basic realm="AdminPanel"` {
+		t.Errorf("expected WWW-Authenticate header, got %q", got)
+	}
+
+	// 2. Wrong password -> 401
+	req2 := httptest.NewRequest("GET", "/admin/dashboard", nil)
+	req2.SetBasicAuth("admin", "wrong")
+	rec2 := httptest.NewRecorder()
+	app.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for wrong password, got %d", rec2.Code)
+	}
+
+	// 3. Valid credentials -> 200
+	req3 := httptest.NewRequest("GET", "/admin/dashboard", nil)
+	req3.SetBasicAuth("admin", "s3cr3t")
+	rec3 := httptest.NewRecorder()
+	app.ServeHTTP(rec3, req3)
+	if rec3.Code != http.StatusOK || rec3.Body.String() != "welcome admin" {
+		t.Fatalf("expected 200 welcome admin, got %d: %s", rec3.Code, rec3.Body.String())
+	}
+
+	// 4. Verify BasicAuth security scheme documented in OpenAPI
+	spec := app.openAPISpec()
+	if _, ok := spec.Components.SecuritySchemes["BasicAuth"]; !ok {
+		t.Errorf("expected BasicAuth in components.securitySchemes, got %+v", spec.Components.SecuritySchemes)
+	}
+}
+
+func TestRateLimiterMiddleware(t *testing.T) {
+	app := New(Config{DisableDocs: true})
+	app.Use(RateLimiter(RateLimiterOptions{
+		Max:    2,
+		Window: time.Minute,
+	}))
+	app.Get("/limited", func(ctx *Context) error {
+		return ctx.Send("ok")
+	})
+
+	for i := 1; i <= 2; i++ {
+		req := httptest.NewRequest("GET", "/limited", nil)
+		req.RemoteAddr = "192.0.2.55:1234"
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d: expected 200, got %d", i, rec.Code)
+		}
+		if rec.Header().Get("X-RateLimit-Limit") != "2" {
+			t.Errorf("expected X-RateLimit-Limit=2, got %q", rec.Header().Get("X-RateLimit-Limit"))
+		}
+	}
+
+	// 3rd request from same IP exceeds Max=2 -> 429 Too Many Requests
+	req3 := httptest.NewRequest("GET", "/limited", nil)
+	req3.RemoteAddr = "192.0.2.55:1234"
+	rec3 := httptest.NewRecorder()
+	app.ServeHTTP(rec3, req3)
+	if rec3.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 Too Many Requests, got %d", rec3.Code)
+	}
+	if rec3.Header().Get("Retry-After") == "" {
+		t.Errorf("expected Retry-After header on 429 response")
 	}
 }

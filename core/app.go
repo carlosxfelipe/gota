@@ -9,12 +9,38 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"reflect"
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
+
+var middlewareSecuritySchemes sync.Map
+
+func registerMiddlewareSecurity(mw MiddlewareFunc, scheme string) MiddlewareFunc {
+	if mw != nil && scheme != "" {
+		middlewareSecuritySchemes.Store(reflect.ValueOf(mw).Pointer(), scheme)
+	}
+	return mw
+}
+
+func securityFromMiddlewares(mws []MiddlewareFunc) []string {
+	var schemes []string
+	for _, mw := range mws {
+		if mw == nil {
+			continue
+		}
+		if v, ok := middlewareSecuritySchemes.Load(reflect.ValueOf(mw).Pointer()); ok {
+			if s, ok := v.(string); ok && s != "" {
+				schemes = append(schemes, s)
+			}
+		}
+	}
+	return schemes
+}
 
 // ServerConfig defines metadata for OpenAPI server endpoints.
 type ServerConfig struct {
@@ -24,17 +50,18 @@ type ServerConfig struct {
 
 // Config encapsulates settings for the Gota application, OpenAPI, and Scalar UI.
 type Config struct {
-	Title           string         `json:"title,omitempty"`
-	Version         string         `json:"version,omitempty"`
-	Description     string         `json:"description,omitempty"`
-	DocsURL         string         `json:"docsUrl,omitempty"`
-	OpenAPIURL      string         `json:"openApiUrl,omitempty"`
-	ScalarTheme     ScalarTheme    `json:"scalarTheme,omitempty"`
-	ScalarLayout    string         `json:"scalarLayout,omitempty"` // Default: "classic"
-	ScalarScriptURL string         `json:"scalarScriptUrl,omitempty"`
-	ScalarSRI       string         `json:"scalarSri,omitempty"`
-	DisableDocs     bool           `json:"disableDocs,omitempty"`
-	Servers         []ServerConfig `json:"servers,omitempty"`
+	Title           string                           `json:"title,omitempty"`
+	Version         string                           `json:"version,omitempty"`
+	Description     string                           `json:"description,omitempty"`
+	DocsURL         string                           `json:"docsUrl,omitempty"`
+	OpenAPIURL      string                           `json:"openApiUrl,omitempty"`
+	ScalarTheme     ScalarTheme                      `json:"scalarTheme,omitempty"`
+	ScalarLayout    string                           `json:"scalarLayout,omitempty"` // Default: "classic"
+	ScalarScriptURL string                           `json:"scalarScriptUrl,omitempty"`
+	ScalarSRI       string                           `json:"scalarSri,omitempty"`
+	DisableDocs     bool                             `json:"disableDocs,omitempty"`
+	Servers         []ServerConfig                   `json:"servers,omitempty"`
+	SecuritySchemes map[string]OpenAPISecurityScheme `json:"securitySchemes,omitempty"`
 
 	// MaxBodyBytes limits the size of request bodies. Default: 10 MiB.
 	// Use a negative value to disable the limit.
@@ -90,6 +117,14 @@ type App struct {
 	// holds the built-in documentation routes, which must follow global middlewares.
 	routeCount int
 	docsRoutes []*Route
+
+	docVersion       atomic.Uint64
+	docsMu           sync.RWMutex
+	cachedSpecVer    uint64
+	cachedSpec       *OpenAPISpec
+	cachedScalarHTML string
+	cachedScalarErr  error
+	scalarOnce       sync.Once
 }
 
 // New creates and configures a new Gota application instance.
@@ -259,6 +294,7 @@ func (a *App) RegisterRoute(method, path string, h HandlerFunc) *Route {
 
 func (a *App) registerRouteWithBase(method, path string, h HandlerFunc, middlewares []MiddlewareFunc) *Route {
 	a.routeCount++
+	a.docVersion.Add(1)
 	base := make([]MiddlewareFunc, len(middlewares))
 	copy(base, middlewares)
 
@@ -266,7 +302,11 @@ func (a *App) registerRouteWithBase(method, path string, h HandlerFunc, middlewa
 	n.RawHandler = h
 
 	registerAutoOptions(a.router, method, path, base)
-	return &Route{Node: n, router: a.router, base: base}
+	rt := &Route{Node: n, router: a.router, app: a, base: base}
+	if schemes := securityFromMiddlewares(base); len(schemes) > 0 {
+		rt.Security(schemes...)
+	}
+	return rt
 }
 
 func optionsNoContentHandler(ctx *Context) error {
@@ -292,32 +332,54 @@ func (a *App) Group(prefix string) *RouteGroup {
 	return &RouteGroup{app: a, prefix: prefix, middlewares: inherited}
 }
 
+func (a *App) openAPISpec() *OpenAPISpec {
+	ver := a.docVersion.Load()
+	a.docsMu.RLock()
+	if a.cachedSpec != nil && a.cachedSpecVer == ver {
+		spec := a.cachedSpec
+		a.docsMu.RUnlock()
+		return spec
+	}
+	a.docsMu.RUnlock()
+
+	a.docsMu.Lock()
+	defer a.docsMu.Unlock()
+	ver = a.docVersion.Load()
+	if a.cachedSpec != nil && a.cachedSpecVer == ver {
+		return a.cachedSpec
+	}
+	gen := NewOpenAPIGenerator(a.config)
+	a.cachedSpec = gen.Generate(a.router.Routes())
+	a.cachedSpecVer = ver
+	return a.cachedSpec
+}
+
 func (a *App) registerDocs() {
 	openAPIURL := a.config.OpenAPIURL
 	docsURL := a.config.DocsURL
 
-	// OpenAPI 3.1 JSON spec
+	// OpenAPI 3.1 JSON spec (cached and invalidated only when routes/docs change)
 	specRoute := a.Get(openAPIURL, func(ctx *Context) error {
-		gen := NewOpenAPIGenerator(a.config)
-		spec := gen.Generate(a.router.Routes())
-		return ctx.Json(spec)
+		return ctx.Json(a.openAPISpec())
 	}).Hidden()
 
-	// Scalar API Reference UI (Layout: classic by default)
+	// Scalar API Reference UI (Layout: classic by default, rendered once and cached)
 	docsRoute := a.Get(docsURL, func(ctx *Context) error {
-		html, err := RenderScalarHTML(ScalarConfig{
-			Title:     a.config.Title + " - API Reference",
-			SpecURL:   openAPIURL,
-			Theme:     a.config.ScalarTheme,
-			Layout:    a.config.ScalarLayout,
-			ScriptURL: a.config.ScalarScriptURL,
-			SRI:       a.config.ScalarSRI,
+		a.scalarOnce.Do(func() {
+			a.cachedScalarHTML, a.cachedScalarErr = RenderScalarHTML(ScalarConfig{
+				Title:     a.config.Title + " - API Reference",
+				SpecURL:   openAPIURL,
+				Theme:     a.config.ScalarTheme,
+				Layout:    a.config.ScalarLayout,
+				ScriptURL: a.config.ScalarScriptURL,
+				SRI:       a.config.ScalarSRI,
+			})
 		})
-		if err != nil {
+		if a.cachedScalarErr != nil {
 			return ctx.Status(http.StatusInternalServerError).Send("Failed to render documentation")
 		}
 		ctx.SetHeader("Content-Type", "text/html; charset=utf-8")
-		return ctx.Send(html)
+		return ctx.Send(a.cachedScalarHTML)
 	}).Hidden()
 
 	a.docsRoutes = []*Route{specRoute, docsRoute}
@@ -474,13 +536,23 @@ func (a *App) ListenGraceful(addr string, stopSignals ...os.Signal) error {
 type Route struct {
 	Node   *Node
 	router *Router
+	app    *App
 	base   []MiddlewareFunc
+}
+
+func (rt *Route) touchDoc() {
+	if rt.app != nil {
+		rt.app.docVersion.Add(1)
+	}
 }
 
 // Middleware appends route-specific middlewares executed before the handler.
 func (rt *Route) Middleware(mw ...MiddlewareFunc) *Route {
 	rt.Node.Middlewares = append(rt.Node.Middlewares, mw...)
 	rt.rebuild()
+	if schemes := securityFromMiddlewares(mw); len(schemes) > 0 {
+		rt.Security(schemes...)
+	}
 	return rt
 }
 
@@ -501,6 +573,7 @@ func (rt *Route) Name(name string) *Route {
 }
 
 func (rt *Route) ensureDoc() *RouteDoc {
+	rt.touchDoc()
 	if rt.Node.Doc == nil {
 		rt.Node.Doc = &RouteDoc{
 			Responses: make(map[int]*ResponseDoc),
@@ -528,6 +601,21 @@ func (rt *Route) Description(desc string) *Route {
 func (rt *Route) Tags(tags ...string) *Route {
 	rt.ensureDoc().Tags = append(rt.ensureDoc().Tags, tags...)
 	return rt
+}
+
+// Security documents one or more OpenAPI security scheme names (defaults to "BearerAuth" when called with no args).
+func (rt *Route) Security(schemes ...string) *Route {
+	doc := rt.ensureDoc()
+	if len(schemes) == 0 {
+		schemes = []string{"BearerAuth"}
+	}
+	doc.Security = append(doc.Security, schemes...)
+	return rt
+}
+
+// BearerAuth marks the route as requiring Bearer JWT authentication in OpenAPI & Scalar.
+func (rt *Route) BearerAuth() *Route {
+	return rt.Security("BearerAuth")
 }
 
 // Deprecated marks the route as deprecated in documentation.
@@ -609,10 +697,17 @@ func (rt *Route) Status(code int) *Route {
 	return rt
 }
 
-// Doc sets or replaces route documentation metadata.
+// Doc sets or replaces route documentation metadata while preserving any inherited security schemes.
 func (rt *Route) Doc(doc RouteDoc) *Route {
 	current := rt.ensureDoc()
+	inheritedSec := current.Security
 	*current = doc
+	if len(inheritedSec) > 0 {
+		merged := make([]string, 0, len(inheritedSec)+len(doc.Security))
+		merged = append(merged, inheritedSec...)
+		merged = append(merged, doc.Security...)
+		current.Security = merged
+	}
 	return rt
 }
 
@@ -621,7 +716,22 @@ type RouteGroup struct {
 	app         *App
 	prefix      string
 	middlewares []MiddlewareFunc
+	security    []string
 	registered  bool
+}
+
+// Security documents one or more OpenAPI security scheme names for all routes in this group.
+func (g *RouteGroup) Security(schemes ...string) *RouteGroup {
+	if len(schemes) == 0 {
+		schemes = []string{"BearerAuth"}
+	}
+	g.security = append(g.security, schemes...)
+	return g
+}
+
+// BearerAuth marks all routes in this group as requiring Bearer JWT authentication in OpenAPI & Scalar.
+func (g *RouteGroup) BearerAuth() *RouteGroup {
+	return g.Security("BearerAuth")
 }
 
 // Use appends a middleware to this route group.
@@ -662,7 +772,11 @@ func (g *RouteGroup) Patch(path string, h HandlerFunc) *Route {
 // RegisterRoute registers a scoped route under this group prefix.
 func (g *RouteGroup) RegisterRoute(method, path string, h HandlerFunc) *Route {
 	g.registered = true
-	return g.app.registerRouteWithBase(method, joinPrefix(g.prefix, path), h, g.middlewares)
+	rt := g.app.registerRouteWithBase(method, joinPrefix(g.prefix, path), h, g.middlewares)
+	if len(g.security) > 0 {
+		rt.Security(g.security...)
+	}
+	return rt
 }
 
 // Group nests a new RouteGroup under this group's prefix.
@@ -670,7 +784,9 @@ func (g *RouteGroup) Group(prefix string) *RouteGroup {
 	fullPrefix := joinPrefix(g.prefix, prefix)
 	inherited := make([]MiddlewareFunc, len(g.middlewares))
 	copy(inherited, g.middlewares)
-	return &RouteGroup{app: g.app, prefix: fullPrefix, middlewares: inherited}
+	sec := make([]string, len(g.security))
+	copy(sec, g.security)
+	return &RouteGroup{app: g.app, prefix: fullPrefix, middlewares: inherited, security: sec}
 }
 
 func joinPrefix(prefix, path string) string {

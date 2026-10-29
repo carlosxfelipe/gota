@@ -8,13 +8,77 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/carlosxfelipe/gota/core"
 )
 
-var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+var (
+	uuidPattern       = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	compiledMetaCache sync.Map // map[reflect.Type]*compiledStructMeta
+)
+
+type compiledFieldMeta struct {
+	index      int
+	name       string
+	fieldType  reflect.Type
+	rules      []string
+	customMsgs map[string]string
+}
+
+type compiledEmbeddedMeta struct {
+	index        int
+	embeddedType reflect.Type
+}
+
+type compiledStructMeta struct {
+	fields   []compiledFieldMeta
+	embedded []compiledEmbeddedMeta
+}
+
+func getCompiledStructMeta(t reflect.Type) *compiledStructMeta {
+	if cached, ok := compiledMetaCache.Load(t); ok {
+		return cached.(*compiledStructMeta)
+	}
+	meta := &compiledStructMeta{}
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if ft, ok := core.EmbeddedStructType(field); ok {
+			meta.embedded = append(meta.embedded, compiledEmbeddedMeta{
+				index:        i,
+				embeddedType: ft,
+			})
+			continue
+		}
+		if !field.IsExported() {
+			continue
+		}
+		validateTag := field.Tag.Get("validate")
+		msgTag := field.Tag.Get("msg")
+		if msgTag == "" {
+			msgTag = field.Tag.Get("message")
+		}
+		var rules []string
+		if validateTag != "" {
+			for _, r := range splitRules(validateTag) {
+				if r = strings.TrimSpace(r); r != "" {
+					rules = append(rules, r)
+				}
+			}
+		}
+		meta.fields = append(meta.fields, compiledFieldMeta{
+			index:      i,
+			name:       fieldIdentifier(field),
+			fieldType:  field.Type,
+			rules:      rules,
+			customMsgs: parseMessageTag(msgTag),
+		})
+	}
+	compiledMetaCache.Store(t, meta)
+	return meta
+}
 
 // Validator is an interface that structs can implement for custom validation logic.
 type Validator interface {
@@ -285,6 +349,7 @@ func checkTagsInternal(t reflect.Type, seen map[reflect.Type]bool) error {
 			}
 		}
 	}
+	getCompiledStructMeta(t)
 	return nil
 }
 
@@ -484,48 +549,26 @@ func validateStructRecursive(ctx *core.Context, val reflect.Value, prefix string
 	defer delete(embedding, t)
 
 	mergedShadowed := collectShadowedFields(t, shadowed)
+	meta := getCompiledStructMeta(t)
 
 	// 1. Validate own/direct fields
-	for i := 0; i < t.NumField(); i++ {
-		field := t.Field(i)
-		if _, ok := core.EmbeddedStructType(field); ok {
+	for _, fm := range meta.fields {
+		if shadowed[fm.name] {
 			continue
 		}
-		// Unexported fields cannot be read via reflection (val.Interface() would panic).
-		if !field.IsExported() {
-			continue
-		}
-		fieldName := fieldIdentifier(field)
-		if shadowed[fieldName] {
-			continue
-		}
-		fullName := joinPrefix(prefix, fieldName)
-		fieldVal := val.Field(i)
+		fullName := joinPrefix(prefix, fm.name)
+		fieldVal := val.Field(fm.index)
 
-		validateTag := field.Tag.Get("validate")
-		msgTag := field.Tag.Get("msg")
-		if msgTag == "" {
-			msgTag = field.Tag.Get("message")
-		}
-		customMsgs := parseMessageTag(msgTag)
-
-		if validateTag != "" {
-			for _, rule := range splitRules(validateTag) {
-				rule = strings.TrimSpace(rule)
-				if rule == "" {
-					continue
-				}
-
-				if err := applyValidationRule(fullName, fieldVal, rule); err != "" {
-					ruleName := strings.SplitN(rule, "=", 2)[0]
-					err = resolveCustomMessage(customMsgs, ruleName, fullName, err)
-					errMap[fullName] = append(errMap[fullName], err)
-				}
+		for _, rule := range fm.rules {
+			if err := applyValidationRule(fullName, fieldVal, rule); err != "" {
+				ruleName := strings.SplitN(rule, "=", 2)[0]
+				err = resolveCustomMessage(fm.customMsgs, ruleName, fullName, err)
+				errMap[fullName] = append(errMap[fullName], err)
 			}
 		}
 
 		// Recurse into nested struct (not embedded) or slice of structs
-		ft := field.Type
+		ft := fm.fieldType
 		if ft.Kind() == reflect.Pointer {
 			if !fieldVal.IsNil() {
 				validateStructRecursive(ctx, fieldVal.Elem(), fullName, errMap, nil, embedding)
@@ -548,16 +591,11 @@ func validateStructRecursive(ctx *core.Context, val reflect.Value, prefix string
 	}
 
 	// 2. Validate promoted fields from embedded structs with the same prefix
-	for i := 0; i < t.NumField(); i++ {
-		field := t.Field(i)
-		ft, ok := core.EmbeddedStructType(field)
-		if !ok {
-			continue
-		}
-		fieldVal := val.Field(i)
+	for _, em := range meta.embedded {
+		fieldVal := val.Field(em.index)
 		if fieldVal.Kind() == reflect.Pointer {
 			if fieldVal.IsNil() {
-				validateNilEmbedded(ft, prefix, errMap, mergedShadowed)
+				validateNilEmbedded(em.embeddedType, prefix, errMap, mergedShadowed)
 				continue
 			}
 			validateStructRecursive(ctx, fieldVal.Elem(), prefix, errMap, mergedShadowed, embedding)

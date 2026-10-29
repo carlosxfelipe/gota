@@ -1,12 +1,14 @@
 package binding
 
 import (
+	"encoding"
 	"encoding/json"
 	"fmt"
 	"mime/multipart"
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/carlosxfelipe/gota/core"
 )
@@ -14,6 +16,7 @@ import (
 var (
 	fileHeaderPtrType   = reflect.TypeOf((*multipart.FileHeader)(nil))
 	fileHeaderSliceType = reflect.TypeOf(([]*multipart.FileHeader)(nil))
+	timeType            = reflect.TypeOf(time.Time{})
 )
 
 // BindRequest binds parameters, query strings, headers, form data, and JSON body from core.Context to a target pointer.
@@ -119,8 +122,10 @@ func bindFieldsInternal(ctx *core.Context, elem reflect.Value, shadowed map[stri
 		// Check query tag: query:"search"
 		if queryTag := field.Tag.Get("query"); queryTag != "" && !shadowed["query:"+queryTag] {
 			if queryVals, ok := ctx.Request.URL.Query()[queryTag]; ok && len(queryVals) > 0 {
-				if len(queryVals) > 1 && isStringSlice(fieldVal) {
-					setStringSlice(fieldVal, queryVals, false)
+				if len(queryVals) > 1 && fieldVal.Kind() == reflect.Slice {
+					if err := setSliceValues(fieldVal, queryVals, false); err != nil {
+						return fmt.Errorf("invalid query param %q: %w", queryTag, err)
+					}
 				} else if err := setFieldValue(fieldVal, queryVals[0]); err != nil {
 					return fmt.Errorf("invalid query param %q: %w", queryTag, err)
 				}
@@ -154,8 +159,10 @@ func bindFieldsInternal(ctx *core.Context, elem reflect.Value, shadowed map[stri
 			// Text / primitive form values
 			formVals := getFormValues(ctx, formTag)
 			if len(formVals) > 0 {
-				if isStringSlice(fieldVal) {
-					setStringSlice(fieldVal, formVals, false)
+				if fieldVal.Kind() == reflect.Slice {
+					if err := setSliceValues(fieldVal, formVals, false); err != nil {
+						return fmt.Errorf("invalid form field %q: %w", formTag, err)
+					}
 				} else if err := setFieldValue(fieldVal, formVals[0]); err != nil {
 					return fmt.Errorf("invalid form field %q: %w", formTag, err)
 				}
@@ -226,15 +233,34 @@ func clearNonBodyFields(elem reflect.Value) {
 
 // setFieldValue sets a reflect.Value from a string representation.
 func setFieldValue(val reflect.Value, strVal string) error {
-	switch val.Kind() {
-	case reflect.Pointer:
-		// Pointer fields (*int, *bool, ...) stay nil when the value is absent, so 0/false
-		// can be told apart from "not provided".
+	if val.Kind() == reflect.Pointer {
+		// Pointer fields (*int, *bool, *time.Time, ...) stay nil when the value is absent,
+		// so 0/false can be told apart from "not provided".
 		elem := reflect.New(val.Type().Elem())
 		if err := setFieldValue(elem.Elem(), strVal); err != nil {
 			return err
 		}
 		val.Set(elem)
+		return nil
+	}
+
+	if val.Type() == timeType {
+		for _, layout := range [...]string{time.RFC3339Nano, time.RFC3339, "2006-01-02"} {
+			if parsed, err := time.Parse(layout, strVal); err == nil {
+				val.Set(reflect.ValueOf(parsed))
+				return nil
+			}
+		}
+		return fmt.Errorf("invalid time value %q (expected RFC3339 or YYYY-MM-DD)", strVal)
+	}
+
+	if val.CanAddr() {
+		if unmarshaler, ok := val.Addr().Interface().(encoding.TextUnmarshaler); ok {
+			return unmarshaler.UnmarshalText([]byte(strVal))
+		}
+	}
+
+	switch val.Kind() {
 	case reflect.String:
 		val.SetString(strVal)
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
@@ -265,29 +291,26 @@ func setFieldValue(val reflect.Value, strVal string) error {
 			return fmt.Errorf("invalid boolean value %q", strVal)
 		}
 	case reflect.Slice:
-		if isStringSlice(val) {
-			parts := strings.Split(strVal, ",")
-			setStringSlice(val, parts, true)
-		}
+		parts := strings.Split(strVal, ",")
+		return setSliceValues(val, parts, true)
 	default:
 		return fmt.Errorf("unsupported field type: %s", val.Kind())
 	}
 	return nil
 }
 
-func isStringSlice(val reflect.Value) bool {
-	return val.Kind() == reflect.Slice && val.Type().Elem().Kind() == reflect.String
-}
-
-func setStringSlice(val reflect.Value, items []string, trim bool) {
+func setSliceValues(val reflect.Value, items []string, trim bool) error {
 	sliceVal := reflect.MakeSlice(val.Type(), len(items), len(items))
 	for i, item := range items {
 		if trim {
 			item = strings.TrimSpace(item)
 		}
-		sliceVal.Index(i).SetString(item)
+		if err := setFieldValue(sliceVal.Index(i), item); err != nil {
+			return err
+		}
 	}
 	val.Set(sliceVal)
+	return nil
 }
 
 func getFormFiles(ctx *core.Context, tag string) []*multipart.FileHeader {
