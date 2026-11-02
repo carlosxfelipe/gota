@@ -387,3 +387,31 @@ func TestBinderTimeSlicesAndTextUnmarshaler(t *testing.T) {
 		t.Errorf("expected custom TextUnmarshaler Slug=HELLO-WORLD, got %q", dto.Slug)
 	}
 }
+
+func BenchmarkBindRequest(b *testing.B) {
+	req := httptest.NewRequest("GET", "/users/42?page=3", nil)
+	req.Header.Set("Authorization", "Bearer token123")
+	w := httptest.NewRecorder()
+	ctx := core.NewContext(w, req, map[string]string{"id": "42"})
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		var dto TestBindDTO
+		_ = BindRequest(ctx, &dto)
+	}
+}
+
+func BenchmarkBindRequest_Embedded(b *testing.B) {
+	req := httptest.NewRequest("GET", "/items/42?limit=10&page=2", nil)
+	req.Header.Set("X-Token", "secret123")
+	w := httptest.NewRecorder()
+	ctx := core.NewContext(w, req, map[string]string{"id": "42"})
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		var dto EmbeddedReqDTO
+		_ = BindRequest(ctx, &dto)
+	}
+}

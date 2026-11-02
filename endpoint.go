@@ -167,6 +167,9 @@ func WrapEndpoint[Req any, Res any](handler EndpointFunc[Req, Res], defaultStatu
 		panic(fmt.Sprintf("gota: invalid tag in %T: %v", *new(Req), err))
 	}
 
+	// Pre-compile and cache the struct binding plan at startup for high-efficiency zero-alloc reflection.
+	binding.Compile(reqType)
+
 	// Emit non-fatal warnings for suspicious validation rules (e.g. required on primitive bool/numbers).
 	if !validation.SilenceTagWarnings {
 		for _, w := range validation.CheckTagWarnings(reqType) {

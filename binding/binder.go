@@ -4,19 +4,345 @@ import (
 	"encoding"
 	"fmt"
 	"mime/multipart"
+	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/carlosxfelipe/gota/core"
 )
 
 var (
-	fileHeaderPtrType   = reflect.TypeOf((*multipart.FileHeader)(nil))
-	fileHeaderSliceType = reflect.TypeOf(([]*multipart.FileHeader)(nil))
-	timeType            = reflect.TypeOf(time.Time{})
+	fileHeaderPtrType    = reflect.TypeOf((*multipart.FileHeader)(nil))
+	fileHeaderSliceType  = reflect.TypeOf(([]*multipart.FileHeader)(nil))
+	timeType             = reflect.TypeOf(time.Time{})
+	compiledBindingCache sync.Map // map[reflect.Type]*BindingPlan
 )
+
+// BindingPlan holds the pre-compiled schema and plan for binding a struct type.
+type BindingPlan struct {
+	items    []planItem
+	clear    *clearFieldPlan
+	hasQuery bool
+}
+
+type planItem struct {
+	index int
+
+	// Embedded struct support
+	isEmbedded   bool
+	isPointer    bool
+	embeddedType reflect.Type
+	embeddedPlan *BindingPlan
+
+	// Direct field binding
+	paramTag    string
+	queryTag    string
+	headerTag   string
+	formTag     string
+	isFormFile  bool
+	isFormFiles bool
+	isSlice     bool
+}
+
+type clearFieldPlan struct {
+	fieldIndices []int
+	embedded     []embeddedClearPlan
+}
+
+type embeddedClearPlan struct {
+	index     int
+	isPointer bool
+	plan      *clearFieldPlan
+}
+
+func (p *clearFieldPlan) isEmpty() bool {
+	return p == nil || (len(p.fieldIndices) == 0 && len(p.embedded) == 0)
+}
+
+func (p *clearFieldPlan) execute(elem reflect.Value) {
+	if p == nil {
+		return
+	}
+	for _, idx := range p.fieldIndices {
+		f := elem.Field(idx)
+		if f.CanSet() {
+			f.SetZero()
+		}
+	}
+	for i := range p.embedded {
+		emb := &p.embedded[i]
+		f := elem.Field(emb.index)
+		if emb.isPointer {
+			if f.IsNil() {
+				continue
+			}
+			emb.plan.execute(f.Elem())
+			if f.CanSet() && f.Elem().IsZero() {
+				f.SetZero()
+			}
+		} else {
+			emb.plan.execute(f)
+		}
+	}
+}
+
+func buildClearPlan(t reflect.Type, seen map[reflect.Type]bool) *clearFieldPlan {
+	if t == nil || seen[t] {
+		return nil
+	}
+	seen[t] = true
+	defer delete(seen, t)
+
+	p := &clearFieldPlan{}
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if ft, ok := core.EmbeddedStructType(field); ok {
+			subPlan := buildClearPlan(ft, seen)
+			if subPlan != nil && !subPlan.isEmpty() {
+				p.embedded = append(p.embedded, embeddedClearPlan{
+					index:     i,
+					isPointer: field.Type.Kind() == reflect.Pointer,
+					plan:      subPlan,
+				})
+			}
+			continue
+		}
+		if !field.IsExported() {
+			continue
+		}
+		if name, _, _ := strings.Cut(field.Tag.Get("json"), ","); name != "" && name != "-" {
+			continue
+		}
+		if field.Tag.Get("param") != "" || field.Tag.Get("query") != "" ||
+			field.Tag.Get("header") != "" || (field.Tag.Get("form") != "" && field.Tag.Get("form") != "-") {
+			p.fieldIndices = append(p.fieldIndices, i)
+		}
+	}
+	return p
+}
+
+// Compile compiles and caches the binding plan for struct type t.
+// If t is a pointer, it compiles for the element type.
+func Compile(t reflect.Type) *BindingPlan {
+	if t == nil {
+		return nil
+	}
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return nil
+	}
+	if cached, ok := compiledBindingCache.Load(t); ok {
+		return cached.(*BindingPlan)
+	}
+	plan := compilePlan(t, nil, make(map[reflect.Type]bool))
+	compiledBindingCache.Store(t, plan)
+	return plan
+}
+
+func compilePlan(typ reflect.Type, shadowed map[string]bool, seen map[reflect.Type]bool) *BindingPlan {
+	if seen[typ] {
+		return nil
+	}
+	seen[typ] = true
+	defer delete(seen, typ)
+
+	// Collect tags declared on this struct itself so they shadow promoted fields.
+	mergedShadowed := make(map[string]bool, len(shadowed)+typ.NumField()*4)
+	for k, v := range shadowed {
+		mergedShadowed[k] = v
+	}
+	for i := 0; i < typ.NumField(); i++ {
+		f := typ.Field(i)
+		if _, ok := core.EmbeddedStructType(f); ok {
+			continue
+		}
+		for _, tag := range [...]string{"param", "query", "header", "form"} {
+			if v := f.Tag.Get(tag); v != "" && v != "-" {
+				mergedShadowed[tag+":"+v] = true
+			}
+		}
+	}
+
+	clearPlan := buildClearPlan(typ, make(map[reflect.Type]bool))
+	if clearPlan != nil && clearPlan.isEmpty() {
+		clearPlan = nil
+	}
+
+	plan := &BindingPlan{
+		clear: clearPlan,
+	}
+
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+
+		if ft, ok := core.EmbeddedStructType(field); ok {
+			embPlan := compilePlan(ft, mergedShadowed, seen)
+			if embPlan != nil && len(embPlan.items) > 0 {
+				if embPlan.hasQuery {
+					plan.hasQuery = true
+				}
+				plan.items = append(plan.items, planItem{
+					isEmbedded:   true,
+					index:        i,
+					isPointer:    field.Type.Kind() == reflect.Pointer,
+					embeddedType: ft,
+					embeddedPlan: embPlan,
+				})
+			}
+			continue
+		}
+
+		if !field.IsExported() {
+			continue
+		}
+
+		var item planItem
+		item.index = i
+		item.isSlice = field.Type.Kind() == reflect.Slice
+		hasAction := false
+
+		// Check param tag: param:"id"
+		if paramTag := field.Tag.Get("param"); paramTag != "" && !shadowed["param:"+paramTag] {
+			item.paramTag = paramTag
+			hasAction = true
+		}
+
+		// Check query tag: query:"search"
+		if queryTag := field.Tag.Get("query"); queryTag != "" && !shadowed["query:"+queryTag] {
+			item.queryTag = queryTag
+			hasAction = true
+			plan.hasQuery = true
+		}
+
+		// Check header tag: header:"X-Token"
+		if headerTag := field.Tag.Get("header"); headerTag != "" && !shadowed["header:"+headerTag] {
+			item.headerTag = headerTag
+			hasAction = true
+		}
+
+		// Check form tag: form:"avatar" or form:"name"
+		if formTag := field.Tag.Get("form"); formTag != "" && formTag != "-" && !shadowed["form:"+formTag] {
+			item.formTag = formTag
+			hasAction = true
+			if field.Type == fileHeaderPtrType {
+				item.isFormFile = true
+			} else if field.Type == fileHeaderSliceType {
+				item.isFormFiles = true
+			}
+		}
+
+		if hasAction {
+			plan.items = append(plan.items, item)
+		}
+	}
+
+	return plan
+}
+
+func (p *BindingPlan) execute(ctx *core.Context, elem reflect.Value, queryVals *url.Values) error {
+	for i := range p.items {
+		item := &p.items[i]
+		fieldVal := elem.Field(item.index)
+
+		if item.isEmbedded {
+			if !item.isPointer {
+				if err := item.embeddedPlan.execute(ctx, fieldVal, queryVals); err != nil {
+					return err
+				}
+				continue
+			}
+			if !fieldVal.IsNil() {
+				if err := item.embeddedPlan.execute(ctx, fieldVal.Elem(), queryVals); err != nil {
+					return err
+				}
+				continue
+			}
+			if !fieldVal.CanSet() {
+				continue
+			}
+			tmp := reflect.New(item.embeddedType)
+			if err := item.embeddedPlan.execute(ctx, tmp.Elem(), queryVals); err != nil {
+				return err
+			}
+			if !tmp.Elem().IsZero() {
+				fieldVal.Set(tmp)
+			}
+			continue
+		}
+
+		if !fieldVal.CanSet() {
+			continue
+		}
+
+		// Param tag
+		if item.paramTag != "" {
+			if strVal, ok := ctx.Params[item.paramTag]; ok && strVal != "" {
+				if err := setFieldValue(fieldVal, strVal); err != nil {
+					return fmt.Errorf("invalid path param %q: %w", item.paramTag, err)
+				}
+			}
+		}
+
+		// Query tag
+		if item.queryTag != "" {
+			if *queryVals == nil {
+				*queryVals = ctx.Request.URL.Query()
+			}
+			if qVals, ok := (*queryVals)[item.queryTag]; ok && len(qVals) > 0 {
+				if len(qVals) > 1 && item.isSlice {
+					if err := setSliceValues(fieldVal, qVals, false); err != nil {
+						return fmt.Errorf("invalid query param %q: %w", item.queryTag, err)
+					}
+				} else if err := setFieldValue(fieldVal, qVals[0]); err != nil {
+					return fmt.Errorf("invalid query param %q: %w", item.queryTag, err)
+				}
+			}
+		}
+
+		// Header tag
+		if item.headerTag != "" {
+			if strVal := ctx.Header(item.headerTag); strVal != "" {
+				if err := setFieldValue(fieldVal, strVal); err != nil {
+					return fmt.Errorf("invalid header %q: %w", item.headerTag, err)
+				}
+			}
+		}
+
+		// Form tag
+		if item.formTag != "" {
+			if item.isFormFile {
+				if files := getFormFiles(ctx, item.formTag); len(files) > 0 {
+					fieldVal.Set(reflect.ValueOf(files[0]))
+				}
+				continue
+			}
+			if item.isFormFiles {
+				if files := getFormFiles(ctx, item.formTag); len(files) > 0 {
+					fieldVal.Set(reflect.ValueOf(files))
+				}
+				continue
+			}
+
+			// Text / primitive form values
+			formVals := getFormValues(ctx, item.formTag)
+			if len(formVals) > 0 {
+				if item.isSlice {
+					if err := setSliceValues(fieldVal, formVals, false); err != nil {
+						return fmt.Errorf("invalid form field %q: %w", item.formTag, err)
+					}
+				} else if err := setFieldValue(fieldVal, formVals[0]); err != nil {
+					return fmt.Errorf("invalid form field %q: %w", item.formTag, err)
+				}
+			}
+		}
+	}
+	return nil
+}
 
 // BindRequest binds parameters, query strings, headers, form data, and JSON body from core.Context to a target pointer.
 func BindRequest(ctx *core.Context, target any) error {
@@ -36,6 +362,8 @@ func BindRequest(ctx *core.Context, target any) error {
 		}
 		return nil
 	}
+
+	plan := Compile(elem.Type())
 
 	contentType := ctx.Request.Header.Get("Content-Type")
 	isMultipart := strings.HasPrefix(strings.ToLower(contentType), "multipart/form-data")
@@ -60,174 +388,18 @@ func BindRequest(ctx *core.Context, target any) error {
 			if err := ctx.DecodeJSON(body, target); err != nil {
 				return fmt.Errorf("invalid json body: %w", err)
 			}
-			clearNonBodyFields(elem)
-		}
-	}
-
-	// 2. Reflect on fields to bind `param`, `query`, `header`, and `form` tags
-	return bindFields(ctx, elem)
-}
-
-// bindFields binds the `param`, `query`, `header` and `form` tagged fields of the struct value
-// elem, descending into embedded structs whose fields encoding/json would promote.
-func bindFields(ctx *core.Context, elem reflect.Value) error {
-	return bindFieldsInternal(ctx, elem, nil)
-}
-
-func bindFieldsInternal(ctx *core.Context, elem reflect.Value, shadowed map[string]bool) error {
-	typ := elem.Type()
-
-	// Collect tags declared on this struct itself so they shadow promoted fields.
-	mergedShadowed := make(map[string]bool, len(shadowed)+typ.NumField()*4)
-	for k, v := range shadowed {
-		mergedShadowed[k] = v
-	}
-	for i := 0; i < typ.NumField(); i++ {
-		f := typ.Field(i)
-		if _, ok := core.EmbeddedStructType(f); ok {
-			continue
-		}
-		for _, tag := range [...]string{"param", "query", "header", "form"} {
-			if v := f.Tag.Get(tag); v != "" && v != "-" {
-				mergedShadowed[tag+":"+v] = true
+			if plan != nil && plan.clear != nil {
+				plan.clear.execute(elem)
 			}
 		}
 	}
 
-	for i := 0; i < typ.NumField(); i++ {
-		field := typ.Field(i)
-		fieldVal := elem.Field(i)
-
-		if ft, ok := core.EmbeddedStructType(field); ok {
-			if err := bindEmbedded(ctx, fieldVal, ft, mergedShadowed); err != nil {
-				return err
-			}
-			continue
-		}
-
-		if !fieldVal.CanSet() {
-			continue
-		}
-
-		// Check param tag: param:"id"
-		if paramTag := field.Tag.Get("param"); paramTag != "" && !shadowed["param:"+paramTag] {
-			if strVal, ok := ctx.Params[paramTag]; ok && strVal != "" {
-				if err := setFieldValue(fieldVal, strVal); err != nil {
-					return fmt.Errorf("invalid path param %q: %w", paramTag, err)
-				}
-			}
-		}
-
-		// Check query tag: query:"search"
-		if queryTag := field.Tag.Get("query"); queryTag != "" && !shadowed["query:"+queryTag] {
-			if queryVals, ok := ctx.Request.URL.Query()[queryTag]; ok && len(queryVals) > 0 {
-				if len(queryVals) > 1 && fieldVal.Kind() == reflect.Slice {
-					if err := setSliceValues(fieldVal, queryVals, false); err != nil {
-						return fmt.Errorf("invalid query param %q: %w", queryTag, err)
-					}
-				} else if err := setFieldValue(fieldVal, queryVals[0]); err != nil {
-					return fmt.Errorf("invalid query param %q: %w", queryTag, err)
-				}
-			}
-		}
-
-		// Check header tag: header:"X-Token"
-		if headerTag := field.Tag.Get("header"); headerTag != "" && !shadowed["header:"+headerTag] {
-			if strVal := ctx.Header(headerTag); strVal != "" {
-				if err := setFieldValue(fieldVal, strVal); err != nil {
-					return fmt.Errorf("invalid header %q: %w", headerTag, err)
-				}
-			}
-		}
-
-		// Check form tag: form:"avatar" or form:"name"
-		if formTag := field.Tag.Get("form"); formTag != "" && formTag != "-" && !shadowed["form:"+formTag] {
-			if field.Type == fileHeaderPtrType {
-				if files := getFormFiles(ctx, formTag); len(files) > 0 {
-					fieldVal.Set(reflect.ValueOf(files[0]))
-				}
-				continue
-			}
-			if field.Type == fileHeaderSliceType {
-				if files := getFormFiles(ctx, formTag); len(files) > 0 {
-					fieldVal.Set(reflect.ValueOf(files))
-				}
-				continue
-			}
-
-			// Text / primitive form values
-			formVals := getFormValues(ctx, formTag)
-			if len(formVals) > 0 {
-				if fieldVal.Kind() == reflect.Slice {
-					if err := setSliceValues(fieldVal, formVals, false); err != nil {
-						return fmt.Errorf("invalid form field %q: %w", formTag, err)
-					}
-				} else if err := setFieldValue(fieldVal, formVals[0]); err != nil {
-					return fmt.Errorf("invalid form field %q: %w", formTag, err)
-				}
-			}
-		}
-	}
-
-	return nil
-}
-
-// bindEmbedded binds the fields of an embedded struct. A nil embedded pointer is only
-// allocated when at least one of its fields was actually bound, so absent values keep it nil.
-func bindEmbedded(ctx *core.Context, fieldVal reflect.Value, ft reflect.Type, shadowed map[string]bool) error {
-	if fieldVal.Kind() != reflect.Pointer {
-		return bindFieldsInternal(ctx, fieldVal, shadowed)
-	}
-	if !fieldVal.IsNil() {
-		return bindFieldsInternal(ctx, fieldVal.Elem(), shadowed)
-	}
-	if !fieldVal.CanSet() {
-		return nil
-	}
-	tmp := reflect.New(ft)
-	if err := bindFieldsInternal(ctx, tmp.Elem(), shadowed); err != nil {
-		return err
-	}
-	if !tmp.Elem().IsZero() {
-		fieldVal.Set(tmp)
+	// 2. Execute precompiled binding plan
+	if plan != nil {
+		var queryVals url.Values
+		return plan.execute(ctx, elem, &queryVals)
 	}
 	return nil
-}
-
-// clearNonBodyFields zeroes fields that are meant to come from the path, query, header or
-// form, unless they declare an explicit json tag. Without this, a JSON body such as
-// {"UserID": 1} could spoof a field tagged `header:"X-User-Id"` whenever the header is absent.
-// Fields of embedded structs are promoted by encoding/json, so they are cleared as well.
-func clearNonBodyFields(elem reflect.Value) {
-	typ := elem.Type()
-	for i := 0; i < typ.NumField(); i++ {
-		field := typ.Field(i)
-		if _, ok := core.EmbeddedStructType(field); ok {
-			embedded := elem.Field(i)
-			if embedded.Kind() == reflect.Pointer {
-				if embedded.IsNil() {
-					continue
-				}
-				clearNonBodyFields(embedded.Elem())
-				if embedded.CanSet() && embedded.Elem().IsZero() {
-					embedded.SetZero()
-				}
-				continue
-			}
-			clearNonBodyFields(embedded)
-			continue
-		}
-		if !elem.Field(i).CanSet() {
-			continue
-		}
-		if name, _, _ := strings.Cut(field.Tag.Get("json"), ","); name != "" && name != "-" {
-			continue
-		}
-		if field.Tag.Get("param") != "" || field.Tag.Get("query") != "" ||
-			field.Tag.Get("header") != "" || (field.Tag.Get("form") != "" && field.Tag.Get("form") != "-") {
-			elem.Field(i).SetZero()
-		}
-	}
 }
 
 // setFieldValue sets a reflect.Value from a string representation.
