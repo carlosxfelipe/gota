@@ -632,7 +632,7 @@ func (a *App) Listen(addr string) error {
 			log.Printf("🔷 TypeScript defs: http://%s%s", display, a.config.TypeScriptURL)
 		}
 		if a.config.TypeScriptSDKURL != "" && a.config.TypeScriptSDKURL != "-" {
-			log.Printf("⚡ TypeScript SDK: http://%s%s", display, a.config.TypeScriptSDKURL)
+			log.Printf("🧩 TypeScript SDK: http://%s%s", display, a.config.TypeScriptSDKURL)
 		}
 		if len(a.docsMiddlewares) > 0 {
 			log.Printf("🔒 Docs protected with %d middleware(s)", len(a.docsMiddlewares))
