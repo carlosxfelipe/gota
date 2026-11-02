@@ -25,7 +25,7 @@ Inspired by the ergonomic fluency of [Kite](https://github.com/claudiovictors/ki
 - **REPR Design Pattern**: Request-Endpoint-Response architecture with automatic model binding, declarative validation, and typed JSON / streaming responses.
 - **Zero External Dependencies**: Built 100% on the Go standard library.
 - **Native OpenAPI 3.1 & Scalar Docs**: Automatic spec generation from Go types, serving interactive Scalar UI (`classic` layout) at `/docs`.
-- **Auto-Generated TypeScript Definitions & SDK**: Automatic zero-dependency TypeScript definitions served at `/types.d.ts` (and optional standalone client at `/sdk.ts` or via `app.GenerateTypeScript()`), providing end-to-end type safety from Go to frontend without npm or build tools.
+- **Auto-Generated TypeScript Definitions & Client SDK**: Zero-dependency TypeScript declarations served at `/types.d.ts` and standalone client SDK served at `/sdk.ts` (or via `app.GenerateTypeScript()` / `app.GenerateTypeScriptSDK()`), providing end-to-end type safety from Go to frontend without npm or build tools.
 - **Fluent Route Ergonomics**: Chainable metadata (`.Summary()`, `.Tags()`, `.Middleware()`), route groups, and parameter matching (`:id`, `*wildcard`).
 - **Production-Ready Middlewares**: Built-in JWT (HS256, RS256, ES256, EdDSA), CORS, Security Headers, Rate Limiter, Gzip, Panic Recovery, Request ID, Slog logger, Timeouts, and Graceful Shutdown.
 
@@ -190,6 +190,78 @@ app := gota.New(gota.Config{
 
 ---
 
+## 🔷 Auto-Generated TypeScript Definitions & Client SDK
+
+Gota bridges your Go backend and frontend with **zero-dependency, end-to-end type safety** (similar to tRPC, but natively across Go and TypeScript). At runtime, Gota inspects your REPR routes and models to serve both type declarations and a ready-to-run client SDK:
+
+- **Type Definitions (`/types.d.ts`)**: Pure TypeScript contracts (`.d.ts`). Contains all model interfaces, route signatures, and helper types. Zero runtime footprint (erased at build time).
+- **Client SDK (`/sdk.ts`)**: A complete, zero-dependency client script (`.ts`) that includes all type definitions **plus** the native `createGotaClient` fetch implementation.
+
+### 🚀 Frontend Quickstart
+
+You can pull the client SDK directly into your frontend project (React, Next.js, Vue, Svelte, Node, Bun, etc.):
+
+```bash
+# Save the generated SDK into your frontend
+curl -o src/api.ts http://localhost:3000/sdk.ts
+```
+
+Then make fully typed requests with autocomplete and compile-time validation:
+
+```typescript
+import { createGotaClient } from "./api";
+
+const api = createGotaClient("http://localhost:3000");
+
+// 1. The editor autocompletes valid routes as soon as you type quotes:
+// "GET /users" | "GET /users/:id" | "POST /users" | ...
+const user = await api.fetch("GET /users/:id", {
+  params: { id: "usr_1" }, // TypeScript enforces required route params!
+});
+
+console.log(user.name); // 100% typed: inferred directly from Go struct UserResponse
+
+// 2. Type-safe POST/PUT requests with autocompleted bodies
+const newUser = await api.fetch("POST /users", {
+  body: {
+    name: "Jane Doe",
+    email: "jane.doe@example.com",
+    role: "admin",
+  },
+});
+```
+
+### 💡 Why `createGotaClient`?
+
+The built-in client wrapper solves classic frontend `fetch` pitfalls with zero external npm dependencies:
+
+- **End-to-End Type Safety**: If a Go struct field or route changes, your frontend fails at compile/build time, preventing runtime bugs before deployment.
+- **Safe Route Interpolation**: Automatically encodes and replaces `:param` and `*wildcard` values using `encodeURIComponent`.
+- **Automatic Query String Serialization**: Pass `{ query: { page: 1, search: "go" } }` without manual URL string concatenation.
+- **Body & FormData Auto-Detection**: Automatically serializes objects to JSON with `Content-Type: application/json`, or preserves multipart boundaries for `FormData` file uploads.
+- **True Error Handling**: Native `fetch` does not reject promises on HTTP 4xx/5xx; `createGotaClient` automatically parses error payloads and throws catchable errors with `status` and `data`.
+- **204 No Content Protection**: Avoids the common `SyntaxError: Unexpected end of JSON input` by safely returning `undefined` for 204 responses.
+
+### ⚙️ Customization & Disabling
+
+Both endpoints are active by default and can be customized or disabled using `"-"`:
+
+```go
+app := gota.New(gota.Config{
+    TypeScriptURL:    "/types.d.ts", // Default: "/types.d.ts" (set "-" to disable)
+    TypeScriptSDKURL: "/sdk.ts",     // Default: "/sdk.ts" (set "-" to disable)
+})
+```
+
+You can also export them programmatically (e.g. in a code generation script or CI pipeline):
+
+```go
+typesDefs := app.GenerateTypeScript()    // Returns .d.ts content as string
+clientSDK := app.GenerateTypeScriptSDK() // Returns .ts SDK content as string
+```
+
+---
+
 ## 🧹 Code Formatting
 
 To recursively format all Go source files starting from the repository root:
@@ -216,6 +288,8 @@ Then visit:
 
 - **Scalar UI**: [http://localhost:3000/docs](http://localhost:3000/docs)
 - **OpenAPI 3.1 Spec**: [http://localhost:3000/openapi.json](http://localhost:3000/openapi.json)
+- **TypeScript Defs**: [http://localhost:3000/types.d.ts](http://localhost:3000/types.d.ts)
+- **TypeScript Client SDK**: [http://localhost:3000/sdk.ts](http://localhost:3000/sdk.ts)
 
 > 💡 Looking for a full-featured showcase with JWT authentication, role-based access control, multipart file uploads, Server-Sent Events (SSE), and a Bruno collection? Check out [order-flow-gota](https://github.com/carlosxfelipe/order-flow-gota).
 

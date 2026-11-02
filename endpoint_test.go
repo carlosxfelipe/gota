@@ -942,4 +942,14 @@ func TestEndpoint_TypeScriptGeneration(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "GotaEndpoints") {
 		t.Errorf("expected GotaEndpoints in HTTP response, got:\n%s", w.Body.String())
 	}
+
+	// Verify route /sdk.ts works via HTTP by default
+	wSDK := httptest.NewRecorder()
+	app.ServeHTTP(wSDK, httptest.NewRequest("GET", "/sdk.ts", nil))
+	if wSDK.Code != http.StatusOK {
+		t.Fatalf("expected 200 on /sdk.ts, got %d", wSDK.Code)
+	}
+	if !strings.Contains(wSDK.Body.String(), "export function createGotaClient") {
+		t.Errorf("expected createGotaClient in HTTP response, got:\n%s", wSDK.Body.String())
+	}
 }

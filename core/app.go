@@ -179,6 +179,9 @@ func New(cfg Config) *App {
 	if cfg.TypeScriptURL == "" {
 		cfg.TypeScriptURL = "/types.d.ts"
 	}
+	if cfg.TypeScriptSDKURL == "" {
+		cfg.TypeScriptSDKURL = "/sdk.ts"
+	}
 	if cfg.ScalarTheme == "" {
 		cfg.ScalarTheme = ThemeFastify
 	}
