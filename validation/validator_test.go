@@ -534,7 +534,7 @@ type WarningTestDTO struct {
 	ValidPtrI *int    `json:"validPtrI" validate:"required"`
 	ValidStr  string  `json:"validStr" validate:"required"`
 	Silenced1 bool    `json:"silenced1" validate:"required,nowarn"`
-	Silenced2 int     `json:"silenced2" validate:"required" gota:"nowarn"`
+	Silenced2 int     `json:"silenced2" validate:"required,nowarn"`
 	WithOmit  string  `json:"withOmit" validate:"omitempty,min=3"`
 	OmitSil   string  `json:"omitSil" validate:"omitempty,min=3,nowarn"`
 }
@@ -570,7 +570,7 @@ func TestCheckTagWarnings(t *testing.T) {
 
 type CustomMsgDTO struct {
 	FullName string `json:"fullName" validate:"required,min=5" msg:"required:your name is required!|min:your name is too short!"`
-	Age      int    `json:"age" validate:"min=18" message:"you are not legal yet!"`
+	Age      int    `json:"age" validate:"min=18" msg:"you are not legal yet!"`
 	Code     string `json:"code" validate:"required" msg:"field {field} must be provided"`
 }
 
@@ -624,10 +624,26 @@ func TestCheckTagsWithCustomMsg(t *testing.T) {
 	// Valid: correctly matching rules
 	type ValidMsg struct {
 		Name string `validate:"required,min=3" msg:"required:name is required|min:min 3"`
-		Bio  string `validate:"max=100" message:"bio is too long"`
+		Bio  string `validate:"max=100" msg:"bio is too long"`
 	}
 	if err := CheckTags(reflect.TypeOf(ValidMsg{})); err != nil {
 		t.Fatalf("expected valid msg tags to pass CheckTags, got: %v", err)
+	}
+
+	// Invalid: message tag used instead of msg
+	type MessageTagUsed struct {
+		Name string `validate:"required" message:"should fail"`
+	}
+	if err := CheckTags(reflect.TypeOf(MessageTagUsed{})); err == nil || !strings.Contains(err.Error(), "tag `message:") {
+		t.Fatalf("expected error for message tag, got: %v", err)
+	}
+
+	// Invalid: gota:"nowarn" tag used instead of validate:"...,nowarn"
+	type GotaTagUsed struct {
+		Active bool `validate:"required" gota:"nowarn"`
+	}
+	if err := CheckTags(reflect.TypeOf(GotaTagUsed{})); err == nil || !strings.Contains(err.Error(), "tag `gota:") {
+		t.Fatalf("expected error for gota tag, got: %v", err)
 	}
 
 	// Invalid: msg defined without validate tag

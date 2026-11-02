@@ -57,9 +57,6 @@ func getCompiledStructMeta(t reflect.Type) *compiledStructMeta {
 		}
 		validateTag := field.Tag.Get("validate")
 		msgTag := field.Tag.Get("msg")
-		if msgTag == "" {
-			msgTag = field.Tag.Get("message")
-		}
 		var rules []string
 		if validateTag != "" {
 			for _, r := range splitRules(validateTag) {
@@ -236,6 +233,16 @@ func checkTagsInternal(t reflect.Type, seen map[reflect.Type]bool) error {
 			return fmt.Errorf("field %q: tag `path:%q` is not supported; Gota uses `param:%q` for route path parameters", name, pathTag, pathTag)
 		}
 
+		// Anti-pattern check: using message:"..." instead of msg:"..."
+		if msgAlias := field.Tag.Get("message"); msgAlias != "" {
+			return fmt.Errorf("field %q: tag `message:%q` is not supported; use `msg:%q`", name, msgAlias, msgAlias)
+		}
+
+		// Anti-pattern check: using gota:"nowarn" instead of validate:"...,nowarn"
+		if gotaTag := field.Tag.Get("gota"); gotaTag != "" {
+			return fmt.Errorf("field %q: tag `gota:%q` is not supported; use `validate:\"...,nowarn\"`", name, gotaTag)
+		}
+
 		// Anti-pattern check: comma-separated options (e.g. ,omitempty or ,required) in param, query, header, or form tags
 		for _, bindTag := range [...]string{"param", "query", "header", "form"} {
 			if raw := field.Tag.Get(bindTag); strings.Contains(raw, ",") {
@@ -245,9 +252,6 @@ func checkTagsInternal(t reflect.Type, seen map[reflect.Type]bool) error {
 		}
 
 		msgTag := field.Tag.Get("msg")
-		if msgTag == "" {
-			msgTag = field.Tag.Get("message")
-		}
 		if msgTag != "" {
 			if tag == "" {
 				return fmt.Errorf("field %q: tag `msg` defined without a `validate` tag", name)
@@ -356,8 +360,8 @@ func checkTagsInternal(t reflect.Type, seen map[reflect.Type]bool) error {
 // CheckTagWarnings inspects struct type t for suspicious validation tags, returning
 // non-fatal warning messages. In particular, it warns when validate:"required" is placed
 // on non-pointer bool or numeric fields where Go's zero values (false, 0) fail required validation.
-// A warning on a specific field can be silenced with validate:"...,nowarn" or gota:"nowarn",
-// or globally via gota.SilenceTagWarnings(true).
+// A warning on a specific field can be silenced with validate:"...,nowarn",
+// or globally via Config.SilenceTagWarnings: true.
 func CheckTagWarnings(t reflect.Type) []string {
 	var warnings []string
 	checkTagWarningsInternal(t, make(map[reflect.Type]bool), nil, &warnings)
@@ -392,7 +396,7 @@ func checkTagWarningsInternal(t reflect.Type, seen map[reflect.Type]bool, shadow
 			continue
 		}
 
-		suppressed := field.Tag.Get("gota") == "nowarn"
+		suppressed := false
 		tag := field.Tag.Get("validate")
 		hasRequired := false
 		hasOmitempty := false
@@ -638,9 +642,6 @@ func validateNilEmbedded(ft reflect.Type, prefix string, errMap map[string][]str
 		fullName := joinPrefix(prefix, name)
 		tag := f.Tag.Get("validate")
 		msgTag := f.Tag.Get("msg")
-		if msgTag == "" {
-			msgTag = f.Tag.Get("message")
-		}
 		customMsgs := parseMessageTag(msgTag)
 		if tag != "" {
 			for _, rule := range splitRules(tag) {

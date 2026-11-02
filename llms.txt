@@ -118,14 +118,12 @@ Gota binds fields from five HTTP sources and enriches validation/OpenAPI using s
 | `header:"Name"`     | HTTP request header (`Req`) or outgoing response header (`Res`, pair with `json:"-"`). **No options.** | ``Token string `header:"X-Api-Key"` ``           |
 | `form:"name"`       | Multipart or URL-encoded form field / file upload. **No options.**       | ``File *multipart.FileHeader `form:"file"` ``    |
 | `json:"name"`       | JSON request/response body field (standard `encoding/json` options ok).  | ``Title string `json:"title,omitempty"` ``       |
-| `validate:"rules"`  | Declarative validation rules (comma-separated); also exported to OpenAPI 3.1 JSON Schema (`minimum`, `maximum`, `minLength`, `maxLength`, `minItems`, `maxItems`, `enum`, `format`). | ``Email string `json:"email" validate:"required,email"` `` |
+| `validate:"rules"`  | Declarative validation rules (comma-separated; use `nowarn` to silence field warnings); also exported to OpenAPI 3.1 JSON Schema. | ``Email string `json:"email" validate:"required,email"` `` |
 | `msg:"messages"`    | Custom validation error message(s) (`fallback` or `rule:text\|rule:text`). | ``Name string `json:"name" validate:"required,min=3" msg:"required:Name required\|min:Too short"` `` |
-| `message:"text"`    | Alias for `msg`.                                                         | ``Age int `json:"age" validate:"min=18" message:"Must be 18+"` `` |
 | `doc:"description"` | OpenAPI description (works on `param`, `query`, `header`, `form`, `json`). | ``Q string `query:"q" doc:"Search term"` ``     |
 | `example:"val"`     | OpenAPI example (works on `param`, `query`, `header`, `form`, `json`).   | ``Email string `json:"email" example:"a@b.com"` `` |
 | `format:"fmt"`      | OpenAPI format hint (works on `param`, `query`, `header`, `form`, `json`). | ``Born string `json:"born" format:"date"` ``     |
 | `default:"val"`     | OpenAPI default value (works on `param`, `query`, `header`, `form`, `json`).| ``Role string `json:"role" default:"member"` ``  |
-| `gota:"nowarn"`     | Silences startup validation warnings on a specific field.                | ``Active bool `json:"active" validate:"required" gota:"nowarn"` `` |
 
 > **CRITICAL — Never put `,omitempty` or options in `param`, `query`, `header`, or `form` tags**: Unlike `encoding/json`, `param`, `query`, `header`, and `form` tags only accept the field name (e.g. ``form:"notes"``). Writing ``form:"notes,omitempty"`` or ``query:"page,required"`` triggers a fail-fast startup **panic** in `validation.CheckTags` (only `json:"notes,omitempty"` supports `,omitempty`, and validation rules belong in `validate:"..."`).
 
@@ -212,10 +210,10 @@ Nested structs (`Address AddressDTO`, `*AddressDTO`) and slices of structs (`Ite
 #### Fail-Fast Startup Tag Checks & Warnings
 
 At route registration, `WrapEndpoint` runs `validation.CheckTags`:
-- **Intentional Panics**: Unsupported tags like `path:"id"`, unknown validation rules (e.g. `requried`, `gte=5`, `lte=10`, `length=5`, `dive`, `isdefault`), bad rule parameters (`min=abc`), or `msg` referencing undeclared rules **panic immediately at startup** with corrective suggestions.
-- **Startup Warnings**: Non-fatal warnings are logged once per type for `validate:"omitempty"` (no-op in Gota) and `validate:"required"` on non-pointer numeric/bool primitives. Silence per-field with `validate:"...,nowarn"` or `gota:"nowarn"`, or globally with `Config{SilenceTagWarnings: true}` or `gota.SilenceTagWarnings(true)`.
+- **Intentional Panics**: Unsupported tags like `path:"id"`, `message:"text"` (use `msg`), `gota:"nowarn"` (use `validate:"...,nowarn"`), unknown validation rules (e.g. `requried`, `gte=5`, `lte=10`, `length=5`, `dive`, `isdefault`), bad rule parameters (`min=abc`), or `msg` referencing undeclared rules **panic immediately at startup** with corrective suggestions.
+- **Startup Warnings**: Non-fatal warnings are logged once per type for `validate:"omitempty"` (no-op in Gota) and `validate:"required"` on non-pointer numeric/bool primitives. Silence per-field with `validate:"...,nowarn"`, or globally with `Config{SilenceTagWarnings: true}` or `gota.SilenceTagWarnings(true)`.
 
-#### Custom Error Messages (`msg` / `message` Tags)
+#### Custom Error Messages (`msg` Tag)
 
 1. **Single fallback message for any failed rule on the field**:
    ```go
