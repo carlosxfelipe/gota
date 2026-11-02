@@ -40,10 +40,13 @@ func main() {
 		OpenAPIURL:         "/openapi.json",   // Default: "/openapi.json"
 		ScalarTheme:        gota.ThemeFastify, // Default: gota.ThemeFastify
 		ScalarLayout:       "classic",         // Default: "classic" ("classic" or "modern")
-		DisableDocs:        false,             // Set true to disable /docs and /openapi.json routes
+		DisableDocs:        false,             // Set true to disable /docs and /openapi.json routes (recommended for public production APIs)
+		DocsCSPEnforce:     false,             // Docs CSP is report-only by default; true enforces it (see "Docs Hardening")
 		MaxBodyBytes:       10 << 20,          // Default: 10 MiB (negative value disables limit)
 		MaxMultipartMemory: 32 << 20,          // Default: 32 MiB RAM for multipart parsing (negative disables limit)
+		MaxHeaderBytes:     1 << 20,           // Default: 1 MiB (<= 0 uses the default); over the limit -> 431
 		TrustProxyHeaders:  false,             // true ONLY behind a trusted reverse proxy (X-Forwarded-For / X-Real-IP)
+		TrustedProxyCount:  1,                 // Default: 1. Proxies in front of the app; ClientIP reads the Nth X-Forwarded-For entry FROM THE RIGHT
 		ReadTimeout:        30 * time.Second,  // Default: 30s (negative disables; ReadHeaderTimeout is fixed at 10s)
 		WriteTimeout:       30 * time.Second,  // Default: 30s (negative disables; automatically lifted for streams)
 		IdleTimeout:        120 * time.Second, // Default: 120s (negative disables)
@@ -76,6 +79,13 @@ func main() {
 ### Available `ScalarTheme` Constants
 
 `gota.ThemeFastify` (default), `gota.ThemeDefault`, `gota.ThemeAlternate`, `gota.ThemeMoon`, `gota.ThemePurple`, `gota.ThemeSolarized`, `gota.ThemeBluePlanet`, `gota.ThemeDeepSpace`, `gota.ThemeSaturn`, `gota.ThemeKepler`, `gota.ThemeElysiaJS`, `gota.ThemeMars`, `gota.ThemeLaserwave`, `gota.ThemeNone`.
+
+### Docs Hardening (`/docs`, `/openapi.json`)
+
+- The docs page always sends `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` and `Referrer-Policy: no-referrer` (`/openapi.json` sends `nosniff`).
+- It also sends a Scalar-compatible CSP (`gota.DocsContentSecurityPolicy(scriptURL)`: script only from the Scalar origin or `'self'`, no framing, no `<base>`, no plugins) as **`Content-Security-Policy-Report-Only`** by default, so it can never break the page. After checking the browser console for violations, set `Config{DocsCSPEnforce: true}` to enforce it. Override with `Config{DocsCSP: "..."}` or omit with `DocsCSP: "-"`.
+- The docs CSP is set inside the docs handler, so it takes precedence over a global `SecureHeaders` CSP (e.g. the strict `ApiContentSecurityPolicy`).
+- Docs are **public by default**: set `DisableDocs: true` in production for APIs exposed to untrusted networks (`Listen` logs a reminder), or put `/docs` and `/openapi.json` behind auth.
 
 ### Scalar Script Pinning & Subresource Integrity (SRI)
 
@@ -313,7 +323,7 @@ gota.Get(app, "/api/orders/:orderId/track", func(ctx *gota.Context, req TrackOrd
 	Tags("Orders")
 ```
 
-*(Note: `SSEvent.Data` writes `string` and `[]byte` directly, and JSON-marshals any other Go value.)*
+*(Note: `SSEvent.Data` writes `string` and `[]byte` as text, and JSON-marshals any other Go value. Output is sanitized against SSE injection: CR/LF are stripped from `Event`, and multi-line `Data` is emitted as one `data:` field per line, so user-controlled content cannot forge fields or events.)*
 
 #### Example 3: Chunked Byte Streaming (`gota.StreamFunc`)
 
@@ -415,12 +425,14 @@ app.Use(gota.RequestID()) // Optional: gota.RequestID(gota.RequestIDOptions{Head
 
 // 2. Logging (choose one)
 app.Use(gota.SlogLogger()) // Optional: gota.SlogLogger(gota.SlogLoggerOptions{Logger: customSlog})
-app.Use(gota.Logger())     // Standard log.Printf logger
+app.Use(gota.Logger())     // Standard log.Printf logger (paths/errors are quoted & escaped: no log injection)
 
 // 3. Panic Recovery (logs stacktrace and returns 500 ErrorResponse JSON)
 app.Use(gota.Recover())
 
-// 4. CORS (default allows "*", common methods/headers, MaxAge 86400s)
+// 4. CORS (default allows "*", common methods/headers, MaxAge 86400s). Always sends `Vary: Origin`; CORS headers
+//    (incl. preflight Allow-Methods/Headers, Expose-Headers) are sent ONLY to allowed origins; the opaque "null"
+//    origin is allowed only if listed explicitly (never via a "*" entry).
 app.Use(gota.CORS(gota.CORSOptions{
 	AllowOrigins:     []string{"https://app.example.com"}, // MUST NOT be "*" when AllowCredentials is true!
 	AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"},
@@ -431,12 +443,21 @@ app.Use(gota.CORS(gota.CORSOptions{
 }))
 
 // 5. In-Memory Token Bucket Rate Limiter (returns 429 Too Many Requests with Retry-After)
+//    Default key is ctx.ClientIP(); IPv6 clients are grouped by /64 prefix.
 app.Use(gota.RateLimiter(gota.RateLimiterOptions{
 	Max:    100,             // Default: 60 requests
 	Window: 1 * time.Minute, // Default: 1 minute (keyed by ctx.ClientIP() unless KeyFunc is set)
+	MaxKeys: 10000,          // Default: 10000 tracked keys (idle buckets, then LRU, are evicted) to bound memory
 }))
 
-// 6. Constant-Time HTTP Basic Auth (automatically documents BasicAuth in OpenAPI 3.1)
+// 6. Security headers: nosniff, X-Frame-Options: DENY, Referrer-Policy: no-referrer, and HSTS (only sent over HTTPS:
+//    direct TLS, or X-Forwarded-Proto=https when Config.TrustProxyHeaders is true). CSP/Permissions-Policy are opt-in.
+app.Use(gota.SecureHeaders(gota.SecureHeadersOptions{
+	ContentSecurityPolicy: gota.ApiContentSecurityPolicy, // JSON-only APIs. DON'T use with the built-in /docs page (Scalar needs scripts/styles)
+	HSTSIncludeSubdomains: true,                          // HSTSMaxAge default 31536000; negative disables
+}))
+
+// 7. Constant-Time HTTP Basic Auth (automatically documents BasicAuth in OpenAPI 3.1)
 adminGroup.Use(gota.BasicAuth("admin", os.Getenv("ADMIN_PASS"), gota.BasicAuthOptions{
 	Realm: "Admin Area", // Optional: Validator func(user, pass string) bool
 }))
@@ -579,6 +600,7 @@ gota.Get(protected, "/me", func(ctx *gota.Context, _ gota.Empty) (UserResponse, 
 })
 ```
 
+- **Issuer, Audience & Leeway (all optional, off by default)**: `JWTOptions{Issuer: "https://auth.example.com", Audience: "my-api", Leeway: 30 * time.Second}`. When `Issuer` is set, `iss` must equal it exactly; when `Audience` is set, `aud` (string or array) must contain it. Missing or wrong-typed claims → `401`. `Leeway` tolerates clock skew on `exp`/`nbf` (negative → 0, capped at 5 minutes). Always set `Issuer` and `Audience` when accepting tokens from an external IdP or sharing keys across services. These apply to all `gota.JWT*` middlewares (HS256, RS256, ES256, EdDSA, KeyFunc); standalone `Verify*` helpers do not check them.
 - **Without `ClaimsFactory`**: Claims decode into `map[string]any` and can be retrieved via `claims, ok := gota.JWTClaims[map[string]any](ctx)`.
 - **Custom `ContextKey`**: If `ContextKey: "admin"` was set in `JWTOptions`, pass it as the second argument: `gota.JWTClaims[*CustomClaims](ctx, "admin")`.
 - **Raw Token & JOSE Header**: Authenticated requests also store the raw Bearer token at `ctx.Get("jwt_token")`. Use `hdr, err := gota.ParseJWTHeader(tokenString)` to inspect `Alg`, `Typ`, and `Kid` prior to verification.
@@ -699,10 +721,10 @@ app.Get("/healthz", func(ctx *gota.Context) error {
   - Query: `ctx.Query(name) string`, `ctx.QueryDefault(name, def) string`, `ctx.QueryInt(name, def) int`, `ctx.QueryBool(name, def) bool`
   - Headers & Cookies: `ctx.Header(name) string`, `ctx.Cookie(name) (*http.Cookie, error)`
   - Client & Correlation: `ctx.ClientIP() string`, `ctx.RequestID() string`
-  - Body & Forms: `ctx.Body() ([]byte, error)` *(cached, safe to call multiple times)*, `ctx.BindJson(targetPtr) error`, `ctx.Form(name) string`, `ctx.FormFile(name) (*multipart.FileHeader, error)`, `ctx.MultipartForm() (*multipart.Form, error)`, `ctx.MaxMultipartMemory() int64`, `ctx.SetMaxMultipartMemory(limit int64)`
+  - Body & Forms: `ctx.Body() ([]byte, error)` *(cached, safe to call multiple times; reads at most `Config.MaxBodyBytes` — `DefaultMaxBodyBytes` for a `Context` created outside `App.ServeHTTP` — and returns `*http.MaxBytesError` beyond it)*, `ctx.BindJson(targetPtr) error`, `ctx.Form(name) string`, `ctx.FormFile(name) (*multipart.FileHeader, error)`, `ctx.MultipartForm() (*multipart.Form, error)`, `ctx.MaxMultipartMemory() int64`, `ctx.SetMaxMultipartMemory(limit int64)`
 - **Response Helpers**:
   - Status & Headers: `ctx.Status(code int) *gota.Context`, `ctx.StatusCode() int`, `ctx.StatusExplicit() bool`, `ctx.SetHeader(key, val string) *gota.Context`, `ctx.SetCookie(cookie *http.Cookie) *gota.Context`, `ctx.Written() bool`
-  - Writers: `ctx.Json(data any) error`, `ctx.Send(text string) error`, `ctx.SendBytes(data []byte) error`, `ctx.NoContent() error`, `ctx.Redirect(url string, code ...int) error`
+  - Writers: `ctx.Json(data any) error`, `ctx.Send(text string) error`, `ctx.SendBytes(data []byte) error`, `ctx.NoContent() error`, `ctx.Redirect(url string, code ...int) error`, `ctx.RedirectLocal(path string, code ...int) error` *(same-site paths only, else 400 — ALWAYS use it when the target comes from user input, e.g. `?next=`, to prevent open redirects)*
   - Streaming: `ctx.Stream(step func(w io.Writer) bool) error`, `ctx.SSEvent(event string, data any) error`
 
 ---

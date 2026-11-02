@@ -25,6 +25,7 @@ type (
 	ValidationError       = validation.ValidationError
 	ScalarTheme           = core.ScalarTheme
 	CORSOptions           = core.CORSOptions
+	SecureHeadersOptions  = core.SecureHeadersOptions
 	JWTAlgorithm          = core.JWTAlgorithm
 	JWTHeader             = core.JWTHeader
 	JWTKeyFunc            = core.JWTKeyFunc
@@ -117,6 +118,19 @@ func SlogLogger(opts ...SlogLoggerOptions) MiddlewareFunc {
 func BasicAuth(username, password string, opts ...BasicAuthOptions) MiddlewareFunc {
 	return core.BasicAuth(username, password, opts...)
 }
+
+// SecureHeaders returns a middleware that sets security response headers (nosniff, X-Frame-Options, Referrer-Policy, HSTS over HTTPS, optional CSP).
+func SecureHeaders(opts ...SecureHeadersOptions) MiddlewareFunc {
+	return core.SecureHeaders(opts...)
+}
+
+// DocsContentSecurityPolicy builds the CSP used for the built-in docs page for a given Scalar script URL.
+func DocsContentSecurityPolicy(scriptURL string) string {
+	return core.DocsContentSecurityPolicy(scriptURL)
+}
+
+// ApiContentSecurityPolicy is a strict CSP suited for JSON-only responses.
+const ApiContentSecurityPolicy = core.ApiContentSecurityPolicy
 
 func RateLimiter(opts ...RateLimiterOptions) MiddlewareFunc {
 	return core.RateLimiter(opts...)

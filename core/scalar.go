@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"net/url"
 )
 
 // ScalarTheme defines available color themes for Scalar API Reference.
@@ -144,4 +145,21 @@ func RenderScalarHTML(cfg ScalarConfig) (string, error) {
 </html>`, html.EscapeString(title), html.EscapeString(cfg.SpecURL), html.EscapeString(string(optionsJSON)), html.EscapeString(scriptURL), integrityAttr)
 
 	return page, nil
+}
+
+// DocsContentSecurityPolicy builds the Content-Security-Policy used for the built-in docs page.
+// It allows the Scalar script only from its own origin (the CDN, or 'self' for a relative
+// ScriptURL), inline styles (required by Scalar), images, Scalar fonts and API calls to the
+// same origin (plus Scalar's proxy for "Try it" requests), and forbids framing, <base> and plugins.
+func DocsContentSecurityPolicy(scriptURL string) string {
+	if scriptURL == "" {
+		scriptURL = DefaultScalarCDN
+	}
+	scriptSrc := "'self'"
+	if u, err := url.Parse(scriptURL); err == nil && u.Host != "" && (u.Scheme == "https" || u.Scheme == "http") {
+		scriptSrc += " " + u.Scheme + "://" + u.Host
+	}
+	return "default-src 'self'; script-src " + scriptSrc +
+		"; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data: https://fonts.scalar.com" +
+		"; connect-src 'self' https://proxy.scalar.com; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 }

@@ -31,6 +31,13 @@ type Context struct {
 	// trustProxy enables reading the client IP from X-Forwarded-For / X-Real-IP.
 	trustProxy bool
 
+	// trustedProxies is the number of trusted proxies in front of the app (X-Forwarded-For depth).
+	trustedProxies int
+
+	// maxBodyBytes caps what Body() will read (<= 0 disables). Defaults to DefaultMaxBodyBytes so a
+	// Context created outside App.ServeHTTP is still protected against unbounded request bodies.
+	maxBodyBytes int64
+
 	// maxMultipartMemory limits memory in bytes used to parse multipart forms.
 	maxMultipartMemory int64
 
@@ -49,6 +56,7 @@ func NewContext(w http.ResponseWriter, r *http.Request, params map[string]string
 		Params:             params,
 		statusCode:         http.StatusOK,
 		maxMultipartMemory: DefaultMaxMultipartMemory,
+		maxBodyBytes:       DefaultMaxBodyBytes,
 	}
 }
 
@@ -138,16 +146,28 @@ func (c *Context) RequestID() string {
 // X-Forwarded-For and X-Real-IP are only honored when Config.TrustProxyHeaders is enabled
 // (i.e. the app runs behind a trusted reverse proxy); otherwise RemoteAddr is used,
 // since those headers can be freely forged by any client.
+//
+// X-Forwarded-For is read from the right: each trusted proxy appends the address it
+// received the request from, so the leftmost entries are client-controlled. With
+// Config.TrustedProxyCount = N, the Nth entry from the right is used (default 1).
+// Malformed addresses fall back to RemoteAddr.
 func (c *Context) ClientIP() string {
 	if c.trustProxy {
 		if xff := c.Header("X-Forwarded-For"); xff != "" {
 			parts := strings.Split(xff, ",")
-			if len(parts) > 0 {
-				return strings.TrimSpace(parts[0])
+			n := c.trustedProxies
+			if n < 1 {
+				n = 1
 			}
-		}
-		if xrip := c.Header("X-Real-IP"); xrip != "" {
-			return strings.TrimSpace(xrip)
+			if idx := len(parts) - n; idx >= 0 {
+				if ip := net.ParseIP(strings.TrimSpace(parts[idx])); ip != nil {
+					return ip.String()
+				}
+			}
+		} else if xrip := strings.TrimSpace(c.Header("X-Real-IP")); xrip != "" {
+			if ip := net.ParseIP(xrip); ip != nil {
+				return ip.String()
+			}
 		}
 	}
 	host, _, err := net.SplitHostPort(c.Request.RemoteAddr)
@@ -206,6 +226,8 @@ func (c *Context) MultipartForm() (*multipart.Form, error) {
 }
 
 // Body reads and caches the raw HTTP request body bytes.
+// At most Config.MaxBodyBytes are read (DefaultMaxBodyBytes outside App.ServeHTTP); larger bodies
+// fail with *http.MaxBytesError, which Gota maps to 413 Request Entity Too Large.
 func (c *Context) Body() ([]byte, error) {
 	if c.bodyRead {
 		return c.bodyBytes, nil
@@ -215,7 +237,16 @@ func (c *Context) Body() ([]byte, error) {
 		c.bodyRead = true
 		return c.bodyBytes, nil
 	}
-	data, err := io.ReadAll(c.Request.Body)
+	var data []byte
+	var err error
+	if limit := c.maxBodyBytes; limit > 0 {
+		data, err = io.ReadAll(io.LimitReader(c.Request.Body, limit+1))
+		if err == nil && int64(len(data)) > limit {
+			return nil, &http.MaxBytesError{Limit: limit}
+		}
+	} else {
+		data, err = io.ReadAll(c.Request.Body)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -335,6 +366,7 @@ func (c *Context) NoContent() error {
 }
 
 // Redirect sends an HTTP redirect to the specified URL.
+// Never pass user-controlled input to it: use RedirectLocal to avoid open redirects.
 func (c *Context) Redirect(targetURL string, code ...int) error {
 	status := http.StatusFound
 	if len(code) > 0 {
@@ -343,6 +375,34 @@ func (c *Context) Redirect(targetURL string, code ...int) error {
 	http.Redirect(c.ResponseWriter, c.Request, targetURL, status)
 	c.written = true
 	return nil
+}
+
+// IsLocalRedirectTarget reports whether target is a same-site absolute path that is safe to
+// redirect to: it must start with a single "/" and contain no backslashes or control characters
+// (browsers treat "//host", "/\\host" and "/\t/host" as protocol-relative URLs to another host).
+func IsLocalRedirectTarget(target string) bool {
+	if len(target) == 0 || target[0] != '/' {
+		return false
+	}
+	if len(target) > 1 && (target[1] == '/' || target[1] == '\\') {
+		return false
+	}
+	for i := 0; i < len(target); i++ {
+		if c := target[i]; c < 0x20 || c == 0x7f || c == '\\' {
+			return false
+		}
+	}
+	return true
+}
+
+// RedirectLocal redirects to a same-site path only, rejecting anything else with 400 Bad Request.
+// Use it instead of Redirect whenever the target comes from user input (e.g. a "next" or
+// "returnUrl" parameter) to prevent open redirect attacks.
+func (c *Context) RedirectLocal(target string, code ...int) error {
+	if !IsLocalRedirectTarget(target) {
+		return BadRequest("invalid redirect target")
+	}
+	return c.Redirect(target, code...)
 }
 
 // Stream sends a streaming chunked response using http.Flusher.
@@ -370,6 +430,11 @@ func (c *Context) Stream(step func(w io.Writer) bool) error {
 	}
 }
 
+// sseEventName strips CR and LF so an event name can never terminate its own field.
+func sseEventName(event string) string {
+	return strings.NewReplacer("\r", "", "\n", "").Replace(event)
+}
+
 // SSEvent sends a Server-Sent Event formatted frame and flushes it immediately.
 func (c *Context) SSEvent(event string, data any) error {
 	if !c.written {
@@ -385,26 +450,36 @@ func (c *Context) SSEvent(event string, data any) error {
 	}
 
 	var sb strings.Builder
-	if event != "" {
+	// Newlines terminate SSE fields, so an unsanitized event name or data line containing
+	// them would let user-controlled content inject extra fields or forged events.
+	if event = sseEventName(event); event != "" {
 		sb.WriteString("event: ")
 		sb.WriteString(event)
 		sb.WriteByte('\n')
 	}
 
-	sb.WriteString("data: ")
+	var payload string
 	switch d := data.(type) {
 	case string:
-		sb.WriteString(d)
+		payload = d
 	case []byte:
-		sb.Write(d)
+		payload = string(d)
 	default:
 		bytes, err := json.Marshal(d)
 		if err != nil {
 			return err
 		}
-		sb.Write(bytes)
+		payload = string(bytes)
 	}
-	sb.WriteString("\n\n")
+	// Multi-line data is split into one "data:" field per line (the client rejoins them with "\n").
+	payload = strings.ReplaceAll(payload, "\r\n", "\n")
+	payload = strings.ReplaceAll(payload, "\r", "\n")
+	for _, line := range strings.Split(payload, "\n") {
+		sb.WriteString("data: ")
+		sb.WriteString(line)
+		sb.WriteByte('\n')
+	}
+	sb.WriteByte('\n')
 
 	if _, err := c.ResponseWriter.Write([]byte(sb.String())); err != nil {
 		return err

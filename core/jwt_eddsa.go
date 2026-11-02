@@ -28,15 +28,15 @@ func SignJWTEdDSA(privateKey ed25519.PrivateKey, payload any, keyID ...string) (
 // VerifyJWTEdDSA validates an Ed25519 (EdDSA) JWT token against the given public key and decodes its payload into target.
 // If target is nil, only the format, signature, and expiration are verified.
 func VerifyJWTEdDSA(publicKey ed25519.PublicKey, tokenString string, target any) error {
-	return verifyJWTEdDSA(publicKey, tokenString, target, false)
+	return verifyJWTEdDSA(publicKey, tokenString, target, jwtChecks{})
 }
 
-func verifyJWTEdDSA(publicKey ed25519.PublicKey, tokenString string, target any, requireExp bool) error {
+func verifyJWTEdDSA(publicKey ed25519.PublicKey, tokenString string, target any, chk jwtChecks) error {
 	if len(publicKey) != ed25519.PublicKeySize {
 		return errors.New("jwt: invalid Ed25519 public key size")
 	}
 
-	return verifyToken(tokenString, target, requireExp, string(JWTAlgorithmEdDSA), func(signingInput string, sig []byte) error {
+	return verifyToken(tokenString, target, chk, string(JWTAlgorithmEdDSA), func(signingInput string, sig []byte) error {
 		if len(sig) != ed25519.SignatureSize || !ed25519.Verify(publicKey, []byte(signingInput), sig) {
 			return errors.New("invalid token signature")
 		}

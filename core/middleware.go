@@ -8,6 +8,7 @@ import (
 	"log"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
 	"runtime/debug"
 	"strconv"
@@ -82,15 +83,20 @@ func CORS(opts ...CORSOptions) MiddlewareFunc {
 			w := ctx.ResponseWriter
 			r := ctx.Request
 
+			// The response depends on the Origin request header, so caches must key on it.
+			w.Header().Add("Vary", "Origin")
+
 			origin := r.Header.Get("Origin")
+			allowed := false
 			if origin != "" {
-				allowed := isWildcard
 				if isWildcard {
 					w.Header().Set("Access-Control-Allow-Origin", "*")
+					allowed = true
 				} else {
-					w.Header().Add("Vary", "Origin")
 					for _, o := range cfg.AllowOrigins {
-						if o == origin || o == "*" {
+						// The opaque "null" origin (sandboxed iframes, file://, redirects) is only
+						// accepted when listed explicitly, never through a "*" entry.
+						if o == origin || (o == "*" && origin != "null") {
 							w.Header().Set("Access-Control-Allow-Origin", origin)
 							allowed = true
 							break
@@ -98,23 +104,28 @@ func CORS(opts ...CORSOptions) MiddlewareFunc {
 					}
 				}
 
-				if allowed && cfg.AllowCredentials {
-					w.Header().Set("Access-Control-Allow-Credentials", "true")
-				}
-				if exposeStr != "" {
-					w.Header().Set("Access-Control-Expose-Headers", exposeStr)
+				// CORS headers are only sent to origins that are allowed.
+				if allowed {
+					if cfg.AllowCredentials {
+						w.Header().Set("Access-Control-Allow-Credentials", "true")
+					}
+					if exposeStr != "" {
+						w.Header().Set("Access-Control-Expose-Headers", exposeStr)
+					}
 				}
 			}
 
 			if r.Method == http.MethodOptions {
-				if methodsStr != "" {
-					w.Header().Set("Access-Control-Allow-Methods", methodsStr)
-				}
-				if headersStr != "" {
-					w.Header().Set("Access-Control-Allow-Headers", headersStr)
-				}
-				if maxAgeStr != "" {
-					w.Header().Set("Access-Control-Max-Age", maxAgeStr)
+				if allowed || origin == "" {
+					if methodsStr != "" {
+						w.Header().Set("Access-Control-Allow-Methods", methodsStr)
+					}
+					if headersStr != "" {
+						w.Header().Set("Access-Control-Allow-Headers", headersStr)
+					}
+					if maxAgeStr != "" {
+						w.Header().Set("Access-Control-Max-Age", maxAgeStr)
+					}
 				}
 				return ctx.NoContent()
 			}
@@ -132,9 +143,9 @@ func Recover() MiddlewareFunc {
 				if r := recover(); r != nil {
 					reqID := ctx.RequestID()
 					if reqID != "" {
-						log.Printf("gota: panic recovered [%s]: %v\n%s", reqID, r, debug.Stack())
+						log.Printf("gota: panic recovered [%s]: %s\n%s", reqID, quoteLog(r), debug.Stack())
 					} else {
-						log.Printf("gota: panic recovered: %v\n%s", r, debug.Stack())
+						log.Printf("gota: panic recovered: %s\n%s", quoteLog(r), debug.Stack())
 					}
 					if !ctx.Written() {
 						_ = ctx.Status(http.StatusInternalServerError).Json(ErrorResponse{
@@ -158,6 +169,12 @@ func resolveResponseStatus(ctx *Context, err error) int {
 	return ctx.StatusCode()
 }
 
+// quoteLog renders client-influenced values (request paths, error and panic messages) as a
+// single quoted, escaped token so CR/LF and ANSI escapes cannot forge or hide log lines.
+func quoteLog(v any) string {
+	return strconv.Quote(fmt.Sprint(v))
+}
+
 // Logger logs each incoming request with method, path, status, and duration.
 func Logger() MiddlewareFunc {
 	return func(next HandlerFunc) HandlerFunc {
@@ -166,7 +183,7 @@ func Logger() MiddlewareFunc {
 			err := next(ctx)
 			duration := time.Since(start)
 			status := resolveResponseStatus(ctx, err)
-			log.Printf("gota: %s %s [%d] %s", ctx.Request.Method, ctx.Request.URL.Path, status, duration)
+			log.Printf("gota: %s %s [%d] %s", ctx.Request.Method, quoteLog(ctx.Request.URL.Path), status, duration)
 			return err
 		}
 	}
@@ -341,6 +358,16 @@ func BasicAuth(username, password string, opts ...BasicAuthOptions) MiddlewareFu
 	return registerMiddlewareSecurity(mw, "BasicAuth")
 }
 
+// normalizeIPKey groups IPv6 addresses by their /64 prefix (a single host or subscriber
+// typically controls a whole /64, so per-address keys would be trivial to rotate).
+func normalizeIPKey(ip string) string {
+	parsed := net.ParseIP(ip)
+	if parsed == nil || parsed.To4() != nil {
+		return ip
+	}
+	return parsed.Mask(net.CIDRMask(64, 128)).String() + "/64"
+}
+
 // RateLimiterOptions configures the in-memory RateLimiter middleware.
 type RateLimiterOptions struct {
 	// Max is the maximum number of requests allowed per Window (default: 60).
@@ -349,7 +376,14 @@ type RateLimiterOptions struct {
 	Window time.Duration
 	// KeyFunc extracts the rate-limiting key from the request (default: ctx.ClientIP()).
 	KeyFunc func(ctx *Context) string
+	// MaxKeys caps the number of tracked keys to bound memory usage (default: 10000).
+	// When the cap is reached, fully refilled (idle) buckets are dropped first, then the
+	// least recently used one, so an attacker rotating keys cannot grow memory unboundedly.
+	MaxKeys int
 }
+
+// DefaultRateLimiterMaxKeys is the default cap of tracked keys in RateLimiter.
+const DefaultRateLimiterMaxKeys = 10000
 
 type rateBucket struct {
 	tokens     float64
@@ -361,7 +395,8 @@ type rateBucket struct {
 func RateLimiter(opts ...RateLimiterOptions) MiddlewareFunc {
 	maxReqs := 60
 	window := time.Minute
-	keyFunc := func(ctx *Context) string { return ctx.ClientIP() }
+	keyFunc := func(ctx *Context) string { return normalizeIPKey(ctx.ClientIP()) }
+	maxKeys := DefaultRateLimiterMaxKeys
 
 	if len(opts) > 0 {
 		if opts[0].Max > 0 {
@@ -372,6 +407,9 @@ func RateLimiter(opts ...RateLimiterOptions) MiddlewareFunc {
 		}
 		if opts[0].KeyFunc != nil {
 			keyFunc = opts[0].KeyFunc
+		}
+		if opts[0].MaxKeys > 0 {
+			maxKeys = opts[0].MaxKeys
 		}
 	}
 
@@ -391,10 +429,11 @@ func RateLimiter(opts ...RateLimiterOptions) MiddlewareFunc {
 			now := time.Now()
 
 			mu.Lock()
-			// Periodic lazy eviction of idle buckets to bound memory usage
-			if len(buckets) > 1024 && now.Sub(lastCleanup) > window {
+			// Periodic lazy eviction of idle buckets. A bucket idle for a full window is
+			// completely refilled, so dropping it is equivalent to never having seen the key.
+			if now.Sub(lastCleanup) > window {
 				for k, b := range buckets {
-					if now.Sub(b.lastRefill) > 2*window {
+					if now.Sub(b.lastRefill) >= window {
 						delete(buckets, k)
 					}
 				}
@@ -403,6 +442,9 @@ func RateLimiter(opts ...RateLimiterOptions) MiddlewareFunc {
 
 			b, exists := buckets[key]
 			if !exists {
+				if len(buckets) >= maxKeys {
+					evictRateBuckets(buckets, now, window, maxKeys)
+				}
 				b = &rateBucket{tokens: maxTokens, lastRefill: now}
 				buckets[key] = b
 			} else {
@@ -438,5 +480,25 @@ func RateLimiter(opts ...RateLimiterOptions) MiddlewareFunc {
 			ctx.SetHeader("X-RateLimit-Remaining", strconv.Itoa(remaining))
 			return next(ctx)
 		}
+	}
+}
+
+// evictRateBuckets makes room for one new key: it drops fully refilled buckets and, if the
+// map is still at capacity, the least recently used bucket.
+func evictRateBuckets(buckets map[string]*rateBucket, now time.Time, window time.Duration, maxKeys int) {
+	var oldestKey string
+	var oldest time.Time
+	first := true
+	for k, b := range buckets {
+		if now.Sub(b.lastRefill) >= window {
+			delete(buckets, k)
+			continue
+		}
+		if first || b.lastRefill.Before(oldest) {
+			oldestKey, oldest, first = k, b.lastRefill, false
+		}
+	}
+	if len(buckets) >= maxKeys && !first {
+		delete(buckets, oldestKey)
 	}
 }

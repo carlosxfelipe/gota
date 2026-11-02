@@ -207,3 +207,16 @@ func TestApp_MaxMultipartMemory(t *testing.T) {
 		t.Errorf("expected setter with 0 to revert to default %d, got %d", DefaultMaxMultipartMemory, ctx.MaxMultipartMemory())
 	}
 }
+
+func TestMaxHeaderBytesConfig(t *testing.T) {
+	if got := New(Config{DisableDocs: true}).Config().MaxHeaderBytes; got != DefaultMaxHeaderBytes {
+		t.Errorf("default MaxHeaderBytes = %d, want %d", got, DefaultMaxHeaderBytes)
+	}
+	if got := New(Config{DisableDocs: true, MaxHeaderBytes: -5}).Config().MaxHeaderBytes; got != DefaultMaxHeaderBytes {
+		t.Errorf("negative MaxHeaderBytes should fall back to default, got %d", got)
+	}
+	app := New(Config{DisableDocs: true, MaxHeaderBytes: 4096})
+	if got := app.Config().MaxHeaderBytes; got != 4096 {
+		t.Errorf("MaxHeaderBytes = %d, want 4096", got)
+	}
+}

@@ -75,6 +75,11 @@ type Config struct {
 	// Enable it only when the app runs behind a trusted reverse proxy that sets them.
 	TrustProxyHeaders bool `json:"trustProxyHeaders,omitempty"`
 
+	// TrustedProxyCount is the number of trusted reverse proxies in front of the app
+	// (only used when TrustProxyHeaders is true). Context.ClientIP reads the Nth entry
+	// from the right of X-Forwarded-For. Default: 1.
+	TrustedProxyCount int `json:"trustedProxyCount,omitempty"`
+
 	// ReadTimeout limits the duration for reading the entire request. Default: 30s.
 	// Use negative value to disable.
 	ReadTimeout time.Duration `json:"readTimeout,omitempty"`
@@ -87,6 +92,20 @@ type Config struct {
 	// Use negative value to disable.
 	IdleTimeout time.Duration `json:"idleTimeout,omitempty"`
 
+	// DocsCSP overrides the Content-Security-Policy sent with the docs page. Empty uses
+	// DocsContentSecurityPolicy (compatible with Scalar); "-" omits the header.
+	DocsCSP string `json:"docsCsp,omitempty"`
+
+	// DocsCSPEnforce makes the docs CSP enforcing. By default it is sent as
+	// Content-Security-Policy-Report-Only, which never breaks the page: browsers only log
+	// violations in the console. Enable it once you verified /docs renders without violations.
+	DocsCSPEnforce bool `json:"docsCspEnforce,omitempty"`
+
+	// MaxHeaderBytes limits the size of request headers (request line included). Default: 1 MiB
+	// (same as net/http). Lower it (e.g. 64 << 10) to reject oversized headers earlier;
+	// requests above the limit receive 431 Request Header Fields Too Large.
+	MaxHeaderBytes int `json:"maxHeaderBytes,omitempty"`
+
 	// SilenceTagWarnings disables startup warning logs for suspicious validation tags (e.g. required on primitive bool/numbers).
 	SilenceTagWarnings bool `json:"silenceTagWarnings,omitempty"`
 }
@@ -95,6 +114,7 @@ type Config struct {
 const (
 	DefaultMaxBodyBytes       int64         = 10 << 20
 	DefaultMaxMultipartMemory int64         = 32 << 20
+	DefaultMaxHeaderBytes     int           = 1 << 20
 	DefaultReadHeaderTimeout  time.Duration = 10 * time.Second
 	DefaultReadTimeout        time.Duration = 30 * time.Second
 	DefaultWriteTimeout       time.Duration = 30 * time.Second
@@ -152,6 +172,9 @@ func New(cfg Config) *App {
 	}
 	if cfg.MaxMultipartMemory == 0 {
 		cfg.MaxMultipartMemory = DefaultMaxMultipartMemory
+	}
+	if cfg.MaxHeaderBytes <= 0 {
+		cfg.MaxHeaderBytes = DefaultMaxHeaderBytes
 	}
 	if cfg.ReadTimeout == 0 {
 		cfg.ReadTimeout = DefaultReadTimeout
@@ -224,9 +247,9 @@ func defaultErrorHandler(ctx *Context, err error) {
 
 	reqID := ctx.RequestID()
 	if reqID != "" {
-		log.Printf("gota: handler error %s %s [%s]: %v", ctx.Request.Method, ctx.Request.URL.Path, reqID, err)
+		log.Printf("gota: handler error %s %s [%s]: %s", ctx.Request.Method, quoteLog(ctx.Request.URL.Path), reqID, quoteLog(err))
 	} else {
-		log.Printf("gota: handler error %s %s: %v", ctx.Request.Method, ctx.Request.URL.Path, err)
+		log.Printf("gota: handler error %s %s: %s", ctx.Request.Method, quoteLog(ctx.Request.URL.Path), quoteLog(err))
 	}
 	_ = ctx.Status(http.StatusInternalServerError).Json(ErrorResponse{
 		Error:     "internal server error",
@@ -354,12 +377,35 @@ func (a *App) openAPISpec() *OpenAPISpec {
 	return a.cachedSpec
 }
 
+// setDocsSecurityHeaders hardens the docs page: no sniffing, no framing, no referrer leakage and a
+// Scalar-compatible CSP (report-only unless Config.DocsCSPEnforce). Because it runs inside the
+// handler it takes precedence over any CSP set earlier by a global SecureHeaders middleware.
+func (a *App) setDocsSecurityHeaders(ctx *Context) {
+	ctx.SetHeader("X-Content-Type-Options", "nosniff")
+	ctx.SetHeader("X-Frame-Options", "DENY")
+	ctx.SetHeader("Referrer-Policy", "no-referrer")
+
+	csp := a.config.DocsCSP
+	if csp == "-" {
+		return
+	}
+	if csp == "" {
+		csp = DocsContentSecurityPolicy(a.config.ScalarScriptURL)
+	}
+	header := "Content-Security-Policy-Report-Only"
+	if a.config.DocsCSPEnforce {
+		header = "Content-Security-Policy"
+	}
+	ctx.SetHeader(header, csp)
+}
+
 func (a *App) registerDocs() {
 	openAPIURL := a.config.OpenAPIURL
 	docsURL := a.config.DocsURL
 
 	// OpenAPI 3.1 JSON spec (cached and invalidated only when routes/docs change)
 	specRoute := a.Get(openAPIURL, func(ctx *Context) error {
+		ctx.SetHeader("X-Content-Type-Options", "nosniff")
 		return ctx.Json(a.openAPISpec())
 	}).Hidden()
 
@@ -378,6 +424,7 @@ func (a *App) registerDocs() {
 		if a.cachedScalarErr != nil {
 			return ctx.Status(http.StatusInternalServerError).Send("Failed to render documentation")
 		}
+		a.setDocsSecurityHeaders(ctx)
 		ctx.SetHeader("Content-Type", "text/html; charset=utf-8")
 		return ctx.Send(a.cachedScalarHTML)
 	}).Hidden()
@@ -394,9 +441,9 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				reqID = r.Header.Get("X-Request-ID")
 			}
 			if reqID != "" {
-				log.Printf("gota: recovered panic in %s %s [%s]: %v\n%s", r.Method, r.URL.Path, reqID, err, debug.Stack())
+				log.Printf("gota: recovered panic in %s %s [%s]: %s\n%s", r.Method, quoteLog(r.URL.Path), reqID, quoteLog(err), debug.Stack())
 			} else {
-				log.Printf("gota: recovered panic in %s %s: %v\n%s", r.Method, r.URL.Path, err, debug.Stack())
+				log.Printf("gota: recovered panic in %s %s: %s\n%s", r.Method, quoteLog(r.URL.Path), quoteLog(err), debug.Stack())
 			}
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			w.WriteHeader(http.StatusInternalServerError)
@@ -415,6 +462,8 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	handler, params, ok := a.router.Match(r.Method, r.URL.Path)
 	ctx := NewContext(w, r, params)
 	ctx.trustProxy = a.config.TrustProxyHeaders
+	ctx.maxBodyBytes = a.config.MaxBodyBytes // negative: limit explicitly disabled
+	ctx.trustedProxies = a.config.TrustedProxyCount
 	ctx.maxMultipartMemory = a.config.MaxMultipartMemory
 
 	if !ok {
@@ -473,12 +522,14 @@ func (a *App) Listen(addr string) error {
 	if !a.config.DisableDocs {
 		log.Printf("📖 Scalar docs: http://%s%s", display, a.config.DocsURL)
 		log.Printf("📄 OpenAPI spec: http://%s%s", display, a.config.OpenAPIURL)
+		log.Printf("🔒 Docs are public: set Config.DisableDocs = true (or protect them) if this API is exposed to untrusted networks")
 	}
 
 	srv := &http.Server{
 		Addr:              listen,
 		Handler:           a,
 		ReadHeaderTimeout: DefaultReadHeaderTimeout,
+		MaxHeaderBytes:    a.config.MaxHeaderBytes,
 		ReadTimeout:       nonNegativeDuration(a.config.ReadTimeout),
 		WriteTimeout:      nonNegativeDuration(a.config.WriteTimeout),
 		IdleTimeout:       nonNegativeDuration(a.config.IdleTimeout),

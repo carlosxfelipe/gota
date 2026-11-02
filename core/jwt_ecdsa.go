@@ -49,10 +49,10 @@ func SignJWTES256(privateKey *ecdsa.PrivateKey, payload any, keyID ...string) (s
 // VerifyJWTES256 validates an ECDSA P-256 SHA-256 (ES256) JWT token against the given public key and decodes its payload into target.
 // If target is nil, only the format, signature, and expiration are verified.
 func VerifyJWTES256(publicKey *ecdsa.PublicKey, tokenString string, target any) error {
-	return verifyJWTES256(publicKey, tokenString, target, false)
+	return verifyJWTES256(publicKey, tokenString, target, jwtChecks{})
 }
 
-func verifyJWTES256(publicKey *ecdsa.PublicKey, tokenString string, target any, requireExp bool) error {
+func verifyJWTES256(publicKey *ecdsa.PublicKey, tokenString string, target any, chk jwtChecks) error {
 	if publicKey == nil {
 		return errors.New("jwt: ECDSA public key cannot be nil")
 	}
@@ -60,7 +60,7 @@ func verifyJWTES256(publicKey *ecdsa.PublicKey, tokenString string, target any, 
 		return errors.New("jwt: public key curve must be P-256 for ES256")
 	}
 
-	return verifyToken(tokenString, target, requireExp, string(JWTAlgorithmES256), func(signingInput string, sig []byte) error {
+	return verifyToken(tokenString, target, chk, string(JWTAlgorithmES256), func(signingInput string, sig []byte) error {
 		if len(sig) != 64 {
 			return errors.New("invalid token signature")
 		}

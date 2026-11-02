@@ -59,6 +59,46 @@ type JWTOptions struct {
 	// RequireExp rejects tokens that do not carry a positive 'exp' claim, so that
 	// tokens without an expiration can never be accepted by the middleware.
 	RequireExp bool
+	// Issuer, when set, requires the token's 'iss' claim to equal it exactly.
+	// Leave empty to skip issuer validation (default).
+	Issuer string
+	// Audience, when set, requires the token's 'aud' claim (string or array of strings) to contain it.
+	// Leave empty to skip audience validation (default).
+	Audience string
+	// Leeway is the clock-skew tolerance applied to 'exp' and 'nbf' (default: 0, max effective: 5 minutes).
+	Leeway time.Duration
+}
+
+// maxJWTLeeway caps JWTOptions.Leeway so a misconfiguration cannot silently extend token lifetimes.
+const maxJWTLeeway = 5 * time.Minute
+
+// jwtChecks groups the optional claim validations applied by verifyToken.
+type jwtChecks struct {
+	RequireExp bool
+	Issuer     string
+	Audience   string
+	Leeway     time.Duration
+}
+
+func (o JWTOptions) checks() jwtChecks {
+	return jwtChecks{RequireExp: o.RequireExp, Issuer: o.Issuer, Audience: o.Audience, Leeway: o.Leeway}
+}
+
+// audienceClaim decodes the 'aud' claim, which RFC 7519 allows to be a string or an array of strings.
+type audienceClaim []string
+
+func (a *audienceClaim) UnmarshalJSON(b []byte) error {
+	var one string
+	if err := json.Unmarshal(b, &one); err == nil {
+		*a = audienceClaim{one}
+		return nil
+	}
+	var many []string
+	if err := json.Unmarshal(b, &many); err != nil {
+		return err
+	}
+	*a = many
+	return nil
 }
 
 // ParseJWTHeader decodes and returns the header from a JWT string without verifying its signature.
@@ -100,7 +140,7 @@ func encodeJWTSigningInput(alg JWTAlgorithm, payload any, keyID ...string) (stri
 	return header + "." + payloadEncoded, nil
 }
 
-func verifyToken(tokenString string, target any, requireExp bool, expectedAlg string, verifySig func(signingInput string, sig []byte) error) error {
+func verifyToken(tokenString string, target any, chk jwtChecks, expectedAlg string, verifySig func(signingInput string, sig []byte) error) error {
 	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 {
 		return errors.New("invalid token format")
@@ -139,16 +179,47 @@ func verifyToken(tokenString string, target any, requireExp bool, expectedAlg st
 	if err := json.Unmarshal(payloadBytes, &timeCheck); err != nil {
 		return errors.New("invalid token claims")
 	}
+	leeway := chk.Leeway
+	if leeway < 0 {
+		leeway = 0
+	} else if leeway > maxJWTLeeway {
+		leeway = maxJWTLeeway
+	}
 	now := float64(time.Now().Unix())
 	if timeCheck.Exp != nil && *timeCheck.Exp > 0 {
-		if now > *timeCheck.Exp {
+		if now > *timeCheck.Exp+leeway.Seconds() {
 			return errors.New("token expired")
 		}
-	} else if requireExp {
+	} else if chk.RequireExp {
 		return errors.New("token missing expiration")
 	}
-	if timeCheck.Nbf != nil && now < *timeCheck.Nbf {
+	if timeCheck.Nbf != nil && now+leeway.Seconds() < *timeCheck.Nbf {
 		return errors.New("token not yet valid")
+	}
+
+	if chk.Issuer != "" || chk.Audience != "" {
+		var idClaims struct {
+			Iss *string       `json:"iss"`
+			Aud audienceClaim `json:"aud"`
+		}
+		if err := json.Unmarshal(payloadBytes, &idClaims); err != nil {
+			return errors.New("invalid token claims")
+		}
+		if chk.Issuer != "" && (idClaims.Iss == nil || *idClaims.Iss != chk.Issuer) {
+			return errors.New("invalid token issuer")
+		}
+		if chk.Audience != "" {
+			found := false
+			for _, a := range idClaims.Aud {
+				if a == chk.Audience {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return errors.New("invalid token audience")
+			}
+		}
 	}
 
 	if target != nil {
@@ -195,16 +266,19 @@ func applyJWTOptions(dst *JWTOptions, src JWTOptions) {
 		dst.ClaimsFactory = src.ClaimsFactory
 	}
 	dst.RequireExp = src.RequireExp
+	dst.Issuer = src.Issuer
+	dst.Audience = src.Audience
+	dst.Leeway = src.Leeway
 }
 
 // VerifyJWTWithKeyFunc verifies a JWT token by resolving the verification key dynamically via keyFunc.
 // To prevent algorithm confusion attacks, the key type returned by keyFunc must strictly match the header's 'alg':
 // []byte for HS256, *rsa.PublicKey for RS256, *ecdsa.PublicKey for ES256, or ed25519.PublicKey for EdDSA.
 func VerifyJWTWithKeyFunc(keyFunc JWTKeyFunc, tokenString string, target any) error {
-	return verifyJWTWithKeyFunc(keyFunc, tokenString, target, false)
+	return verifyJWTWithKeyFunc(keyFunc, tokenString, target, jwtChecks{})
 }
 
-func verifyJWTWithKeyFunc(keyFunc JWTKeyFunc, tokenString string, target any, requireExp bool) error {
+func verifyJWTWithKeyFunc(keyFunc JWTKeyFunc, tokenString string, target any, chk jwtChecks) error {
 	if keyFunc == nil {
 		return errors.New("jwt: keyFunc cannot be nil")
 	}
@@ -222,25 +296,25 @@ func verifyJWTWithKeyFunc(keyFunc JWTKeyFunc, tokenString string, target any, re
 		if !ok {
 			return errors.New("invalid token signature")
 		}
-		return verifyJWT(secret, tokenString, target, requireExp)
+		return verifyJWT(secret, tokenString, target, chk)
 	case JWTAlgorithmRS256:
 		pub, ok := key.(*rsa.PublicKey)
 		if !ok {
 			return errors.New("invalid token signature")
 		}
-		return verifyJWTRSA(pub, tokenString, target, requireExp)
+		return verifyJWTRSA(pub, tokenString, target, chk)
 	case JWTAlgorithmES256:
 		pub, ok := key.(*ecdsa.PublicKey)
 		if !ok {
 			return errors.New("invalid token signature")
 		}
-		return verifyJWTES256(pub, tokenString, target, requireExp)
+		return verifyJWTES256(pub, tokenString, target, chk)
 	case JWTAlgorithmEdDSA:
 		pub, ok := key.(ed25519.PublicKey)
 		if !ok {
 			return errors.New("invalid token signature")
 		}
-		return verifyJWTEdDSA(pub, tokenString, target, requireExp)
+		return verifyJWTEdDSA(pub, tokenString, target, chk)
 	default:
 		return errors.New("invalid token signature")
 	}
@@ -291,24 +365,24 @@ func createJWTMiddleware(cfg JWTOptions) MiddlewareFunc {
 			var verifyErr error
 			switch {
 			case cfg.KeyFunc != nil:
-				verifyErr = verifyJWTWithKeyFunc(cfg.KeyFunc, parts[1], claims, cfg.RequireExp)
+				verifyErr = verifyJWTWithKeyFunc(cfg.KeyFunc, parts[1], claims, cfg.checks())
 			case cfg.Algorithm == JWTAlgorithmEdDSA || len(cfg.EdDSAPublicKey) > 0:
 				if len(cfg.EdDSAPublicKey) == 0 {
 					return unauthorized("Invalid or expired token")
 				}
-				verifyErr = verifyJWTEdDSA(cfg.EdDSAPublicKey, parts[1], claims, cfg.RequireExp)
+				verifyErr = verifyJWTEdDSA(cfg.EdDSAPublicKey, parts[1], claims, cfg.checks())
 			case cfg.Algorithm == JWTAlgorithmES256 || cfg.ECDSAPublicKey != nil:
 				if cfg.ECDSAPublicKey == nil {
 					return unauthorized("Invalid or expired token")
 				}
-				verifyErr = verifyJWTES256(cfg.ECDSAPublicKey, parts[1], claims, cfg.RequireExp)
+				verifyErr = verifyJWTES256(cfg.ECDSAPublicKey, parts[1], claims, cfg.checks())
 			case cfg.Algorithm == JWTAlgorithmRS256 || cfg.RSAPublicKey != nil:
 				if cfg.RSAPublicKey == nil {
 					return unauthorized("Invalid or expired token")
 				}
-				verifyErr = verifyJWTRSA(cfg.RSAPublicKey, parts[1], claims, cfg.RequireExp)
+				verifyErr = verifyJWTRSA(cfg.RSAPublicKey, parts[1], claims, cfg.checks())
 			default:
-				verifyErr = verifyJWT(cfg.Secret, parts[1], claims, cfg.RequireExp)
+				verifyErr = verifyJWT(cfg.Secret, parts[1], claims, cfg.checks())
 			}
 
 			if verifyErr != nil {

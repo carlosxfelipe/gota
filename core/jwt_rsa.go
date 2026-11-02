@@ -36,14 +36,14 @@ func SignJWTRSA(privateKey *rsa.PrivateKey, payload any, keyID ...string) (strin
 // VerifyJWTRSA validates an RSA-SHA256 (RS256) JWT token against the given RSA public key and decodes its payload into target.
 // If target is nil, only the format, signature, and expiration are verified.
 func VerifyJWTRSA(publicKey *rsa.PublicKey, tokenString string, target any) error {
-	return verifyJWTRSA(publicKey, tokenString, target, false)
+	return verifyJWTRSA(publicKey, tokenString, target, jwtChecks{})
 }
 
-func verifyJWTRSA(publicKey *rsa.PublicKey, tokenString string, target any, requireExp bool) error {
+func verifyJWTRSA(publicKey *rsa.PublicKey, tokenString string, target any, chk jwtChecks) error {
 	if publicKey == nil {
 		return errors.New("jwt: RSA public key cannot be nil")
 	}
-	return verifyToken(tokenString, target, requireExp, string(JWTAlgorithmRS256), func(signingInput string, sig []byte) error {
+	return verifyToken(tokenString, target, chk, string(JWTAlgorithmRS256), func(signingInput string, sig []byte) error {
 		hashed := sha256.Sum256([]byte(signingInput))
 		if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, hashed[:], sig); err != nil {
 			return errors.New("invalid token signature")

@@ -3,6 +3,8 @@ package core
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"log"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -115,8 +117,17 @@ func TestContextClientIP(t *testing.T) {
 
 	// Trusted proxy mode.
 	ctx.trustProxy = true
+	// The rightmost entry is the one appended by the trusted proxy; the left is client-forged.
+	if ip := ctx.ClientIP(); ip != "70.41.3.18" {
+		t.Errorf("expected 70.41.3.18 from X-Forwarded-For, got %q", ip)
+	}
+	ctx.trustedProxies = 2
 	if ip := ctx.ClientIP(); ip != "203.0.113.195" {
-		t.Errorf("expected 203.0.113.195 from X-Forwarded-For, got %q", ip)
+		t.Errorf("expected 203.0.113.195 with 2 trusted proxies, got %q", ip)
+	}
+	ctx.trustedProxies = 5
+	if ip := ctx.ClientIP(); ip != "192.0.2.9" {
+		t.Errorf("expected RemoteAddr fallback when XFF is shorter than proxy count, got %q", ip)
 	}
 
 	req2 := httptest.NewRequest("GET", "/", nil)
@@ -306,5 +317,187 @@ func TestRateLimiterMiddleware(t *testing.T) {
 	}
 	if rec3.Header().Get("Retry-After") == "" {
 		t.Errorf("expected Retry-After header on 429 response")
+	}
+}
+
+func TestNormalizeIPKey(t *testing.T) {
+	if got := normalizeIPKey("192.0.2.1"); got != "192.0.2.1" {
+		t.Errorf("ipv4 should be unchanged, got %q", got)
+	}
+	a := normalizeIPKey("2001:db8:1:2:aaaa::1")
+	b := normalizeIPKey("2001:db8:1:2:bbbb::9")
+	if a != b || a != "2001:db8:1:2::/64" {
+		t.Errorf("expected same /64 key, got %q and %q", a, b)
+	}
+}
+
+func TestClientIPIgnoresInvalidForwarded(t *testing.T) {
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "192.0.2.9:1"
+	req.Header.Set("X-Forwarded-For", "not-an-ip")
+	ctx := NewContext(httptest.NewRecorder(), req, nil)
+	ctx.trustProxy = true
+	if ip := ctx.ClientIP(); ip != "192.0.2.9" {
+		t.Errorf("got %q", ip)
+	}
+}
+
+func TestRateLimiterMaxKeysBoundsMemory(t *testing.T) {
+	now := time.Now()
+	buckets := map[string]*rateBucket{}
+	for i := 0; i < 5; i++ {
+		buckets[fmt.Sprintf("k%d", i)] = &rateBucket{tokens: 1, lastRefill: now.Add(-time.Duration(i) * time.Second)}
+	}
+	evictRateBuckets(buckets, now, time.Minute, 5)
+	if len(buckets) != 4 {
+		t.Fatalf("expected 4 buckets after evicting LRU, got %d", len(buckets))
+	}
+	if _, ok := buckets["k4"]; ok {
+		t.Error("expected least recently used key k4 to be evicted")
+	}
+	// Idle buckets (older than window) are all dropped.
+	evictRateBuckets(buckets, now.Add(2*time.Minute), time.Minute, 4)
+	if len(buckets) != 0 {
+		t.Errorf("expected idle buckets to be dropped, got %d", len(buckets))
+	}
+}
+
+func TestRateLimiterRotatingKeysStayBounded(t *testing.T) {
+	var i int
+	mw := RateLimiter(RateLimiterOptions{Max: 1, Window: time.Hour, MaxKeys: 50, KeyFunc: func(*Context) string {
+		i++
+		return fmt.Sprintf("key-%d", i)
+	}})
+	h := mw(func(ctx *Context) error { return nil })
+	for n := 0; n < 500; n++ {
+		ctx := NewContext(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil), nil)
+		if err := h(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func captureStdLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prevOut, prevFlags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) })
+	return &buf
+}
+
+func TestLoggerPreventsLogInjection(t *testing.T) {
+	buf := captureStdLog(t)
+	app := New(Config{DisableDocs: true})
+	app.Use(Logger())
+	app.Get("/*rest", func(ctx *Context) error { return ctx.Send("ok") })
+
+	req := httptest.NewRequest("GET", "/a%0Agota:%20forged%20line%20%5B200%5D%1b%5B2J", nil)
+	app.ServeHTTP(httptest.NewRecorder(), req)
+
+	out := buf.String()
+	if strings.Count(out, "\n") != 1 {
+		t.Errorf("expected exactly one log line, got %q", out)
+	}
+	if strings.Contains(out, "\x1b") {
+		t.Errorf("escape sequences must be neutralized, got %q", out)
+	}
+	if !strings.Contains(out, `\n`) {
+		t.Errorf("newline should be rendered escaped, got %q", out)
+	}
+}
+
+func TestHandlerErrorLogPreventsInjection(t *testing.T) {
+	buf := captureStdLog(t)
+	app := New(Config{DisableDocs: true})
+	app.Get("/fail", func(ctx *Context) error { return errors.New("bad input\ngota: forged") })
+	app.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/fail", nil))
+
+	if strings.Count(buf.String(), "\n") != 1 {
+		t.Errorf("expected exactly one log line, got %q", buf.String())
+	}
+}
+
+func TestQuoteLog(t *testing.T) {
+	if got := quoteLog("a\r\nb"); got != `"a\r\nb"` {
+		t.Errorf("got %s", got)
+	}
+}
+
+func corsRequest(app *App, method, origin string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, "/x", nil)
+	if origin != "" {
+		req.Header.Set("Origin", origin)
+	}
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestCORSWildcardSetsVaryOrigin(t *testing.T) {
+	app := New(Config{DisableDocs: true})
+	app.Use(CORS())
+	app.Get("/x", func(ctx *Context) error { return ctx.Send("ok") })
+
+	for _, origin := range []string{"https://a.example", ""} {
+		rec := corsRequest(app, "GET", origin)
+		if rec.Header().Get("Vary") != "Origin" {
+			t.Errorf("origin %q: expected Vary: Origin, got %q", origin, rec.Header().Get("Vary"))
+		}
+	}
+	if corsRequest(app, "GET", "https://a.example").Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Error("expected wildcard allow-origin")
+	}
+}
+
+func TestCORSDisallowedOriginGetsNoCORSHeaders(t *testing.T) {
+	app := New(Config{DisableDocs: true})
+	app.Use(CORS(CORSOptions{
+		AllowOrigins:  []string{"https://ok.example"},
+		AllowMethods:  []string{"GET"},
+		AllowHeaders:  []string{"Content-Type"},
+		ExposeHeaders: []string{"X-Request-ID"},
+		MaxAge:        60,
+	}))
+	app.Get("/x", func(ctx *Context) error { return ctx.Send("ok") })
+
+	for _, method := range []string{"GET", "OPTIONS"} {
+		rec := corsRequest(app, method, "https://evil.example")
+		for h := range rec.Header() {
+			if strings.HasPrefix(h, "Access-Control-") {
+				t.Errorf("%s: disallowed origin must not receive %s", method, h)
+			}
+		}
+		if rec.Header().Get("Vary") != "Origin" {
+			t.Errorf("%s: expected Vary: Origin", method)
+		}
+	}
+
+	rec := corsRequest(app, "OPTIONS", "https://ok.example")
+	if rec.Header().Get("Access-Control-Allow-Methods") != "GET" ||
+		rec.Header().Get("Access-Control-Allow-Origin") != "https://ok.example" ||
+		rec.Header().Get("Access-Control-Expose-Headers") != "X-Request-ID" {
+		t.Errorf("allowed origin missing CORS headers: %v", rec.Header())
+	}
+}
+
+func TestCORSNullOriginNeverMatchesWildcardEntry(t *testing.T) {
+	app := New(Config{DisableDocs: true})
+	app.Use(CORS(CORSOptions{AllowOrigins: []string{"*", "https://ok.example"}}))
+	app.Get("/x", func(ctx *Context) error { return ctx.Send("ok") })
+
+	if got := corsRequest(app, "GET", "null").Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("null origin must not be granted via wildcard entry, got %q", got)
+	}
+	if got := corsRequest(app, "GET", "https://any.example").Header().Get("Access-Control-Allow-Origin"); got != "https://any.example" {
+		t.Errorf("expected echoed origin, got %q", got)
+	}
+
+	app2 := New(Config{DisableDocs: true})
+	app2.Use(CORS(CORSOptions{AllowOrigins: []string{"null"}}))
+	app2.Get("/x", func(ctx *Context) error { return ctx.Send("ok") })
+	if got := corsRequest(app2, "GET", "null").Header().Get("Access-Control-Allow-Origin"); got != "null" {
+		t.Errorf("explicitly listed null origin should be allowed, got %q", got)
 	}
 }

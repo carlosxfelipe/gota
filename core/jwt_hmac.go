@@ -34,14 +34,14 @@ func SignJWT(secret []byte, payload any, keyID ...string) (string, error) {
 // Numeric 'exp' and 'nbf' claims (integer or fractional) are enforced when present;
 // a present but malformed 'exp' or 'nbf' rejects the token.
 func VerifyJWT(secret []byte, tokenString string, target any) error {
-	return verifyJWT(secret, tokenString, target, false)
+	return verifyJWT(secret, tokenString, target, jwtChecks{})
 }
 
-func verifyJWT(secret []byte, tokenString string, target any, requireExp bool) error {
+func verifyJWT(secret []byte, tokenString string, target any, chk jwtChecks) error {
 	if len(secret) == 0 {
 		return errors.New("jwt: secret key cannot be empty")
 	}
-	return verifyToken(tokenString, target, requireExp, string(JWTAlgorithmHS256), func(signingInput string, sig []byte) error {
+	return verifyToken(tokenString, target, chk, string(JWTAlgorithmHS256), func(signingInput string, sig []byte) error {
 		expectedSig := hmacSHA256(secret, signingInput)
 		if !hmac.Equal(expectedSig, sig) {
 			return errors.New("invalid token signature")
