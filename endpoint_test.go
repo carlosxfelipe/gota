@@ -887,8 +887,10 @@ type REPRGetProductReq struct {
 
 func TestEndpoint_TypeScriptGeneration(t *testing.T) {
 	app := New(Config{
-		Title:   "Products API",
-		Version: "1.0.0",
+		Title:            "Products API",
+		Version:          "1.0.0",
+		TypeScriptURL:    "/types.d.ts",
+		TypeScriptSDKURL: "/sdk.ts",
 	})
 
 	Post(app, "/products", func(ctx *Context, req REPRCreateProductReq) (REPRProductRes, error) {

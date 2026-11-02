@@ -57,11 +57,13 @@ func (e *GetUserEndpoint) Handle(ctx *gota.Context, req GetUserRequest) (UserRes
 // ----------------------------------------------------------------------
 
 func main() {
-	// Initializes Gota with built-in OpenAPI 3.1 and Scalar (classic layout default)
+	// Initializes Gota with built-in OpenAPI 3.1, Scalar docs, and TypeScript SDK routes
 	app := gota.New(gota.Config{
-		Title:       "Gota REPR API",
-		Version:     "1.0.0",
-		Description: "Go micro-framework oriented around the REPR Pattern with native interactive Scalar UI.",
+		Title:            "Gota REPR API",
+		Version:          "1.0.0",
+		Description:      "Go micro-framework oriented around the REPR Pattern with native interactive Scalar UI.",
+		TypeScriptURL:    "/types.d.ts",
+		TypeScriptSDKURL: "/sdk.ts",
 	})
 
 	// Global Middlewares

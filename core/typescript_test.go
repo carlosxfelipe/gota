@@ -221,30 +221,27 @@ func TestTypeScript_HTTPRouteAndOptions(t *testing.T) {
 	}
 }
 
-func TestTypeScript_DefaultRoutes(t *testing.T) {
+func TestTypeScript_DisabledByDefault(t *testing.T) {
 	app := New(Config{})
 
 	app.Get("/items", func(ctx *Context) error {
 		return ctx.Json([]string{"a", "b"})
 	})
 
-	// Test default /types.d.ts
+	// /types.d.ts should be 404 by default (opt-in)
 	reqTS := httptest.NewRequest(http.MethodGet, "/types.d.ts", nil)
 	recTS := httptest.NewRecorder()
 	app.ServeHTTP(recTS, reqTS)
-	if recTS.Code != http.StatusOK {
-		t.Fatalf("expected 200 for default /types.d.ts, got %d", recTS.Code)
+	if recTS.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for default /types.d.ts, got %d", recTS.Code)
 	}
 
-	// Test default /sdk.ts
+	// /sdk.ts should be 404 by default (opt-in)
 	reqSDK := httptest.NewRequest(http.MethodGet, "/sdk.ts", nil)
 	recSDK := httptest.NewRecorder()
 	app.ServeHTTP(recSDK, reqSDK)
-	if recSDK.Code != http.StatusOK {
-		t.Fatalf("expected 200 for default /sdk.ts, got %d", recSDK.Code)
-	}
-	if !strings.Contains(recSDK.Body.String(), "export function createGotaClient") {
-		t.Errorf("expected createGotaClient implementation in default /sdk.ts")
+	if recSDK.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for default /sdk.ts, got %d", recSDK.Code)
 	}
 }
 

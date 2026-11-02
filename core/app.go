@@ -176,12 +176,6 @@ func New(cfg Config) *App {
 	if cfg.OpenAPIURL == "" {
 		cfg.OpenAPIURL = "/openapi.json"
 	}
-	if cfg.TypeScriptURL == "" {
-		cfg.TypeScriptURL = "/types.d.ts"
-	}
-	if cfg.TypeScriptSDKURL == "" {
-		cfg.TypeScriptSDKURL = "/sdk.ts"
-	}
 	if cfg.ScalarTheme == "" {
 		cfg.ScalarTheme = ThemeFastify
 	}

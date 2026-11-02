@@ -25,7 +25,7 @@ Inspired by the ergonomic fluency of [Kite](https://github.com/claudiovictors/ki
 - **REPR Design Pattern**: Request-Endpoint-Response architecture with automatic model binding, declarative validation, and typed JSON / streaming responses.
 - **Zero External Dependencies**: Built 100% on the Go standard library.
 - **Native OpenAPI 3.1 & Scalar Docs**: Automatic spec generation from Go types, serving interactive Scalar UI (`classic` layout) at `/docs`.
-- **Auto-Generated TypeScript Definitions & Client SDK**: Zero-dependency TypeScript declarations served at `/types.d.ts` and standalone client SDK served at `/sdk.ts` (or via `app.GenerateTypeScript()` / `app.GenerateTypeScriptSDK()`), providing end-to-end type safety from Go to frontend without npm or build tools.
+- **Auto-Generated TypeScript Definitions & Client SDK**: Optional zero-dependency TypeScript declarations (`/types.d.ts`) and standalone client SDK (`/sdk.ts`), or exported programmatically via `app.GenerateTypeScript()` / `app.GenerateTypeScriptSDK()`, providing end-to-end type safety from Go to frontend without npm or build tools.
 - **Fluent Route Ergonomics**: Chainable metadata (`.Summary()`, `.Tags()`, `.Middleware()`), route groups, and parameter matching (`:id`, `*wildcard`).
 - **Production-Ready Middlewares**: Built-in JWT (HS256, RS256, ES256, EdDSA), CORS, Security Headers, Rate Limiter, Gzip, Panic Recovery, Request ID, Slog logger, Timeouts, and Graceful Shutdown.
 
@@ -242,18 +242,18 @@ The built-in client wrapper solves classic frontend `fetch` pitfalls with zero e
 - **True Error Handling**: Native `fetch` does not reject promises on HTTP 4xx/5xx; `createGotaClient` automatically parses error payloads and throws catchable errors with `status` and `data`.
 - **204 No Content Protection**: Avoids the common `SyntaxError: Unexpected end of JSON input` by safely returning `undefined` for 204 responses.
 
-### ⚙️ Customization & Disabling
+### ⚙️ Enabling TypeScript Routes
 
-Both endpoints are active by default and can be customized or disabled using `"-"`:
+By default, TypeScript routes are disabled (opt-in) to keep API endpoints clean and minimal. You can enable them by setting their URLs in `gota.Config`:
 
 ```go
 app := gota.New(gota.Config{
-    TypeScriptURL:    "/types.d.ts", // Default: "/types.d.ts" (set "-" to disable)
-    TypeScriptSDKURL: "/sdk.ts",     // Default: "/sdk.ts" (set "-" to disable)
+    TypeScriptURL:    "/types.d.ts", // Enable TypeScript declarations
+    TypeScriptSDKURL: "/sdk.ts",     // Enable standalone client SDK
 })
 ```
 
-You can also export them programmatically (e.g. in a code generation script or CI pipeline):
+You can also export them programmatically (e.g. in a code generation script or CI pipeline) without registering HTTP routes:
 
 ```go
 typesDefs := app.GenerateTypeScript()    // Returns .d.ts content as string
