@@ -50,18 +50,20 @@ type ServerConfig struct {
 
 // Config encapsulates settings for the Gota application, OpenAPI, and Scalar UI.
 type Config struct {
-	Title           string                           `json:"title,omitempty"`
-	Version         string                           `json:"version,omitempty"`
-	Description     string                           `json:"description,omitempty"`
-	DocsURL         string                           `json:"docsUrl,omitempty"`
-	OpenAPIURL      string                           `json:"openApiUrl,omitempty"`
-	ScalarTheme     ScalarTheme                      `json:"scalarTheme,omitempty"`
-	ScalarLayout    string                           `json:"scalarLayout,omitempty"` // Default: "classic"
-	ScalarScriptURL string                           `json:"scalarScriptUrl,omitempty"`
-	ScalarSRI       string                           `json:"scalarSri,omitempty"`
-	DisableDocs     bool                             `json:"disableDocs,omitempty"`
-	Servers         []ServerConfig                   `json:"servers,omitempty"`
-	SecuritySchemes map[string]OpenAPISecurityScheme `json:"securitySchemes,omitempty"`
+	Title            string                           `json:"title,omitempty"`
+	Version          string                           `json:"version,omitempty"`
+	Description      string                           `json:"description,omitempty"`
+	DocsURL          string                           `json:"docsUrl,omitempty"`
+	OpenAPIURL       string                           `json:"openApiUrl,omitempty"`
+	ScalarTheme      ScalarTheme                      `json:"scalarTheme,omitempty"`
+	ScalarLayout     string                           `json:"scalarLayout,omitempty"` // Default: "classic"
+	ScalarScriptURL  string                           `json:"scalarScriptUrl,omitempty"`
+	ScalarSRI        string                           `json:"scalarSri,omitempty"`
+	DisableDocs      bool                             `json:"disableDocs,omitempty"`
+	TypeScriptURL    string                           `json:"typescriptUrl,omitempty"`
+	TypeScriptSDKURL string                           `json:"typescriptSdkUrl,omitempty"`
+	Servers          []ServerConfig                   `json:"servers,omitempty"`
+	SecuritySchemes  map[string]OpenAPISecurityScheme `json:"securitySchemes,omitempty"`
 
 	// DocsMiddlewares applies middlewares specifically to the documentation routes (DocsURL and OpenAPIURL).
 	// Use it to restrict access via BasicAuth, JWT, IP whitelisting, etc.
@@ -151,6 +153,10 @@ type App struct {
 	docsMu           sync.RWMutex
 	cachedSpecVer    uint64
 	cachedSpec       *OpenAPISpec
+	cachedTSVer      uint64
+	cachedTS         string
+	cachedSDKVer     uint64
+	cachedSDK        string
 	cachedScalarHTML string
 	cachedScalarErr  error
 	scalarOnce       sync.Once
@@ -169,6 +175,9 @@ func New(cfg Config) *App {
 	}
 	if cfg.OpenAPIURL == "" {
 		cfg.OpenAPIURL = "/openapi.json"
+	}
+	if cfg.TypeScriptURL == "" {
+		cfg.TypeScriptURL = "/types.d.ts"
 	}
 	if cfg.ScalarTheme == "" {
 		cfg.ScalarTheme = ThemeFastify
@@ -446,10 +455,76 @@ func (a *App) registerDocs() {
 	}).Hidden()
 
 	a.docsRoutes = []*Route{specRoute, docsRoute}
-	for _, mw := range a.docsMiddlewares {
-		specRoute.Middleware(mw)
-		docsRoute.Middleware(mw)
+
+	if a.config.TypeScriptURL != "-" && a.config.TypeScriptURL != "" {
+		tsRoute := a.Get(a.config.TypeScriptURL, func(ctx *Context) error {
+			ctx.SetHeader("Content-Type", "application/typescript; charset=utf-8")
+			ctx.SetHeader("X-Content-Type-Options", "nosniff")
+			return ctx.Send(a.GenerateTypeScript())
+		}).Hidden()
+		a.docsRoutes = append(a.docsRoutes, tsRoute)
 	}
+
+	if a.config.TypeScriptSDKURL != "" && a.config.TypeScriptSDKURL != "-" {
+		sdkRoute := a.Get(a.config.TypeScriptSDKURL, func(ctx *Context) error {
+			ctx.SetHeader("Content-Type", "application/typescript; charset=utf-8")
+			ctx.SetHeader("X-Content-Type-Options", "nosniff")
+			return ctx.Send(a.GenerateTypeScriptSDK())
+		}).Hidden()
+		a.docsRoutes = append(a.docsRoutes, sdkRoute)
+	}
+
+	for _, mw := range a.docsMiddlewares {
+		for _, rt := range a.docsRoutes {
+			rt.Middleware(mw)
+		}
+	}
+}
+
+// GenerateTypeScript generates complete TypeScript declarations (.d.ts) for all registered routes.
+func (a *App) GenerateTypeScript() string {
+	ver := a.docVersion.Load()
+	a.docsMu.RLock()
+	if a.cachedTS != "" && a.cachedTSVer == ver {
+		res := a.cachedTS
+		a.docsMu.RUnlock()
+		return res
+	}
+	a.docsMu.RUnlock()
+
+	a.docsMu.Lock()
+	defer a.docsMu.Unlock()
+	ver = a.docVersion.Load()
+	if a.cachedTS != "" && a.cachedTSVer == ver {
+		return a.cachedTS
+	}
+	gen := NewTypeScriptGenerator(a.config)
+	a.cachedTS = gen.Generate(a.router.Routes())
+	a.cachedTSVer = ver
+	return a.cachedTS
+}
+
+// GenerateTypeScriptSDK generates a full TypeScript client SDK with createGotaClient implementation.
+func (a *App) GenerateTypeScriptSDK() string {
+	ver := a.docVersion.Load()
+	a.docsMu.RLock()
+	if a.cachedSDK != "" && a.cachedSDKVer == ver {
+		res := a.cachedSDK
+		a.docsMu.RUnlock()
+		return res
+	}
+	a.docsMu.RUnlock()
+
+	a.docsMu.Lock()
+	defer a.docsMu.Unlock()
+	ver = a.docVersion.Load()
+	if a.cachedSDK != "" && a.cachedSDKVer == ver {
+		return a.cachedSDK
+	}
+	gen := NewTypeScriptGenerator(a.config)
+	a.cachedSDK = gen.GenerateSDK(a.router.Routes())
+	a.cachedSDKVer = ver
+	return a.cachedSDK
 }
 
 // UseDocs appends middlewares executed specifically for documentation routes (DocsURL and OpenAPIURL).
@@ -556,6 +631,12 @@ func (a *App) Listen(addr string) error {
 	if !a.config.DisableDocs {
 		log.Printf("📖 Scalar docs: http://%s%s", display, a.config.DocsURL)
 		log.Printf("📄 OpenAPI spec: http://%s%s", display, a.config.OpenAPIURL)
+		if a.config.TypeScriptURL != "" && a.config.TypeScriptURL != "-" {
+			log.Printf("🔷 TypeScript defs: http://%s%s", display, a.config.TypeScriptURL)
+		}
+		if a.config.TypeScriptSDKURL != "" && a.config.TypeScriptSDKURL != "-" {
+			log.Printf("⚡ TypeScript SDK: http://%s%s", display, a.config.TypeScriptSDKURL)
+		}
 		if len(a.docsMiddlewares) > 0 {
 			log.Printf("🔒 Docs protected with %d middleware(s)", len(a.docsMiddlewares))
 		} else {
@@ -737,6 +818,11 @@ func (rt *Route) addParam(in, name string, model any, desc string) *Route {
 		Description: desc,
 	})
 	return rt
+}
+
+// Param documents a path parameter for the route.
+func (rt *Route) Param(name string, model any, description ...string) *Route {
+	return rt.addParam("path", name, model, optionalString(description...))
 }
 
 // Query documents a query parameter for the route.

@@ -25,6 +25,7 @@ Inspired by the ergonomic fluency of [Kite](https://github.com/claudiovictors/ki
 - **REPR Design Pattern**: Request-Endpoint-Response architecture with automatic model binding, declarative validation, and typed JSON / streaming responses.
 - **Zero External Dependencies**: Built 100% on the Go standard library.
 - **Native OpenAPI 3.1 & Scalar Docs**: Automatic spec generation from Go types, serving interactive Scalar UI (`classic` layout) at `/docs`.
+- **Auto-Generated TypeScript Definitions & SDK**: Automatic zero-dependency TypeScript definitions served at `/types.d.ts` (and optional standalone client at `/sdk.ts` or via `app.GenerateTypeScript()`), providing end-to-end type safety from Go to frontend without npm or build tools.
 - **Fluent Route Ergonomics**: Chainable metadata (`.Summary()`, `.Tags()`, `.Middleware()`), route groups, and parameter matching (`:id`, `*wildcard`).
 - **Production-Ready Middlewares**: Built-in JWT (HS256, RS256, ES256, EdDSA), CORS, Security Headers, Rate Limiter, Gzip, Panic Recovery, Request ID, Slog logger, Timeouts, and Graceful Shutdown.
 

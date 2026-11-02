@@ -38,6 +38,8 @@ func main() {
 		Description:        "REST API built with Gota REPR pattern",
 		DocsURL:            "/docs",           // Default: "/docs"
 		OpenAPIURL:         "/openapi.json",   // Default: "/openapi.json"
+		TypeScriptURL:      "/types.d.ts",     // Default: "/types.d.ts" (set "-" to disable)
+		TypeScriptSDKURL:   "",                // Default: "" (set e.g. "/sdk.ts" to serve standalone client SDK)
 		ScalarTheme:        gota.ThemeFastify, // Default: gota.ThemeFastify
 		ScalarLayout:       "classic",         // Default: "classic" ("classic" or "modern")
 		DisableDocs:        false,             // Set true to disable /docs and /openapi.json routes (recommended for public production APIs)

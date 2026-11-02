@@ -869,3 +869,77 @@ func TestCrossMethodDifferentParamNamesAndResponseHeaders(t *testing.T) {
 		t.Errorf("expected X-Total-Count with example 42 in OpenAPI response headers, got %+v", resp200.Headers)
 	}
 }
+
+type REPRCreateProductReq struct {
+	Title string  `json:"title" validate:"required" doc:"Product title"`
+	Price float64 `json:"price" validate:"required" doc:"Product price"`
+}
+
+type REPRProductRes struct {
+	ID    string  `json:"id"`
+	Title string  `json:"title"`
+	Price float64 `json:"price"`
+}
+
+type REPRGetProductReq struct {
+	ID string `param:"id" doc:"Product identifier"`
+}
+
+func TestEndpoint_TypeScriptGeneration(t *testing.T) {
+	app := New(Config{
+		Title:   "Products API",
+		Version: "1.0.0",
+	})
+
+	Post(app, "/products", func(ctx *Context, req REPRCreateProductReq) (REPRProductRes, error) {
+		return REPRProductRes{ID: "p1", Title: req.Title, Price: req.Price}, nil
+	}).Summary("Create a new product")
+
+	Get(app, "/products/:id", func(ctx *Context, req REPRGetProductReq) (REPRProductRes, error) {
+		return REPRProductRes{ID: req.ID, Title: "Sample", Price: 99.9}, nil
+	}).Summary("Get product details")
+
+	Delete(app, "/products/:id", func(ctx *Context, req REPRGetProductReq) (Empty, error) {
+		return Empty{}, nil
+	}).Summary("Delete a product")
+
+	ts := app.GenerateTypeScript()
+
+	if !strings.Contains(ts, "export interface REPRCreateProductReq {") {
+		t.Errorf("expected REPRCreateProductReq interface, got:\n%s", ts)
+	}
+	if !strings.Contains(ts, "export interface REPRProductRes {") {
+		t.Errorf("expected REPRProductRes interface, got:\n%s", ts)
+	}
+	if !strings.Contains(ts, `"POST /products": {`) {
+		t.Errorf("expected POST /products endpoint, got:\n%s", ts)
+	}
+	if !strings.Contains(ts, "body: REPRCreateProductReq;") {
+		t.Errorf("expected body: REPRCreateProductReq, got:\n%s", ts)
+	}
+	if !strings.Contains(ts, "response: REPRProductRes;") {
+		t.Errorf("expected response: REPRProductRes, got:\n%s", ts)
+	}
+	if !strings.Contains(ts, `"GET /products/:id": {`) {
+		t.Errorf("expected GET /products/:id endpoint, got:\n%s", ts)
+	}
+	if !strings.Contains(ts, "params: { id: string };") {
+		t.Errorf("expected params: { id: string }, got:\n%s", ts)
+	}
+	if !strings.Contains(ts, `"DELETE /products/:id": {`) {
+		t.Errorf("expected DELETE /products/:id endpoint, got:\n%s", ts)
+	}
+	if !strings.Contains(ts, "response: void;") {
+		t.Errorf("expected response: void on delete, got:\n%s", ts)
+	}
+
+	// Verify route /types.d.ts works via HTTP
+	w := httptest.NewRecorder()
+	app.ServeHTTP(w, httptest.NewRequest("GET", "/types.d.ts", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on /types.d.ts, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "GotaEndpoints") {
+		t.Errorf("expected GotaEndpoints in HTTP response, got:\n%s", w.Body.String())
+	}
+}
