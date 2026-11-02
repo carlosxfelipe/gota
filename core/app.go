@@ -63,6 +63,10 @@ type Config struct {
 	Servers         []ServerConfig                   `json:"servers,omitempty"`
 	SecuritySchemes map[string]OpenAPISecurityScheme `json:"securitySchemes,omitempty"`
 
+	// DocsMiddlewares applies middlewares specifically to the documentation routes (DocsURL and OpenAPIURL).
+	// Use it to restrict access via BasicAuth, JWT, IP whitelisting, etc.
+	DocsMiddlewares []MiddlewareFunc `json:"-"`
+
 	// MaxBodyBytes limits the size of request bodies. Default: 10 MiB.
 	// Use a negative value to disable the limit.
 	MaxBodyBytes int64 `json:"maxBodyBytes,omitempty"`
@@ -139,8 +143,9 @@ type App struct {
 
 	// routeCount counts user-registered routes (docs routes excluded) and docsRoutes
 	// holds the built-in documentation routes, which must follow global middlewares.
-	routeCount int
-	docsRoutes []*Route
+	routeCount      int
+	docsRoutes      []*Route
+	docsMiddlewares []MiddlewareFunc
 
 	docVersion       atomic.Uint64
 	docsMu           sync.RWMutex
@@ -191,8 +196,9 @@ func New(cfg Config) *App {
 	}
 
 	app := &App{
-		config: cfg,
-		router: NewRouter(),
+		config:          cfg,
+		router:          NewRouter(),
+		docsMiddlewares: append([]MiddlewareFunc(nil), cfg.DocsMiddlewares...),
 	}
 	app.NotFoundHandler = defaultNotFoundHandler
 	app.ErrorHandler = defaultErrorHandler
@@ -434,6 +440,23 @@ func (a *App) registerDocs() {
 	}).Hidden()
 
 	a.docsRoutes = []*Route{specRoute, docsRoute}
+	for _, mw := range a.docsMiddlewares {
+		specRoute.Middleware(mw)
+		docsRoute.Middleware(mw)
+	}
+}
+
+// UseDocs appends middlewares executed specifically for documentation routes (DocsURL and OpenAPIURL).
+// Middlewares are executed after global middlewares (app.Use).
+// Use it to restrict access to documentation with BasicAuth, JWT, IP filtering, etc.
+func (a *App) UseDocs(mws ...MiddlewareFunc) {
+	if a.config.DisableDocs || len(mws) == 0 {
+		return
+	}
+	a.docsMiddlewares = append(a.docsMiddlewares, mws...)
+	for _, rt := range a.docsRoutes {
+		rt.Middleware(mws...)
+	}
 }
 
 // ServeHTTP satisfies the standard net/http Handler interface.
@@ -527,7 +550,11 @@ func (a *App) Listen(addr string) error {
 	if !a.config.DisableDocs {
 		log.Printf("📖 Scalar docs: http://%s%s", display, a.config.DocsURL)
 		log.Printf("📄 OpenAPI spec: http://%s%s", display, a.config.OpenAPIURL)
-		log.Printf("🔒 Docs are public: set Config.DisableDocs = true (or protect them) if this API is exposed to untrusted networks")
+		if len(a.docsMiddlewares) > 0 {
+			log.Printf("🔒 Docs protected with %d middleware(s)", len(a.docsMiddlewares))
+		} else {
+			log.Printf("🔒 Docs are public: set Config.DisableDocs = true or use app.UseDocs(...) if exposed to untrusted networks")
+		}
 	}
 
 	srv := &http.Server{

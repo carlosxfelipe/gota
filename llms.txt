@@ -71,6 +71,8 @@ func main() {
 
 ### Server Lifecycle Methods on `*gota.App`
 
+- `app.Use(mw gota.MiddlewareFunc)`: Registers global middleware running on all routes.
+- `app.UseDocs(mw ...gota.MiddlewareFunc)`: Registers middleware running ONLY on `/docs` and `/openapi.json` (e.g. BasicAuth).
 - `app.Listen(addr string) error`: Starts the HTTP server (`":3000"`, `"3000"`, or `"127.0.0.1:3000"`).
 - `app.ListenGraceful(addr string, stopSignals ...os.Signal) error`: Starts the server and gracefully drains connections (10s timeout) on `os.Interrupt` / `syscall.SIGTERM` (or custom signals).
 - `app.Shutdown(ctx context.Context) error`: Gracefully shuts down a running server started via `Listen`.
@@ -86,7 +88,8 @@ func main() {
 - The docs page always sends `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` and `Referrer-Policy: no-referrer` (`/openapi.json` sends `nosniff`).
 - It also sends a Scalar-compatible CSP (`gota.DocsContentSecurityPolicy(scriptURL)`: script only from the Scalar origin or `'self'`, no framing, no `<base>`, no plugins) as **`Content-Security-Policy-Report-Only`** by default, so it can never break the page. After checking the browser console for violations, set `Config{DocsCSPEnforce: true}` to enforce it. Override with `Config{DocsCSP: "..."}` or omit with `DocsCSP: "-"`.
 - The docs CSP is set inside the docs handler, so it takes precedence over a global `SecureHeaders` CSP (e.g. the strict `ApiContentSecurityPolicy`).
-- Docs are **public by default**: set `DisableDocs: true` in production for APIs exposed to untrusted networks (`Listen` logs a reminder), or put `/docs` and `/openapi.json` behind auth.
+- **Protecting Docs**: Restrict access to `/docs` and `/openapi.json` using **`app.UseDocs(...)`** or **`Config{DocsMiddlewares: [...]}`** (e.g. `app.UseDocs(gota.BasicAuth("admin", pass))` or IP whitelisting). Normal API routes remain unaffected.
+- **Disabling Docs**: Set `DisableDocs: true` in production for APIs exposed to untrusted networks where documentation should not be served at all (`Listen` logs a status reminder).
 
 ### Scalar Script Pinning & Subresource Integrity (SRI)
 

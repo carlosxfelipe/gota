@@ -70,6 +70,9 @@ func main() {
 	app.Use(gota.Recover())
 	app.Use(gota.CORS())
 
+	// Protect documentation routes (/docs and /openapi.json) with HTTP Basic Auth
+	app.UseDocs(gota.BasicAuth("admin", "admin123"))
+
 	// 1. Healthcheck Endpoint (Empty Request)
 	gota.Get(app, "/", func(ctx *gota.Context, _ gota.Empty) (HealthResponse, error) {
 		return HealthResponse{Status: "ok", Version: "1.0.0"}, nil
@@ -113,6 +116,6 @@ func main() {
 	}).Summary("Ping Pong").Tags("System")
 
 	if err := app.ListenGraceful(":3000"); err != nil {
-		log.Printf("Server shutdown error: %v", err)
+		log.Printf("Server error: %v", err)
 	}
 }

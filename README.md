@@ -162,6 +162,31 @@ app := gota.New(gota.Config{
 })
 ```
 
+### 🔒 Securing or Disabling Documentation in Production
+
+Documentation routes (`/docs` and `/openapi.json`) are public by default. For production environments, Gota provides two recommended approaches:
+
+#### 1. Protect with Credentials (`app.UseDocs`)
+
+Keep documentation accessible to your team while preventing public access using HTTP Basic Auth (or any custom middleware):
+
+```go
+// Restricts access to both /docs and /openapi.json without affecting regular API routes
+app.UseDocs(gota.BasicAuth("admin", os.Getenv("DOCS_PASSWORD")))
+```
+
+_(You can also configure this declaratively via `DocsMiddlewares: []gota.MiddlewareFunc{...}` inside `gota.Config`.)_
+
+#### 2. Disable Completely in Production (`DisableDocs`)
+
+Completely turn off `/docs` and `/openapi.json` so they are not registered at all (returns 404):
+
+```go
+app := gota.New(gota.Config{
+    DisableDocs: os.Getenv("ENV") == "production",
+})
+```
+
 ---
 
 ## 🧹 Code Formatting
