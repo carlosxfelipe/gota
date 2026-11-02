@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -218,5 +219,24 @@ func TestMaxHeaderBytesConfig(t *testing.T) {
 	app := New(Config{DisableDocs: true, MaxHeaderBytes: 4096})
 	if got := app.Config().MaxHeaderBytes; got != 4096 {
 		t.Errorf("MaxHeaderBytes = %d, want 4096", got)
+	}
+}
+
+func TestErrorHandlerDoesNotCorruptWrittenResponse(t *testing.T) {
+	app := New(Config{DisableDocs: true})
+	app.Get("/stream-fail", func(ctx *Context) error {
+		_ = ctx.Send("partial stream payload")
+		return errors.New("database disconnected mid-stream")
+	})
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest("GET", "/stream-fail", nil))
+
+	// The status and body already written must not be modified or suffixed with JSON error
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200 from Send, got %d", rec.Code)
+	}
+	if rec.Body.String() != "partial stream payload" {
+		t.Errorf("body was corrupted by error handler: %q", rec.Body.String())
 	}
 }

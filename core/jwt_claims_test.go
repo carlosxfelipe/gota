@@ -50,7 +50,7 @@ func TestJWTIssuerValidation(t *testing.T) {
 
 func TestJWTAudienceValidation(t *testing.T) {
 	secret := []byte("audience-secret-0123456789-0123456789-abcdef")
-	opts := JWTOptions{Audience: "my-api"}
+	opts := JWTOptions{Audiences: []string{"my-api"}}
 	cases := []struct {
 		name   string
 		claims map[string]any
@@ -62,6 +62,27 @@ func TestJWTAudienceValidation(t *testing.T) {
 		{"string mismatch", map[string]any{"aud": "other"}, http.StatusUnauthorized},
 		{"missing", map[string]any{"sub": "1"}, http.StatusUnauthorized},
 		{"wrong type", map[string]any{"aud": 5}, http.StatusUnauthorized},
+	}
+	for _, c := range cases {
+		if got := jwtStatus(t, opts, secret, c.claims); got != c.want {
+			t.Errorf("%s: got %d, want %d", c.name, got, c.want)
+		}
+	}
+}
+
+func TestJWTAudiencesSliceValidation(t *testing.T) {
+	secret := []byte("audience-secret-0123456789-0123456789-abcdef")
+	opts := JWTOptions{Audiences: []string{"api-v1", "api-v2"}}
+	cases := []struct {
+		name   string
+		claims map[string]any
+		want   int
+	}{
+		{"matches first", map[string]any{"aud": "api-v1"}, http.StatusOK},
+		{"matches second", map[string]any{"aud": "api-v2"}, http.StatusOK},
+		{"matches one in array", map[string]any{"aud": []string{"other", "api-v2"}}, http.StatusOK},
+		{"matches none in array", map[string]any{"aud": []string{"other", "api-v3"}}, http.StatusUnauthorized},
+		{"mismatch string", map[string]any{"aud": "other"}, http.StatusUnauthorized},
 	}
 	for _, c := range cases {
 		if got := jwtStatus(t, opts, secret, c.claims); got != c.want {

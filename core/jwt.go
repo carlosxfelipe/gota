@@ -65,9 +65,9 @@ type JWTOptions struct {
 	// Issuer, when set, requires the token's 'iss' claim to equal it exactly.
 	// Leave empty to skip issuer validation (default).
 	Issuer string
-	// Audience, when set, requires the token's 'aud' claim (string or array of strings) to contain it.
+	// Audiences, when set, requires the token's 'aud' claim to contain at least one of these values.
 	// Leave empty to skip audience validation (default).
-	Audience string
+	Audiences []string
 	// Leeway is the clock-skew tolerance applied to 'exp' and 'nbf' (default: 0, max effective: 5 minutes).
 	Leeway time.Duration
 }
@@ -79,12 +79,17 @@ const maxJWTLeeway = 5 * time.Minute
 type jwtChecks struct {
 	RequireExp bool
 	Issuer     string
-	Audience   string
+	Audiences  []string
 	Leeway     time.Duration
 }
 
 func (o JWTOptions) checks() jwtChecks {
-	return jwtChecks{RequireExp: o.RequireExp, Issuer: o.Issuer, Audience: o.Audience, Leeway: o.Leeway}
+	return jwtChecks{
+		RequireExp: o.RequireExp,
+		Issuer:     o.Issuer,
+		Audiences:  append([]string(nil), o.Audiences...),
+		Leeway:     o.Leeway,
+	}
 }
 
 // audienceClaim decodes the 'aud' claim, which RFC 7519 allows to be a string or an array of strings.
@@ -200,7 +205,7 @@ func verifyToken(tokenString string, target any, chk jwtChecks, expectedAlg stri
 		return errors.New("token not yet valid")
 	}
 
-	if chk.Issuer != "" || chk.Audience != "" {
+	if chk.Issuer != "" || len(chk.Audiences) > 0 {
 		var idClaims struct {
 			Iss *string       `json:"iss"`
 			Aud audienceClaim `json:"aud"`
@@ -211,11 +216,16 @@ func verifyToken(tokenString string, target any, chk jwtChecks, expectedAlg stri
 		if chk.Issuer != "" && (idClaims.Iss == nil || *idClaims.Iss != chk.Issuer) {
 			return errors.New("invalid token issuer")
 		}
-		if chk.Audience != "" {
+		if len(chk.Audiences) > 0 {
 			found := false
-			for _, a := range idClaims.Aud {
-				if a == chk.Audience {
-					found = true
+			for _, expected := range chk.Audiences {
+				for _, actual := range idClaims.Aud {
+					if actual == expected {
+						found = true
+						break
+					}
+				}
+				if found {
 					break
 				}
 			}
@@ -271,7 +281,9 @@ func applyJWTOptions(dst *JWTOptions, src JWTOptions) {
 	dst.RequireExp = src.RequireExp
 	dst.AllowShortSecret = src.AllowShortSecret
 	dst.Issuer = src.Issuer
-	dst.Audience = src.Audience
+	if len(src.Audiences) > 0 {
+		dst.Audiences = append([]string(nil), src.Audiences...)
+	}
 	dst.Leeway = src.Leeway
 }
 

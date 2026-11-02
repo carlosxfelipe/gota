@@ -239,12 +239,24 @@ func statusFromError(err error) int {
 }
 
 func defaultErrorHandler(ctx *Context, err error) {
+	reqID := ctx.RequestID()
+	if reqID != "" {
+		log.Printf("gota: handler error %s %s [%s]: %s", ctx.Request.Method, quoteLog(ctx.Request.URL.Path), reqID, quoteLog(err))
+	} else {
+		log.Printf("gota: handler error %s %s: %s", ctx.Request.Method, quoteLog(ctx.Request.URL.Path), quoteLog(err))
+	}
+
+	if ctx.Written() {
+		// Headers/body were already written; do not corrupt the response with an error body.
+		return
+	}
+
 	var httpErr *HTTPError
 	if errors.As(err, &httpErr) {
 		_ = ctx.Status(httpErr.Status).Json(ErrorResponse{
 			Error:     httpErr.Message,
 			Status:    httpErr.Status,
-			RequestID: ctx.RequestID(),
+			RequestID: reqID,
 		})
 		return
 	}
@@ -255,12 +267,6 @@ func defaultErrorHandler(ctx *Context, err error) {
 		return
 	}
 
-	reqID := ctx.RequestID()
-	if reqID != "" {
-		log.Printf("gota: handler error %s %s [%s]: %s", ctx.Request.Method, quoteLog(ctx.Request.URL.Path), reqID, quoteLog(err))
-	} else {
-		log.Printf("gota: handler error %s %s: %s", ctx.Request.Method, quoteLog(ctx.Request.URL.Path), quoteLog(err))
-	}
 	_ = ctx.Status(http.StatusInternalServerError).Json(ErrorResponse{
 		Error:     "internal server error",
 		Status:    http.StatusInternalServerError,

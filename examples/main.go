@@ -70,8 +70,9 @@ func main() {
 	app.Use(gota.Recover())
 	app.Use(gota.CORS())
 
-	// Protect documentation routes (/docs and /openapi.json) with HTTP Basic Auth
-	app.UseDocs(gota.BasicAuth("admin", "admin123"))
+	// Optional: Protect documentation routes (/docs and /openapi.json) with HTTP Basic Auth
+	// Uncomment the line below to require credentials when visiting /docs:
+	// app.UseDocs(gota.BasicAuth("admin", "admin123"))
 
 	// 1. Healthcheck Endpoint (Empty Request)
 	gota.Get(app, "/", func(ctx *gota.Context, _ gota.Empty) (HealthResponse, error) {
