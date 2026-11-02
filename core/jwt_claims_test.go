@@ -25,7 +25,7 @@ func jwtStatus(t *testing.T, opts JWTOptions, secret []byte, claims map[string]a
 }
 
 func TestJWTIssuerValidation(t *testing.T) {
-	secret := []byte("issuer-secret")
+	secret := []byte("issuer-secret-0123456789-0123456789-abcdef")
 	opts := JWTOptions{Issuer: "https://auth.example.com"}
 	cases := []struct {
 		name   string
@@ -49,7 +49,7 @@ func TestJWTIssuerValidation(t *testing.T) {
 }
 
 func TestJWTAudienceValidation(t *testing.T) {
-	secret := []byte("audience-secret")
+	secret := []byte("audience-secret-0123456789-0123456789-abcdef")
 	opts := JWTOptions{Audience: "my-api"}
 	cases := []struct {
 		name   string
@@ -71,7 +71,7 @@ func TestJWTAudienceValidation(t *testing.T) {
 }
 
 func TestJWTLeeway(t *testing.T) {
-	secret := []byte("leeway-secret")
+	secret := []byte("leeway-secret-0123456789-0123456789-abcdef")
 	expired30s := map[string]any{"exp": time.Now().Add(-30 * time.Second).Unix()}
 	if got := jwtStatus(t, JWTOptions{}, secret, expired30s); got != http.StatusUnauthorized {
 		t.Errorf("no leeway: got %d", got)

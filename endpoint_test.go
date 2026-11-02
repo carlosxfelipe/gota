@@ -746,7 +746,7 @@ func TestOpenAPISecuritySchemesAndParamConstraints(t *testing.T) {
 	})
 
 	protected := app.Group("/api")
-	protected.Use(JWT([]byte("secret")))
+	protected.Use(JWT([]byte("secret-0123456789-0123456789-abcdefgh")))
 
 	Get(protected, "/orders/:id", func(ctx *Context, req ConstrainedQueryReq) (Empty, error) {
 		return Empty{}, nil

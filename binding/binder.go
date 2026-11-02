@@ -2,7 +2,6 @@ package binding
 
 import (
 	"encoding"
-	"encoding/json"
 	"fmt"
 	"mime/multipart"
 	"reflect"
@@ -33,7 +32,7 @@ func BindRequest(ctx *core.Context, target any) error {
 			return fmt.Errorf("failed to read body: %w", err)
 		}
 		if len(body) > 0 {
-			return json.Unmarshal(body, target)
+			return ctx.DecodeJSON(body, target)
 		}
 		return nil
 	}
@@ -58,7 +57,7 @@ func BindRequest(ctx *core.Context, target any) error {
 			return fmt.Errorf("failed to read body: %w", err)
 		}
 		if len(body) > 0 {
-			if err := json.Unmarshal(body, target); err != nil {
+			if err := ctx.DecodeJSON(body, target); err != nil {
 				return fmt.Errorf("invalid json body: %w", err)
 			}
 			clearNonBodyFields(elem)

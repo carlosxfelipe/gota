@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/rsa"
+	"time"
 
 	"github.com/carlosxfelipe/gota/core"
 	"github.com/carlosxfelipe/gota/validation"
@@ -26,6 +27,8 @@ type (
 	ScalarTheme           = core.ScalarTheme
 	CORSOptions           = core.CORSOptions
 	SecureHeadersOptions  = core.SecureHeadersOptions
+	TimeoutOptions        = core.TimeoutOptions
+	GzipOptions           = core.GzipOptions
 	JWTAlgorithm          = core.JWTAlgorithm
 	JWTHeader             = core.JWTHeader
 	JWTKeyFunc            = core.JWTKeyFunc
@@ -42,12 +45,14 @@ type (
 	OpenAPIHeader         = core.OpenAPIHeader
 )
 
-// Re-exported JWT Algorithm Constants
+// Re-exported JWT Algorithm & Security Constants
 const (
 	JWTAlgorithmHS256 = core.JWTAlgorithmHS256
 	JWTAlgorithmRS256 = core.JWTAlgorithmRS256
 	JWTAlgorithmES256 = core.JWTAlgorithmES256
 	JWTAlgorithmEdDSA = core.JWTAlgorithmEdDSA
+
+	MinHS256SecretLength = core.MinHS256SecretLength
 )
 
 // Re-exported Scalar Theme Constants
@@ -73,6 +78,9 @@ const (
 
 	DefaultMaxBodyBytes       = core.DefaultMaxBodyBytes
 	DefaultMaxMultipartMemory = core.DefaultMaxMultipartMemory
+	DefaultMaxHeaderBytes     = core.DefaultMaxHeaderBytes
+	DefaultRateLimiterMaxKeys = core.DefaultRateLimiterMaxKeys
+	DefaultGzipMinLength      = core.DefaultGzipMinLength
 )
 
 // New initializes and returns a new Gota application instance.
@@ -122,6 +130,16 @@ func BasicAuth(username, password string, opts ...BasicAuthOptions) MiddlewareFu
 // SecureHeaders returns a middleware that sets security response headers (nosniff, X-Frame-Options, Referrer-Policy, HSTS over HTTPS, optional CSP).
 func SecureHeaders(opts ...SecureHeadersOptions) MiddlewareFunc {
 	return core.SecureHeaders(opts...)
+}
+
+// Timeout returns a middleware that attaches a deadline to Request.Context() (cooperative; 503 when it expires).
+func Timeout(d time.Duration, opts ...TimeoutOptions) MiddlewareFunc {
+	return core.Timeout(d, opts...)
+}
+
+// Gzip returns a middleware that gzip-compresses compressible responses for clients accepting it.
+func Gzip(opts ...GzipOptions) MiddlewareFunc {
+	return core.Gzip(opts...)
 }
 
 // DocsContentSecurityPolicy builds the CSP used for the built-in docs page for a given Scalar script URL.

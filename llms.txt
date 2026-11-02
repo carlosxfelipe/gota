@@ -41,6 +41,7 @@ func main() {
 		ScalarTheme:        gota.ThemeFastify, // Default: gota.ThemeFastify
 		ScalarLayout:       "classic",         // Default: "classic" ("classic" or "modern")
 		DisableDocs:        false,             // Set true to disable /docs and /openapi.json routes (recommended for public production APIs)
+		DisallowUnknownFields: false,          // true: JSON bodies with keys not declared in the request struct fail with 400
 		DocsCSPEnforce:     false,             // Docs CSP is report-only by default; true enforces it (see "Docs Hardening")
 		MaxBodyBytes:       10 << 20,          // Default: 10 MiB (negative value disables limit)
 		MaxMultipartMemory: 32 << 20,          // Default: 32 MiB RAM for multipart parsing (negative disables limit)
@@ -145,6 +146,8 @@ Gota binds fields from five HTTP sources and enriches validation/OpenAPI using s
 1. Body is parsed first according to `Content-Type` (`multipart/form-data`, `application/x-www-form-urlencoded`, or JSON).
 2. **Cross-Source Spoofing Protection**: Any field tagged with `param`, `query`, `header`, or `form` (without an explicit `json:"name"` tag) is zeroed after JSON unmarshaling and populated **exclusively** from its declared source, so a JSON body like `{"UserID": 1}` can never spoof a `header:"X-User-Id"` or `param:"id"` field.
 3. **Binding Errors**: Malformed JSON or type conversion failures (e.g. `?page=abc` for an `int`) automatically return `HTTP 400 Bad Request` (`gota.ErrorResponse`). Payloads exceeding `Config.MaxBodyBytes` return `HTTP 413 Request Entity Too Large` (`gota.ErrorResponse`).
+
+> **Strict JSON (`Config.DisallowUnknownFields: true`)**: bodies containing keys that are not fields of the request struct fail with `400` (`json: unknown field "x"`), catching typos and mass-assignment probes. Trailing data after the JSON value is rejected too. Applies to REPR binding and `ctx.BindJson`; use `ctx.DecodeJSON(data, &v)` in custom code to honor the setting. Default is off (unknown keys are ignored).
 
 #### Embedded Structs (Reusable DTO Composition / Mixins)
 
@@ -457,7 +460,17 @@ app.Use(gota.SecureHeaders(gota.SecureHeadersOptions{
 	HSTSIncludeSubdomains: true,                          // HSTSMaxAge default 31536000; negative disables
 }))
 
-// 7. Constant-Time HTTP Basic Auth (automatically documents BasicAuth in OpenAPI 3.1)
+// 7. Per-request timeout (COOPERATIVE): sets a deadline on ctx.Request.Context(); the handler and its DB/HTTP calls must
+//    honor it (pass ctx.Request.Context()). If it expires and an error was returned before writing, the client gets 503.
+//    Panics if d <= 0. NEVER apply to SSE/streaming routes (it would end the stream).
+app.Use(gota.Timeout(5*time.Second, gota.TimeoutOptions{Message: "request timeout"}))
+
+// 8. Gzip compression for clients sending Accept-Encoding: gzip. Only text/*, JSON, XML, JS, SVG are compressed; bodies
+//    < MinLength (default 1024), HEAD/Range requests, text/event-stream and already-encoded responses are skipped. Always
+//    sets Vary: Accept-Encoding. BREACH caveat: avoid on HTTPS endpoints mixing secrets with reflected user input.
+app.Use(gota.Gzip(gota.GzipOptions{Level: 5, MinLength: 1024})) // Level: -2..9, invalid panics
+
+// 9. Constant-Time HTTP Basic Auth (automatically documents BasicAuth in OpenAPI 3.1)
 adminGroup.Use(gota.BasicAuth("admin", os.Getenv("ADMIN_PASS"), gota.BasicAuthOptions{
 	Realm: "Admin Area", // Optional: Validator func(user, pass string) bool
 }))
@@ -579,6 +592,8 @@ token, err := gota.SignJWT(jwtSecret, CustomClaims{
 var claims CustomClaims
 err = gota.VerifyJWT(jwtSecret, tokenString, &claims)
 ```
+
+> **Minimum secret length**: `gota.JWT(secret, ...)` (HS256) **panics at startup** if `secret` is shorter than `gota.MinHS256SecretLength` (32 bytes, RFC 7518 §3.2). Generate one with `openssl rand -base64 48` and load it from the environment. `JWTOptions{AllowShortSecret: true}` bypasses the check (tests/legacy only). Not applied to RS256/ES256/EdDSA or `KeyFunc` middlewares, nor to the standalone `SignJWT`/`VerifyJWT` helpers (which only reject empty secrets).
 
 ### 7.2 Protecting Routes & Extracting Claims
 

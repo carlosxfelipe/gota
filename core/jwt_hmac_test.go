@@ -59,7 +59,7 @@ func TestVerifyJWTInvalidSignature(t *testing.T) {
 }
 
 func TestJWTMiddleware(t *testing.T) {
-	secret := []byte("middleware-secret")
+	secret := []byte("middleware-secret-0123456789-0123456789-abcdef")
 	app := New(Config{DisableDocs: true})
 
 	authGroup := app.Group("/protected")

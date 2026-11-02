@@ -60,7 +60,7 @@ func TestVerifyJWTNotBefore(t *testing.T) {
 }
 
 func TestJWTMiddlewareRequireExp(t *testing.T) {
-	secret := []byte("middleware-secret")
+	secret := []byte("middleware-secret-0123456789-0123456789-abcdef")
 	app := New(Config{DisableDocs: true})
 	group := app.Group("/p")
 	group.Use(JWT(secret, JWTOptions{RequireExp: true}))

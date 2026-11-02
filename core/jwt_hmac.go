@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"fmt"
 )
 
 func hmacSHA256(secret []byte, data string) []byte {
@@ -51,6 +52,8 @@ func verifyJWT(secret []byte, tokenString string, target any, chk jwtChecks) err
 }
 
 // JWT returns a built-in middleware for Bearer token validation using HMAC-SHA256 (HS256) by default.
+// It panics at startup if the HS256 secret is shorter than MinHS256SecretLength bytes
+// (unless JWTOptions.AllowShortSecret is set).
 // If opts specifies RSAPublicKey (or Algorithm == JWTAlgorithmRS256), RS256 validation is used.
 // On successful authentication, decoded claims are stored in Context under ContextKey (default: "user"),
 // and the raw token is stored under "jwt_token".
@@ -63,5 +66,22 @@ func JWT(secret []byte, opts ...JWTOptions) MiddlewareFunc {
 	if len(opts) > 0 {
 		applyJWTOptions(&cfg, opts[0])
 	}
+	if usesHMAC(cfg) && !cfg.AllowShortSecret && len(cfg.Secret) < MinHS256SecretLength {
+		panic(fmt.Sprintf("gota: JWT HS256 secret must be at least %d bytes (256 bits, RFC 7518 §3.2), got %d; "+
+			"generate one with `openssl rand -base64 48` or set JWTOptions.AllowShortSecret (not recommended)",
+			MinHS256SecretLength, len(cfg.Secret)))
+	}
 	return createJWTMiddleware(cfg)
+}
+
+// MinHS256SecretLength is the minimum HMAC-SHA256 secret size in bytes accepted by JWT()
+// (RFC 7518 §3.2 requires a key at least as long as the 256-bit hash output).
+const MinHS256SecretLength = 32
+
+// usesHMAC reports whether createJWTMiddleware will verify tokens with the HS256 secret.
+func usesHMAC(cfg JWTOptions) bool {
+	return cfg.KeyFunc == nil &&
+		cfg.Algorithm != JWTAlgorithmEdDSA && len(cfg.EdDSAPublicKey) == 0 &&
+		cfg.Algorithm != JWTAlgorithmES256 && cfg.ECDSAPublicKey == nil &&
+		cfg.Algorithm != JWTAlgorithmRS256 && cfg.RSAPublicKey == nil
 }

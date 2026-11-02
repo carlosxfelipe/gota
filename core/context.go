@@ -1,7 +1,9 @@
 package core
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -33,6 +35,9 @@ type Context struct {
 
 	// trustedProxies is the number of trusted proxies in front of the app (X-Forwarded-For depth).
 	trustedProxies int
+
+	// disallowUnknownFields makes DecodeJSON / BindJson reject unknown JSON object keys.
+	disallowUnknownFields bool
 
 	// maxBodyBytes caps what Body() will read (<= 0 disables). Defaults to DefaultMaxBodyBytes so a
 	// Context created outside App.ServeHTTP is still protected against unbounded request bodies.
@@ -264,7 +269,25 @@ func (c *Context) BindJson(target any) error {
 	if len(data) == 0 {
 		return fmt.Errorf("gota: request body is empty")
 	}
-	return json.Unmarshal(data, target)
+	return c.DecodeJSON(data, target)
+}
+
+// DecodeJSON decodes JSON data into target like json.Unmarshal. When Config.DisallowUnknownFields
+// is enabled, unknown object keys are rejected (json: unknown field "x").
+func (c *Context) DecodeJSON(data []byte, target any) error {
+	if !c.disallowUnknownFields {
+		return json.Unmarshal(data, target)
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(target); err != nil {
+		return err
+	}
+	// Like json.Unmarshal, reject anything after the first JSON value.
+	if _, err := dec.Token(); err != io.EOF {
+		return errors.New("invalid character after top-level value")
+	}
+	return nil
 }
 
 // Set stores a value scoped to this request context.

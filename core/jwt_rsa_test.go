@@ -241,7 +241,7 @@ func TestJWTRSAMiddleware(t *testing.T) {
 
 func TestJWTOptionsAlgorithmDefault(t *testing.T) {
 	// Verify that calling JWT without algorithm options defaults to HS256
-	secret := []byte("secret-key")
+	secret := []byte("secret-key-0123456789-0123456789-abcdef")
 	opts := JWTOptions{}
 	app := New(Config{DisableDocs: true})
 	app.Use(JWT(secret, opts))

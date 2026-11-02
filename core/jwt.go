@@ -56,6 +56,9 @@ type JWTOptions struct {
 	// ClaimsFactory is an optional factory function returning a pointer to a custom claims struct.
 	// If nil, claims are decoded into map[string]any.
 	ClaimsFactory func() any
+	// AllowShortSecret disables the minimum HS256 secret length check done by JWT().
+	// Only use it for tests or legacy secrets you cannot rotate yet.
+	AllowShortSecret bool
 	// RequireExp rejects tokens that do not carry a positive 'exp' claim, so that
 	// tokens without an expiration can never be accepted by the middleware.
 	RequireExp bool
@@ -266,6 +269,7 @@ func applyJWTOptions(dst *JWTOptions, src JWTOptions) {
 		dst.ClaimsFactory = src.ClaimsFactory
 	}
 	dst.RequireExp = src.RequireExp
+	dst.AllowShortSecret = src.AllowShortSecret
 	dst.Issuer = src.Issuer
 	dst.Audience = src.Audience
 	dst.Leeway = src.Leeway

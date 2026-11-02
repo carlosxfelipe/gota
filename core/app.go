@@ -92,6 +92,10 @@ type Config struct {
 	// Use negative value to disable.
 	IdleTimeout time.Duration `json:"idleTimeout,omitempty"`
 
+	// DisallowUnknownFields makes JSON request bodies fail with 400 when they contain keys that
+	// are not fields of the request struct (typos, mass-assignment probes). Default: false.
+	DisallowUnknownFields bool `json:"disallowUnknownFields,omitempty"`
+
 	// DocsCSP overrides the Content-Security-Policy sent with the docs page. Empty uses
 	// DocsContentSecurityPolicy (compatible with Scalar); "-" omits the header.
 	DocsCSP string `json:"docsCsp,omitempty"`
@@ -462,6 +466,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	handler, params, ok := a.router.Match(r.Method, r.URL.Path)
 	ctx := NewContext(w, r, params)
 	ctx.trustProxy = a.config.TrustProxyHeaders
+	ctx.disallowUnknownFields = a.config.DisallowUnknownFields
 	ctx.maxBodyBytes = a.config.MaxBodyBytes // negative: limit explicitly disabled
 	ctx.trustedProxies = a.config.TrustedProxyCount
 	ctx.maxMultipartMemory = a.config.MaxMultipartMemory
