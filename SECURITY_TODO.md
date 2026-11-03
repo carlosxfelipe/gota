@@ -35,17 +35,22 @@ Este checklist reúne os pontos de auditoria e hardening identificados para miti
 
 ## ⚠️ Prioridade Média (Modelos, Isolamento & Credenciais)
 
-- [ ] **4. Auditoria de Schemas TypeScript contra Mass Assignment e Vazamento de Dados**
+- [x] **4. Auditoria de Schemas TypeScript contra Mass Assignment e Vazamento de Dados**
   - **Cenário de Ataque**: Structs de domínio/banco sem `json:"-"` expõem propriedades internas (ex: `password_hash`, `role`, `is_admin`, `reset_token`, `stripe_id`) no `.d.ts`. O pentester usa isso para tentar injeção de parâmetros (*Mass Assignment*) nos endpoints de criação/atualização.
   - **Ação**:
-    - Adicionar no `TypeScriptGenerator` detecção ou *warning* durante testes quando structs expõem campos sensíveis conhecidos (ex: que contenham `password`, `secret`, `hash`, `token`, `salt`) sem a tag `json:"-"`.
-    - Reforçar na documentação o uso de DTOs separados para Request e Response.
+    - Implementada função de auditoria exportada `gota.AuditModel(model)` para uso em testes unitários e CI/CD, recursiva em structs embutidas.
+    - Implementada detecção automática de avisos de segurança no `TypeScriptGenerator` e `OpenAPIGenerator` para campos contendo `password_hash`, `salt`, `secret`, `token` sem `json:"-"`.
+    - Suporte a supressão explícita por campo via `validate:"nowarn"` ou global via `Config.SilenceTagWarnings`.
+  - **Critério de Aceite**: Testes em `core/typescript_test.go` (`TestAuditModel_SecurityDetection`) e `endpoint_test.go` (`TestRoot_AuditModel`) validando detecção de campos vulneráveis, structs embutidas e supressão via `nowarn`.
 
-- [ ] **5. Alerta contra Credenciais Hardcoded e Senhas Fracas no `BasicAuth`**
+- [x] **5. Alerta contra Credenciais Hardcoded e Senhas Fracas no `BasicAuth`**
   - **Cenário de Ataque**: Senhas literais no código (ex: `BasicAuth("admin", "admin123")`) vão para o histórico do Git e ficam embutidas em texto claro dentro do binário Go compilado (`strings binary | grep admin`).
   - **Ação**:
-    - No `gota.BasicAuth()`, emitir um `log.Printf("⚠️ ALERTA DE SEGURANÇA: ...")` se forem detectadas senhas comuns/fracas (`"admin"`, `"admin123"`, `"123456"`, `"password"`, `"secret"`, `"root"`).
-    - Recomendar fortemente nas docs e exemplos o uso exclusivo de `os.Getenv("DOCS_PASSWORD")`.
+    - Implementada detecção de senhas conhecidas/fracas (`IsWeakPassword`), vazias ou idênticas ao usuário no `core/middleware.go`.
+    - Alerta de segurança explícito emitido na inicialização (com destaque CRITICAL em produção `isProductionEnv()`).
+    - Opção `AllowWeakCredentials: true` em `BasicAuthOptions` para supressão intencional em testes.
+    - Função exportada `gota.IsWeakPassword(password string) bool` no pacote raiz.
+  - **Critério de Aceite**: Testes em `core/middleware_test.go` (`TestBasicAuth_WeakPasswordWarning`) validando detecção de senhas fracas, senhas vazias, senha igual ao usuário e silenciamento via `AllowWeakCredentials`.
 
 - [ ] **6. Isolamento de CORS nas Rotas de Documentação e Schemas**
   - **Cenário de Ataque**: Se o CORS global estiver configurado permissivamente, requisições autenticadas via browser (onde o usuário tem o BasicAuth memorizado) poderiam teoricamente ser lidas por sites terceiros maliciosos se as origens forem refletidas.

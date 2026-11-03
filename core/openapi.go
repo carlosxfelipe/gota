@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"path"
 	"reflect"
@@ -536,6 +537,15 @@ func (g *OpenAPIGenerator) collectStructFields(t reflect.Type, properties map[st
 
 		if !field.IsExported() {
 			continue
+		}
+
+		if !g.config.SilenceTagWarnings && !strings.Contains(field.Tag.Get("validate"), "nowarn") {
+			if isSens, reason := IsSensitiveFieldName(field.Name); isSens {
+				warnKey := fmt.Sprintf("%s.%s", t.String(), field.Name)
+				if _, loaded := loggedSensitiveWarnings.LoadOrStore(warnKey, true); !loaded {
+					log.Printf("⚠️  gota [SECURITY]: field %q in struct %s appears to contain a %s but is not marked with `json:\"-\"`. It will be exposed in TypeScript and OpenAPI contracts. Add `json:\"-\"` to hide it, or silence with Config.SilenceTagWarnings.", field.Name, t.String(), reason)
+				}
+			}
 		}
 
 		paramTag := field.Tag.Get("param")

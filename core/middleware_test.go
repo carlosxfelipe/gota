@@ -289,6 +289,7 @@ func TestBasicAuthWithRateLimit(t *testing.T) {
 	app.Get("/secret", func(ctx *Context) error {
 		return ctx.Send("ok")
 	}).Middleware(BasicAuth("admin", "pass", BasicAuthOptions{
+		AllowWeakCredentials: true,
 		RateLimit: &RateLimiterOptions{
 			Max:    2,
 			Window: time.Minute,
@@ -323,6 +324,48 @@ func TestBasicAuthWithRateLimit(t *testing.T) {
 	}
 	if rec3.Header().Get("Retry-After") == "" {
 		t.Errorf("expected Retry-After header on 429 response")
+	}
+}
+
+func TestBasicAuth_WeakPasswordWarning(t *testing.T) {
+	var logged []string
+	BasicAuthWarningLogger = func(w string) {
+		logged = append(logged, w)
+	}
+	defer func() { BasicAuthWarningLogger = nil }()
+
+	// 1. Weak password emits warning
+	_ = BasicAuth("admin", "admin123")
+	if len(logged) == 0 || !strings.Contains(logged[0], "admin123") {
+		t.Fatalf("expected warning for weak password, got %v", logged)
+	}
+
+	// 2. AllowWeakCredentials silences warning
+	logged = nil
+	_ = BasicAuth("admin", "admin123", BasicAuthOptions{AllowWeakCredentials: true})
+	if len(logged) != 0 {
+		t.Fatalf("expected no warning when AllowWeakCredentials is true, got %v", logged)
+	}
+
+	// 3. Empty password emits warning
+	logged = nil
+	_ = BasicAuth("admin", "")
+	if len(logged) == 0 || !strings.Contains(logged[0], "empty") {
+		t.Fatalf("expected warning for empty password, got %v", logged)
+	}
+
+	// 4. Same username and password emits warning
+	logged = nil
+	_ = BasicAuth("carlos", "carlos")
+	if len(logged) == 0 {
+		t.Fatalf("expected warning when password equals username")
+	}
+
+	// 5. Strong password emits no warning
+	logged = nil
+	_ = BasicAuth("admin", "Super_Str0ng!P@ssw0rd#2026")
+	if len(logged) != 0 {
+		t.Fatalf("expected no warning for strong password, got %v", logged)
 	}
 }
 

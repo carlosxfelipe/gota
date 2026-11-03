@@ -307,6 +307,42 @@ type BasicAuthOptions struct {
 	// RateLimit optionally configures an in-memory RateLimiter specifically for this BasicAuth instance
 	// to protect against brute-force and credential-stuffing attacks.
 	RateLimit *RateLimiterOptions
+	// AllowWeakCredentials suppresses security warning logs when using common or weak passwords (e.g. for testing).
+	AllowWeakCredentials bool
+}
+
+// BasicAuthWarningLogger, if set, redirects BasicAuth security warning messages.
+// When nil, log.Printf is used.
+var BasicAuthWarningLogger func(warning string)
+
+var commonWeakPasswords = map[string]bool{
+	"admin":    true,
+	"admin123": true,
+	"123456":   true,
+	"12345678": true,
+	"password": true,
+	"secret":   true,
+	"root":     true,
+	"guest":    true,
+	"qwerty":   true,
+	"pass":     true,
+	"test":     true,
+	"1234":     true,
+}
+
+// IsWeakPassword reports whether a password is short or matches commonly known default credentials.
+func IsWeakPassword(password string) bool {
+	p := strings.ToLower(strings.TrimSpace(password))
+	return len(p) < 4 || commonWeakPasswords[p]
+}
+
+func emitBasicAuthWarning(msg string) {
+	formatted := fmt.Sprintf("⚠️  gota [SECURITY]: %s", msg)
+	if BasicAuthWarningLogger != nil {
+		BasicAuthWarningLogger(formatted)
+	} else {
+		log.Printf("%s", formatted)
+	}
 }
 
 // BasicAuth returns an HTTP Basic Authentication middleware using constant-time credential comparison.
@@ -316,6 +352,7 @@ func BasicAuth(username, password string, opts ...BasicAuthOptions) MiddlewareFu
 	contextKey := "user"
 	var validator func(u, p string) bool
 	var rateLimiter MiddlewareFunc
+	allowWeak := false
 
 	if len(opts) > 0 {
 		if opts[0].Realm != "" {
@@ -327,6 +364,19 @@ func BasicAuth(username, password string, opts ...BasicAuthOptions) MiddlewareFu
 		validator = opts[0].Validator
 		if opts[0].RateLimit != nil {
 			rateLimiter = RateLimiter(*opts[0].RateLimit)
+		}
+		allowWeak = opts[0].AllowWeakCredentials
+	}
+
+	if !allowWeak {
+		if password == "" || username == "" {
+			emitBasicAuthWarning("BasicAuth initialized with empty username or password! Any client may authenticate without credentials.")
+		} else if strings.EqualFold(username, password) || IsWeakPassword(password) {
+			if isProductionEnv() {
+				emitBasicAuthWarning(fmt.Sprintf("CRITICAL: BasicAuth configured with weak or default password %q in production! Use a strong secret from os.Getenv(...) or set AllowWeakCredentials: true.", password))
+			} else {
+				emitBasicAuthWarning(fmt.Sprintf("BasicAuth configured with known weak/default password %q. For production security, use a strong password from os.Getenv(...) or set BasicAuthOptions.AllowWeakCredentials.", password))
+			}
 		}
 	}
 

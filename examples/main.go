@@ -99,6 +99,7 @@ func main() {
 			Max:    10,          // Max 10 attempts
 			Window: time.Minute, // per minute per client IP
 		},
+		AllowWeakCredentials: true, // silences the weak password warning during local development
 	}))
 
 	// 1. Healthcheck Endpoint (Empty Request)

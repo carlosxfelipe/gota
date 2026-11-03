@@ -2,11 +2,13 @@ package core
 
 import (
 	"fmt"
+	"log"
 	"path"
 	"reflect"
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 )
 
 var (
@@ -21,6 +23,87 @@ func sanitizeTSTypeName(name string) string {
 	name = tsSchemaNamePkgQual.ReplaceAllString(name, "")
 	name = tsSchemaNameInvalid.ReplaceAllString(name, "_")
 	return strings.Trim(name, "_")
+}
+
+var loggedSensitiveWarnings sync.Map
+
+// IsSensitiveFieldName checks if an exported struct field name strongly resembles a sensitive secret
+// that should generally not be exposed in JSON, TypeScript definitions, or OpenAPI contracts.
+func IsSensitiveFieldName(name string) (bool, string) {
+	lower := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(name, "_", ""), "-", ""))
+	switch {
+	case strings.Contains(lower, "passwordhash") || strings.Contains(lower, "passwdhash") || strings.Contains(lower, "pwdhash") || strings.Contains(lower, "passhash"):
+		return true, "password hash"
+	case strings.Contains(lower, "passwordsalt") || lower == "salt":
+		return true, "cryptographic salt"
+	case strings.Contains(lower, "clientsecret") || strings.Contains(lower, "apisecret") || strings.Contains(lower, "jwtsecret") || lower == "secret":
+		return true, "secret key"
+	case strings.Contains(lower, "resettoken") || strings.Contains(lower, "refreshtoken") || strings.Contains(lower, "authtoken") || strings.Contains(lower, "sessiontoken"):
+		return true, "authentication/session token"
+	default:
+		return false, ""
+	}
+}
+
+// AuditModel inspects a struct model (recursing into embedded structs) and returns warning messages
+// for any exported fields that appear to expose sensitive secrets without a `json:"-"` or `form:"-"` tag.
+// Useful in unit tests to ensure internal entity fields are not leaked to API contracts.
+func AuditModel(model any) []string {
+	if model == nil {
+		return nil
+	}
+	t := reflect.TypeOf(model)
+	for t.Kind() == reflect.Pointer || t.Kind() == reflect.Slice {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return nil
+	}
+
+	var warnings []string
+	auditModelRecursive(t, make(map[reflect.Type]bool), &warnings)
+	return warnings
+}
+
+func auditModelRecursive(t reflect.Type, seen map[reflect.Type]bool, warnings *[]string) {
+	if seen[t] {
+		return
+	}
+	seen[t] = true
+
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		jsonTag := field.Tag.Get("json")
+		formTag := field.Tag.Get("form")
+		if jsonTag == "-" || formTag == "-" {
+			continue
+		}
+
+		if ft, ok := EmbeddedStructType(field); ok {
+			auditModelRecursive(ft, seen, warnings)
+			continue
+		}
+
+		if !field.IsExported() {
+			continue
+		}
+
+		if strings.Contains(field.Tag.Get("validate"), "nowarn") {
+			continue
+		}
+
+		if isSens, reason := IsSensitiveFieldName(field.Name); isSens {
+			*warnings = append(*warnings, fmt.Sprintf("field %q in struct %s appears to contain a %s but is not marked with `json:\"-\"`", field.Name, t.Name(), reason))
+		}
+
+		ft := field.Type
+		for ft.Kind() == reflect.Pointer || ft.Kind() == reflect.Slice {
+			ft = ft.Elem()
+		}
+		if ft.Kind() == reflect.Struct && ft != timeType && ft != fileHeaderType {
+			auditModelRecursive(ft, seen, warnings)
+		}
+	}
 }
 
 // TypeScriptGenerator inspects registered Gota routes and types to produce TypeScript declarations and SDKs.
@@ -184,6 +267,15 @@ func (g *TypeScriptGenerator) collectStructFields(t reflect.Type, fields *[]stru
 
 		if !field.IsExported() {
 			continue
+		}
+
+		if !g.config.SilenceTagWarnings && !strings.Contains(field.Tag.Get("validate"), "nowarn") {
+			if isSens, reason := IsSensitiveFieldName(field.Name); isSens {
+				warnKey := fmt.Sprintf("%s.%s", t.String(), field.Name)
+				if _, loaded := loggedSensitiveWarnings.LoadOrStore(warnKey, true); !loaded {
+					log.Printf("⚠️  gota [SECURITY]: field %q in struct %s appears to contain a %s but is not marked with `json:\"-\"`. It will be exposed in TypeScript and OpenAPI contracts. Add `json:\"-\"` to hide it, or silence with Config.SilenceTagWarnings.", field.Name, t.String(), reason)
+				}
+			}
 		}
 
 		paramTag := field.Tag.Get("param")

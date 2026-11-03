@@ -955,3 +955,16 @@ func TestEndpoint_TypeScriptGeneration(t *testing.T) {
 		t.Errorf("expected createGotaClient in HTTP response, got:\n%s", wSDK.Body.String())
 	}
 }
+
+type UserDatabaseEntity struct {
+	ID           string `json:"id"`
+	PasswordHash string `json:"password_hash"`
+	ApiSecret    string `json:"api_secret"`
+}
+
+func TestRoot_AuditModel(t *testing.T) {
+	warnings := AuditModel(UserDatabaseEntity{})
+	if len(warnings) != 2 {
+		t.Fatalf("expected 2 warnings from root AuditModel, got %d: %v", len(warnings), warnings)
+	}
+}

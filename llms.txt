@@ -219,6 +219,8 @@ Nested structs (`Address AddressDTO`, `*AddressDTO`) and slices of structs (`Ite
 At route registration, `WrapEndpoint` runs `validation.CheckTags`:
 - **Intentional Panics**: Unsupported tags like `path:"id"`, `message:"text"` (use `msg`), `gota:"nowarn"` (use `validate:"...,nowarn"`), unknown validation rules (e.g. `requried`, `gte=5`, `lte=10`, `length=5`, `dive`, `isdefault`), bad rule parameters (`min=abc`), or `msg` referencing undeclared rules **panic immediately at startup** with corrective suggestions.
 - **Startup Warnings**: Non-fatal warnings are logged once per type for `validate:"omitempty"` (no-op in Gota) and `validate:"required"` on non-pointer numeric/bool primitives. Silence per-field with `validate:"...,nowarn"`, or globally with `Config{SilenceTagWarnings: true}` or `gota.SilenceTagWarnings(true)`.
+- **Sensitive Field Leak Warnings**: Non-fatal security warnings are logged if exported struct fields appear to contain sensitive secrets (e.g. `PasswordHash`, `ClientSecret`, `Salt`, `ResetToken`) without a `json:"-"` tag. Silence per-field with `validate:"nowarn"` or globally with `SilenceTagWarnings: true`.
+- **Model Security Auditing**: `gota.AuditModel(model any) []string` inspects any struct (and nested/embedded structs) and returns warning messages if sensitive fields lack `json:"-"`. Ideal for unit tests to prevent accidental database/domain schema leakage in API contracts.
 
 #### Custom Error Messages (`msg` Tag)
 
@@ -480,9 +482,11 @@ app.Use(gota.Gzip(gota.GzipOptions{Level: 5, MinLength: 1024})) // Level: -2..9,
 
 // 9. Constant-Time HTTP Basic Auth (automatically documents BasicAuth in OpenAPI 3.1)
 //    Supports optional RateLimit to protect against brute-force and credential-stuffing attacks.
+//    Warns at startup if configured with weak/default credentials (suppress with AllowWeakCredentials: true).
 adminGroup.Use(gota.BasicAuth("admin", os.Getenv("ADMIN_PASS"), gota.BasicAuthOptions{
-	Realm:     "Admin Area", // Optional: Validator func(user, pass string) bool, ContextKey string
-	RateLimit: &gota.RateLimiterOptions{Max: 5, Window: time.Minute},
+	Realm:                "Admin Area", // Optional: Validator func(user, pass string) bool, ContextKey string
+	RateLimit:            &gota.RateLimiterOptions{Max: 5, Window: time.Minute},
+	AllowWeakCredentials: false,        // true silences weak/default password warnings
 }))
 ```
 

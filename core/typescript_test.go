@@ -340,3 +340,56 @@ func TestTypeScript_ExportOfflineFiles(t *testing.T) {
 		t.Errorf("exported content does not match GenerateTypeScriptSDK()")
 	}
 }
+
+type testVulnerableEntity struct {
+	ID           string `json:"id"`
+	Email        string `json:"email"`
+	PasswordHash string `json:"password_hash"`
+	ClientSecret string `json:"client_secret"`
+	Salt         string `json:"salt"`
+	ResetToken   string `json:"reset_token"`
+}
+
+type testSafeEntity struct {
+	ID           string `json:"id"`
+	Email        string `json:"email"`
+	PasswordHash string `json:"-"`
+	ClientSecret string `json:"-"`
+	Salt         string `json:"-"`
+	ResetToken   string `json:"-"`
+}
+
+type testIgnoredEntity struct {
+	PasswordHash string `json:"password_hash" validate:"nowarn"`
+}
+
+type testEmbeddedVulnerable struct {
+	testVulnerableEntity
+	Extra string `json:"extra"`
+}
+
+func TestAuditModel_SecurityDetection(t *testing.T) {
+	// 1. Detects all sensitive fields when json:"-" is omitted
+	warnings := AuditModel(testVulnerableEntity{})
+	if len(warnings) != 4 {
+		t.Fatalf("expected 4 warnings for vulnerable entity, got %d: %v", len(warnings), warnings)
+	}
+
+	// 2. Safe entity with json:"-" produces no warnings
+	safeWarnings := AuditModel(testSafeEntity{})
+	if len(safeWarnings) != 0 {
+		t.Fatalf("expected 0 warnings for safe entity, got %d: %v", len(safeWarnings), safeWarnings)
+	}
+
+	// 3. validate:"nowarn" silences the warning
+	ignoredWarnings := AuditModel(testIgnoredEntity{})
+	if len(ignoredWarnings) != 0 {
+		t.Fatalf("expected 0 warnings for ignored entity, got %d: %v", len(ignoredWarnings), ignoredWarnings)
+	}
+
+	// 4. Recurses into embedded structs
+	embWarnings := AuditModel(testEmbeddedVulnerable{})
+	if len(embWarnings) != 4 {
+		t.Fatalf("expected 4 warnings for embedded entity, got %d: %v", len(embWarnings), embWarnings)
+	}
+}

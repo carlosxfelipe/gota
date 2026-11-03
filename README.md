@@ -184,6 +184,8 @@ app.UseDocs(gota.BasicAuth("admin", os.Getenv("DOCS_PASSWORD"), gota.BasicAuthOp
 }))
 ```
 
+> 💡 Gota automatically warns at startup if `BasicAuth` is configured with empty, short, or common default passwords (e.g. `"admin123"`, `"secret"`). Suppress this with `BasicAuthOptions{AllowWeakCredentials: true}` in local test suites.
+
 _(You can also configure this declaratively via `DocsMiddlewares: [...]` or `DocsRateLimit: &gota.RateLimiterOptions{...}` inside `gota.Config`.)_
 
 #### 2. Disable Completely in Production (`DisableDocs`)
@@ -274,6 +276,8 @@ clientSDK := app.GenerateTypeScriptSDK()
 ```
 
 > 🔒 **Security Best Practice for Production**: In production, do not serve `/types.d.ts` or `/sdk.ts` over HTTP. Generate the SDK offline via `app.ExportTypeScriptSDK(...)` in your CI/CD build step (see `examples/codegen/main.go`), and set `TypeScriptURL: "-"` and `TypeScriptSDKURL: "-"` in your production environment. Gota automatically issues a startup warning if TypeScript routes are exposed publicly in production environments.
+>
+> 🛡️ **Model Schema Auditing**: Use `gota.AuditModel(MyModel{})` in your test suite to assert that sensitive entity fields (e.g. `PasswordHash`, `ClientSecret`, `ResetToken`) are hidden with `json:"-"` and never leaked into API contracts.
 
 ---
 

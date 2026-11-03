@@ -127,6 +127,11 @@ func BasicAuth(username, password string, opts ...BasicAuthOptions) MiddlewareFu
 	return core.BasicAuth(username, password, opts...)
 }
 
+// IsWeakPassword reports whether a password matches known default credentials or is under 4 characters.
+func IsWeakPassword(password string) bool {
+	return core.IsWeakPassword(password)
+}
+
 // SecureHeaders returns a middleware that sets security response headers (nosniff, X-Frame-Options, Referrer-Policy, HSTS over HTTPS, optional CSP).
 func SecureHeaders(opts ...SecureHeadersOptions) MiddlewareFunc {
 	return core.SecureHeaders(opts...)
@@ -266,4 +271,11 @@ func UnprocessableEntity(message string) *HTTPError {
 
 func InternalServerError(message string) *HTTPError {
 	return core.InternalServerError(message)
+}
+
+// AuditModel inspects a struct model (recursing into embedded structs) and returns warning messages
+// for any exported fields that appear to expose sensitive secrets without a `json:"-"` or `form:"-"` tag.
+// Useful in unit tests to ensure internal entity fields are not leaked to API contracts.
+func AuditModel(model any) []string {
+	return core.AuditModel(model)
 }
