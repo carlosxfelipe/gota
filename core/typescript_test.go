@@ -3,6 +3,8 @@ package core
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -204,6 +206,12 @@ func TestTypeScript_HTTPRouteAndOptions(t *testing.T) {
 	if !strings.Contains(cType, "application/typescript") {
 		t.Errorf("unexpected content type %q", cType)
 	}
+	if rec.Header().Get("Cache-Control") != "no-store, no-cache, must-revalidate, private" {
+		t.Errorf("expected strict no-cache header, got %q", rec.Header().Get("Cache-Control"))
+	}
+	if rec.Header().Get("Pragma") != "no-cache" {
+		t.Errorf("expected Pragma: no-cache, got %q", rec.Header().Get("Pragma"))
+	}
 	if !strings.Contains(rec.Body.String(), "export interface GotaEndpoints") {
 		t.Errorf("expected GotaEndpoints in body, got %s", rec.Body.String())
 	}
@@ -215,6 +223,12 @@ func TestTypeScript_HTTPRouteAndOptions(t *testing.T) {
 
 	if recSDK.Code != http.StatusOK {
 		t.Fatalf("expected 200 for SDK, got %d", recSDK.Code)
+	}
+	if recSDK.Header().Get("Cache-Control") != "no-store, no-cache, must-revalidate, private" {
+		t.Errorf("expected strict no-cache header for SDK, got %q", recSDK.Header().Get("Cache-Control"))
+	}
+	if recSDK.Header().Get("Pragma") != "no-cache" {
+		t.Errorf("expected Pragma: no-cache for SDK, got %q", recSDK.Header().Get("Pragma"))
 	}
 	if !strings.Contains(recSDK.Body.String(), "export function createGotaClient") {
 		t.Errorf("expected createGotaClient implementation in SDK endpoint")
@@ -287,5 +301,42 @@ func TestTypeScript_MiddlewaresApplied(t *testing.T) {
 
 	if !called {
 		t.Errorf("expected UseDocs middleware to be executed on /types.d.ts")
+	}
+}
+
+func TestTypeScript_ExportOfflineFiles(t *testing.T) {
+	app := New(Config{
+		Title: "ExportAPI",
+	})
+	app.Get("/users", func(ctx *Context) error {
+		return ctx.Send("users")
+	})
+
+	tmpDir := t.TempDir()
+	tsPath := filepath.Join(tmpDir, "nested", "types.d.ts")
+	sdkPath := filepath.Join(tmpDir, "nested", "sdk.ts")
+
+	// Export .d.ts
+	if err := app.ExportTypeScript(tsPath); err != nil {
+		t.Fatalf("failed to export TypeScript defs: %v", err)
+	}
+	tsData, err := os.ReadFile(tsPath)
+	if err != nil {
+		t.Fatalf("failed to read exported ts file: %v", err)
+	}
+	if string(tsData) != app.GenerateTypeScript() {
+		t.Errorf("exported content does not match GenerateTypeScript()")
+	}
+
+	// Export sdk.ts
+	if err := app.ExportTypeScriptSDK(sdkPath); err != nil {
+		t.Fatalf("failed to export TypeScript SDK: %v", err)
+	}
+	sdkData, err := os.ReadFile(sdkPath)
+	if err != nil {
+		t.Fatalf("failed to read exported sdk file: %v", err)
+	}
+	if string(sdkData) != app.GenerateTypeScriptSDK() {
+		t.Errorf("exported content does not match GenerateTypeScriptSDK()")
 	}
 }

@@ -304,6 +304,9 @@ type BasicAuthOptions struct {
 	Validator func(username, password string) bool
 	// ContextKey is the context store key where the authenticated username is saved (default: "user").
 	ContextKey string
+	// RateLimit optionally configures an in-memory RateLimiter specifically for this BasicAuth instance
+	// to protect against brute-force and credential-stuffing attacks.
+	RateLimit *RateLimiterOptions
 }
 
 // BasicAuth returns an HTTP Basic Authentication middleware using constant-time credential comparison.
@@ -312,6 +315,7 @@ func BasicAuth(username, password string, opts ...BasicAuthOptions) MiddlewareFu
 	realm := "Restricted"
 	contextKey := "user"
 	var validator func(u, p string) bool
+	var rateLimiter MiddlewareFunc
 
 	if len(opts) > 0 {
 		if opts[0].Realm != "" {
@@ -321,6 +325,9 @@ func BasicAuth(username, password string, opts ...BasicAuthOptions) MiddlewareFu
 			contextKey = opts[0].ContextKey
 		}
 		validator = opts[0].Validator
+		if opts[0].RateLimit != nil {
+			rateLimiter = RateLimiter(*opts[0].RateLimit)
+		}
 	}
 
 	expectedUserHash := sha256.Sum256([]byte(username))
@@ -328,7 +335,7 @@ func BasicAuth(username, password string, opts ...BasicAuthOptions) MiddlewareFu
 	wwwAuth := fmt.Sprintf("Basic realm=%q", realm)
 
 	mw := func(next HandlerFunc) HandlerFunc {
-		return func(ctx *Context) error {
+		authHandler := func(ctx *Context) error {
 			u, p, ok := ctx.Request.BasicAuth()
 			if ok {
 				var valid bool
@@ -354,6 +361,11 @@ func BasicAuth(username, password string, opts ...BasicAuthOptions) MiddlewareFu
 				RequestID: ctx.RequestID(),
 			})
 		}
+
+		if rateLimiter != nil {
+			return rateLimiter(authHandler)
+		}
+		return authHandler
 	}
 	return registerMiddlewareSecurity(mw, "BasicAuth")
 }

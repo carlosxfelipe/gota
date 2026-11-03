@@ -2,6 +2,8 @@ package main
 
 import (
 	"log"
+	"os"
+	"time"
 
 	"github.com/carlosxfelipe/gota"
 )
@@ -57,13 +59,23 @@ func (e *GetUserEndpoint) Handle(ctx *gota.Context, req GetUserRequest) (UserRes
 // ----------------------------------------------------------------------
 
 func main() {
+	isProd := os.Getenv("ENV") == "production"
+
+	// In production, disable runtime HTTP TypeScript endpoints (use offline export instead)
+	tsURL := "/types.d.ts"
+	tsSDKURL := "/sdk.ts"
+	if isProd {
+		tsURL = "-"
+		tsSDKURL = "-"
+	}
+
 	// Initializes Gota with built-in OpenAPI 3.1, Scalar docs, and TypeScript SDK routes
 	app := gota.New(gota.Config{
 		Title:            "Gota REPR API",
 		Version:          "1.0.0",
 		Description:      "Go micro-framework oriented around the REPR Pattern with native interactive Scalar UI.",
-		TypeScriptURL:    "/types.d.ts",
-		TypeScriptSDKURL: "/sdk.ts",
+		TypeScriptURL:    tsURL,
+		TypeScriptSDKURL: tsSDKURL,
 	})
 
 	// Global Middlewares
@@ -72,9 +84,22 @@ func main() {
 	app.Use(gota.Recover())
 	app.Use(gota.CORS())
 
-	// Optional: Protect documentation routes (/docs and /openapi.json) with HTTP Basic Auth
-	// Uncomment the line below to require credentials when visiting /docs:
-	// app.UseDocs(gota.BasicAuth("admin", "admin123"))
+	// Protect documentation, schemas, and SDK routes (/docs, /openapi.json, /types.d.ts, /sdk.ts)
+	// with HTTP Basic Auth and built-in Rate Limiting to prevent brute-force attacks:
+	docsPassword := os.Getenv("DOCS_PASSWORD")
+	if docsPassword == "" {
+		if isProd {
+			log.Fatal("DOCS_PASSWORD environment variable must be set in production")
+		}
+		docsPassword = "admin123" // Fallback password for local development
+	}
+	app.UseDocs(gota.BasicAuth("admin", docsPassword, gota.BasicAuthOptions{
+		Realm: "Gota API Documentation",
+		RateLimit: &gota.RateLimiterOptions{
+			Max:    10,          // Max 10 attempts
+			Window: time.Minute, // per minute per client IP
+		},
+	}))
 
 	// 1. Healthcheck Endpoint (Empty Request)
 	gota.Get(app, "/", func(ctx *gota.Context, _ gota.Empty) (HealthResponse, error) {

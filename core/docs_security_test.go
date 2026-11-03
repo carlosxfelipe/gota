@@ -1,9 +1,11 @@
 package core
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func docsResponse(t *testing.T, cfg Config, mws ...MiddlewareFunc) *httptest.ResponseRecorder {
@@ -72,6 +74,39 @@ func TestOpenAPISpecHasNosniff(t *testing.T) {
 	app.ServeHTTP(rec, httptest.NewRequest("GET", "/openapi.json", nil))
 	if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
 		t.Error("expected nosniff on openapi.json")
+	}
+}
+
+func TestDocsAndOpenAPINoCacheHeaders(t *testing.T) {
+	app := New(Config{})
+	for _, path := range []string{"/docs", "/openapi.json"} {
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		if rec.Code != 200 {
+			t.Fatalf("%s status %d", path, rec.Code)
+		}
+		cc := rec.Header().Get("Cache-Control")
+		if cc != "no-store, no-cache, must-revalidate, private" {
+			t.Errorf("%s: expected strict no-cache header, got %q", path, cc)
+		}
+		if rec.Header().Get("Pragma") != "no-cache" {
+			t.Errorf("%s: expected Pragma: no-cache, got %q", path, rec.Header().Get("Pragma"))
+		}
+	}
+}
+
+func TestDocsNoCacheHeadersCustomOverride(t *testing.T) {
+	app := New(Config{})
+	app.UseDocs(func(next HandlerFunc) HandlerFunc {
+		return func(ctx *Context) error {
+			ctx.SetHeader("Cache-Control", "public, max-age=60")
+			return next(ctx)
+		}
+	})
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest("GET", "/docs", nil))
+	if rec.Header().Get("Cache-Control") != "public, max-age=60" {
+		t.Errorf("expected custom Cache-Control override, got %q", rec.Header().Get("Cache-Control"))
 	}
 }
 
@@ -173,5 +208,82 @@ func TestUseDocsOrderWithGlobalMiddlewares(t *testing.T) {
 	}
 	if len(order) != 2 || order[0] != "global" || order[1] != "docs" {
 		t.Errorf("expected [global, docs], got %v", order)
+	}
+}
+
+func TestDocsRateLimitInConfig(t *testing.T) {
+	app := New(Config{
+		DocsRateLimit: &RateLimiterOptions{
+			Max:    2,
+			Window: time.Minute,
+		},
+	})
+	app.Get("/api/data", func(ctx *Context) error { return ctx.Send("public data") })
+
+	// Normal API route is NOT rate limited
+	for i := 0; i < 5; i++ {
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, httptest.NewRequest("GET", "/api/data", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("api route should not be limited, got %d on attempt %d", rec.Code, i+1)
+		}
+	}
+
+	// Docs route is rate-limited to 2 requests
+	rec1 := httptest.NewRecorder()
+	app.ServeHTTP(rec1, httptest.NewRequest("GET", "/docs", nil))
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected 200 on first docs request, got %d", rec1.Code)
+	}
+
+	rec2 := httptest.NewRecorder()
+	app.ServeHTTP(rec2, httptest.NewRequest("GET", "/docs", nil))
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 on second docs request, got %d", rec2.Code)
+	}
+
+	// 3rd request to docs returns 429 Too Many Requests
+	rec3 := httptest.NewRecorder()
+	app.ServeHTTP(rec3, httptest.NewRequest("GET", "/docs", nil))
+	if rec3.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 on third docs request, got %d", rec3.Code)
+	}
+}
+
+func TestUseDocsWithRateLimiterAndBasicAuth(t *testing.T) {
+	app := New(Config{
+		TypeScriptURL:    "/types.d.ts",
+		TypeScriptSDKURL: "/sdk.ts",
+	})
+	app.UseDocs(
+		RateLimiter(RateLimiterOptions{Max: 2, Window: time.Minute}),
+		BasicAuth("admin", "secret"),
+	)
+
+	// Attempt 1 on /types.d.ts: invalid credentials -> 401
+	req1 := httptest.NewRequest("GET", "/types.d.ts", nil)
+	req1.SetBasicAuth("admin", "wrong")
+	rec1 := httptest.NewRecorder()
+	app.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusUnauthorized {
+		t.Fatalf("attempt 1: expected 401, got %d", rec1.Code)
+	}
+
+	// Attempt 2 on /types.d.ts: invalid credentials -> 401
+	req2 := httptest.NewRequest("GET", "/types.d.ts", nil)
+	req2.SetBasicAuth("admin", "wrong")
+	rec2 := httptest.NewRecorder()
+	app.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusUnauthorized {
+		t.Fatalf("attempt 2: expected 401, got %d", rec2.Code)
+	}
+
+	// Attempt 3 on /types.d.ts: brute-force blocked -> 429 Too Many Requests
+	req3 := httptest.NewRequest("GET", "/types.d.ts", nil)
+	req3.SetBasicAuth("admin", "secret")
+	rec3 := httptest.NewRecorder()
+	app.ServeHTTP(rec3, req3)
+	if rec3.Code != http.StatusTooManyRequests {
+		t.Fatalf("attempt 3: expected 429 Too Many Requests, got %d", rec3.Code)
 	}
 }

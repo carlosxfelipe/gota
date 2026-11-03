@@ -284,6 +284,48 @@ func TestBasicAuthMiddleware(t *testing.T) {
 	}
 }
 
+func TestBasicAuthWithRateLimit(t *testing.T) {
+	app := New(Config{})
+	app.Get("/secret", func(ctx *Context) error {
+		return ctx.Send("ok")
+	}).Middleware(BasicAuth("admin", "pass", BasicAuthOptions{
+		RateLimit: &RateLimiterOptions{
+			Max:    2,
+			Window: time.Minute,
+		},
+	}))
+
+	// Attempt 1: Wrong password -> 401
+	req1 := httptest.NewRequest("GET", "/secret", nil)
+	req1.SetBasicAuth("admin", "wrong1")
+	rec1 := httptest.NewRecorder()
+	app.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec1.Code)
+	}
+
+	// Attempt 2: Wrong password -> 401
+	req2 := httptest.NewRequest("GET", "/secret", nil)
+	req2.SetBasicAuth("admin", "wrong2")
+	rec2 := httptest.NewRecorder()
+	app.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec2.Code)
+	}
+
+	// Attempt 3: Limit reached -> 429 Too Many Requests (Brute-force blocked!)
+	req3 := httptest.NewRequest("GET", "/secret", nil)
+	req3.SetBasicAuth("admin", "pass")
+	rec3 := httptest.NewRecorder()
+	app.ServeHTTP(rec3, req3)
+	if rec3.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 Too Many Requests, got %d", rec3.Code)
+	}
+	if rec3.Header().Get("Retry-After") == "" {
+		t.Errorf("expected Retry-After header on 429 response")
+	}
+}
+
 func TestRateLimiterMiddleware(t *testing.T) {
 	app := New(Config{DisableDocs: true})
 	app.Use(RateLimiter(RateLimiterOptions{

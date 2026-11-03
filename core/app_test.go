@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"syscall"
 	"testing"
 	"time"
@@ -238,5 +239,31 @@ func TestErrorHandlerDoesNotCorruptWrittenResponse(t *testing.T) {
 	}
 	if rec.Body.String() != "partial stream payload" {
 		t.Errorf("body was corrupted by error handler: %q", rec.Body.String())
+	}
+}
+
+func TestIsProductionEnv(t *testing.T) {
+	origENV := os.Getenv("ENV")
+	origAppENV := os.Getenv("APP_ENV")
+	defer func() {
+		os.Setenv("ENV", origENV)
+		os.Setenv("APP_ENV", origAppENV)
+	}()
+
+	os.Setenv("ENV", "")
+	os.Setenv("APP_ENV", "")
+	if isProductionEnv() {
+		t.Errorf("expected isProductionEnv to be false when env is empty")
+	}
+
+	os.Setenv("ENV", "production")
+	if !isProductionEnv() {
+		t.Errorf("expected isProductionEnv to be true when ENV=production")
+	}
+
+	os.Setenv("ENV", "")
+	os.Setenv("APP_ENV", "prod")
+	if !isProductionEnv() {
+		t.Errorf("expected isProductionEnv to be true when APP_ENV=prod")
 	}
 }

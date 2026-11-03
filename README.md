@@ -172,11 +172,19 @@ Documentation routes (`/docs` and `/openapi.json`) are public by default. For pr
 Keep documentation accessible to your team while preventing public access using HTTP Basic Auth (or any custom middleware):
 
 ```go
-// Restricts access to both /docs and /openapi.json without affecting regular API routes
-app.UseDocs(gota.BasicAuth("admin", os.Getenv("DOCS_PASSWORD")))
+// Restricts access to /docs, /openapi.json, /types.d.ts, and /sdk.ts with brute-force protection
+app.UseDocs(
+    gota.RateLimiter(gota.RateLimiterOptions{Max: 5, Window: time.Minute}),
+    gota.BasicAuth("admin", os.Getenv("DOCS_PASSWORD")),
+)
+
+// Or configure brute-force protection directly within BasicAuthOptions:
+app.UseDocs(gota.BasicAuth("admin", os.Getenv("DOCS_PASSWORD"), gota.BasicAuthOptions{
+    RateLimit: &gota.RateLimiterOptions{Max: 5, Window: time.Minute},
+}))
 ```
 
-_(You can also configure this declaratively via `DocsMiddlewares: []gota.MiddlewareFunc{...}` inside `gota.Config`.)_
+_(You can also configure this declaratively via `DocsMiddlewares: [...]` or `DocsRateLimit: &gota.RateLimiterOptions{...}` inside `gota.Config`.)_
 
 #### 2. Disable Completely in Production (`DisableDocs`)
 
@@ -253,12 +261,19 @@ app := gota.New(gota.Config{
 })
 ```
 
-You can also export them programmatically (e.g. in a code generation script or CI pipeline) without registering HTTP routes:
+You can also export them directly to disk (e.g. in a CI/CD pipeline, `go:generate`, or build script) without exposing HTTP routes in production:
 
 ```go
-typesDefs := app.GenerateTypeScript()    // Returns .d.ts content as string
-clientSDK := app.GenerateTypeScriptSDK() // Returns .ts SDK content as string
+// Export directly to disk (automatically creates parent directories)
+_ = app.ExportTypeScriptSDK("./frontend/src/api/sdk.ts")
+_ = app.ExportTypeScript("./frontend/src/api/types.d.ts")
+
+// Or retrieve raw strings:
+typesDefs := app.GenerateTypeScript()
+clientSDK := app.GenerateTypeScriptSDK()
 ```
+
+> 🔒 **Security Best Practice for Production**: In production, do not serve `/types.d.ts` or `/sdk.ts` over HTTP. Generate the SDK offline via `app.ExportTypeScriptSDK(...)` in your CI/CD build step (see `examples/codegen/main.go`), and set `TypeScriptURL: "-"` and `TypeScriptSDKURL: "-"` in your production environment. Gota automatically issues a startup warning if TypeScript routes are exposed publicly in production environments.
 
 ---
 

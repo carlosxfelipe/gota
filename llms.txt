@@ -43,6 +43,8 @@ func main() {
 		ScalarTheme:        gota.ThemeFastify, // Default: gota.ThemeFastify
 		ScalarLayout:       "classic",         // Default: "classic" ("classic" or "modern")
 		DisableDocs:        false,             // Set true to disable /docs and /openapi.json routes (recommended for public production APIs)
+		DocsMiddlewares:    nil,               // Middlewares running specifically on /docs, /openapi.json, /types.d.ts, /sdk.ts
+		DocsRateLimit:      nil,               // Optional *gota.RateLimiterOptions specifically for docs & TS routes (anti brute-force)
 		DisallowUnknownFields: false,          // true: JSON bodies with keys not declared in the request struct fail with 400
 		DocsCSPEnforce:     false,             // Docs CSP is report-only by default; true enforces it (see "Docs Hardening")
 		MaxBodyBytes:       10 << 20,          // Default: 10 MiB (negative value disables limit)
@@ -74,23 +76,26 @@ func main() {
 ### Server Lifecycle Methods on `*gota.App`
 
 - `app.Use(mw gota.MiddlewareFunc)`: Registers global middleware running on all routes.
-- `app.UseDocs(mw ...gota.MiddlewareFunc)`: Registers middleware running ONLY on `/docs` and `/openapi.json` (e.g. BasicAuth).
+- `app.UseDocs(mw ...gota.MiddlewareFunc)`: Registers middleware running ONLY on `/docs`, `/openapi.json`, and TypeScript routes `/types.d.ts`, `/sdk.ts` (e.g. BasicAuth, RateLimiter).
 - `app.Listen(addr string) error`: Starts the HTTP server (`":3000"`, `"3000"`, or `"127.0.0.1:3000"`).
 - `app.ListenGraceful(addr string, stopSignals ...os.Signal) error`: Starts the server and gracefully drains connections (10s timeout) on `os.Interrupt` / `syscall.SIGTERM` (or custom signals).
 - `app.Shutdown(ctx context.Context) error`: Gracefully shuts down a running server started via `Listen`.
 - `app.ServeHTTP(w http.ResponseWriter, r *http.Request)`: Dispatches a request directly (ideal for `httptest`).
+- `app.GenerateTypeScript() string`, `app.GenerateTypeScriptSDK() string`: Generates TypeScript declarations or client SDK code as string.
+- `app.ExportTypeScript(filepath string) error`, `app.ExportTypeScriptSDK(filepath string) error`: Exports definitions or SDK directly to disk (creates directories automatically, ideal for CI/CD).
 - `app.Server() *http.Server`, `app.Config() gota.Config`, `app.Router() *core.Router`.
 
 ### Available `ScalarTheme` Constants
 
 `gota.ThemeFastify` (default), `gota.ThemeDefault`, `gota.ThemeAlternate`, `gota.ThemeMoon`, `gota.ThemePurple`, `gota.ThemeSolarized`, `gota.ThemeBluePlanet`, `gota.ThemeDeepSpace`, `gota.ThemeSaturn`, `gota.ThemeKepler`, `gota.ThemeElysiaJS`, `gota.ThemeMars`, `gota.ThemeLaserwave`, `gota.ThemeNone`.
 
-### Docs Hardening (`/docs`, `/openapi.json`)
+### Docs Hardening (`/docs`, `/openapi.json`, `/types.d.ts`, `/sdk.ts`)
 
-- The docs page always sends `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` and `Referrer-Policy: no-referrer` (`/openapi.json` sends `nosniff`).
+- **Anti-Caching Headers**: `/docs`, `/openapi.json`, `/types.d.ts` and `/sdk.ts` always send `Cache-Control: no-store, no-cache, must-revalidate, private` and `Pragma: no-cache` to ensure CDNs and proxies never cache authenticated schemas or SDKs for unauthenticated users (can be overridden by explicit middleware).
+- The docs page always sends `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` and `Referrer-Policy: no-referrer` (`/openapi.json`, `/types.d.ts`, `/sdk.ts` send `nosniff`).
 - It also sends a Scalar-compatible CSP (`gota.DocsContentSecurityPolicy(scriptURL)`: script only from the Scalar origin or `'self'`, no framing, no `<base>`, no plugins) as **`Content-Security-Policy-Report-Only`** by default, so it can never break the page. After checking the browser console for violations, set `Config{DocsCSPEnforce: true}` to enforce it. Override with `Config{DocsCSP: "..."}` or omit with `DocsCSP: "-"`.
 - The docs CSP is set inside the docs handler, so it takes precedence over a global `SecureHeaders` CSP (e.g. the strict `ApiContentSecurityPolicy`).
-- **Protecting Docs**: Restrict access to `/docs` and `/openapi.json` using **`app.UseDocs(...)`** or **`Config{DocsMiddlewares: [...]}`** (e.g. `app.UseDocs(gota.BasicAuth("admin", pass))` or IP whitelisting). Normal API routes remain unaffected.
+- **Protecting Docs**: Restrict access to `/docs`, `/openapi.json`, `/types.d.ts`, and `/sdk.ts` using **`app.UseDocs(...)`**, **`Config{DocsMiddlewares: [...]}`**, or **`Config{DocsRateLimit: &gota.RateLimiterOptions{...}}`**. Brute-force protection can be configured via `gota.RateLimiter(...)` or directly via `gota.BasicAuth(user, pass, gota.BasicAuthOptions{RateLimit: &gota.RateLimiterOptions{...}})`. Normal API routes remain unaffected.
 - **Disabling Docs**: Set `DisableDocs: true` in production for APIs exposed to untrusted networks where documentation should not be served at all (`Listen` logs a status reminder).
 
 ### Scalar Script Pinning & Subresource Integrity (SRI)
@@ -474,8 +479,10 @@ app.Use(gota.Timeout(5*time.Second, gota.TimeoutOptions{Message: "request timeou
 app.Use(gota.Gzip(gota.GzipOptions{Level: 5, MinLength: 1024})) // Level: -2..9, invalid panics
 
 // 9. Constant-Time HTTP Basic Auth (automatically documents BasicAuth in OpenAPI 3.1)
+//    Supports optional RateLimit to protect against brute-force and credential-stuffing attacks.
 adminGroup.Use(gota.BasicAuth("admin", os.Getenv("ADMIN_PASS"), gota.BasicAuthOptions{
-	Realm: "Admin Area", // Optional: Validator func(user, pass string) bool
+	Realm:     "Admin Area", // Optional: Validator func(user, pass string) bool, ContextKey string
+	RateLimit: &gota.RateLimiterOptions{Max: 5, Window: time.Minute},
 }))
 ```
 

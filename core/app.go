@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"reflect"
 	"runtime/debug"
 	"strings"
@@ -68,6 +69,10 @@ type Config struct {
 	// DocsMiddlewares applies middlewares specifically to the documentation routes (DocsURL and OpenAPIURL).
 	// Use it to restrict access via BasicAuth, JWT, IP whitelisting, etc.
 	DocsMiddlewares []MiddlewareFunc `json:"-"`
+
+	// DocsRateLimit configures an in-memory RateLimiter specifically for documentation
+	// routes (DocsURL, OpenAPIURL, TypeScriptURL, TypeScriptSDKURL).
+	DocsRateLimit *RateLimiterOptions `json:"-"`
 
 	// MaxBodyBytes limits the size of request bodies. Default: 10 MiB.
 	// Use a negative value to disable the limit.
@@ -201,10 +206,16 @@ func New(cfg Config) *App {
 		cfg.IdleTimeout = DefaultIdleTimeout
 	}
 
+	docsMWs := make([]MiddlewareFunc, 0, len(cfg.DocsMiddlewares)+1)
+	if cfg.DocsRateLimit != nil {
+		docsMWs = append(docsMWs, RateLimiter(*cfg.DocsRateLimit))
+	}
+	docsMWs = append(docsMWs, cfg.DocsMiddlewares...)
+
 	app := &App{
 		config:          cfg,
 		router:          NewRouter(),
-		docsMiddlewares: append([]MiddlewareFunc(nil), cfg.DocsMiddlewares...),
+		docsMiddlewares: docsMWs,
 	}
 	app.NotFoundHandler = defaultNotFoundHandler
 	app.ErrorHandler = defaultErrorHandler
@@ -421,6 +432,17 @@ func (a *App) setDocsSecurityHeaders(ctx *Context) {
 	ctx.SetHeader(header, csp)
 }
 
+// setDocsNoCacheHeaders ensures documentation, schemas, and SDK endpoints are not
+// cached by intermediate proxies, CDNs, or browsers unless explicitly overridden.
+func setDocsNoCacheHeaders(ctx *Context) {
+	if ctx.ResponseWriter.Header().Get("Cache-Control") == "" {
+		ctx.SetHeader("Cache-Control", "no-store, no-cache, must-revalidate, private")
+	}
+	if ctx.ResponseWriter.Header().Get("Pragma") == "" {
+		ctx.SetHeader("Pragma", "no-cache")
+	}
+}
+
 func (a *App) registerDocs() {
 	openAPIURL := a.config.OpenAPIURL
 	docsURL := a.config.DocsURL
@@ -428,6 +450,7 @@ func (a *App) registerDocs() {
 	// OpenAPI 3.1 JSON spec (cached and invalidated only when routes/docs change)
 	specRoute := a.Get(openAPIURL, func(ctx *Context) error {
 		ctx.SetHeader("X-Content-Type-Options", "nosniff")
+		setDocsNoCacheHeaders(ctx)
 		return ctx.Json(a.openAPISpec())
 	}).Hidden()
 
@@ -447,6 +470,7 @@ func (a *App) registerDocs() {
 			return ctx.Status(http.StatusInternalServerError).Send("Failed to render documentation")
 		}
 		a.setDocsSecurityHeaders(ctx)
+		setDocsNoCacheHeaders(ctx)
 		ctx.SetHeader("Content-Type", "text/html; charset=utf-8")
 		return ctx.Send(a.cachedScalarHTML)
 	}).Hidden()
@@ -457,6 +481,7 @@ func (a *App) registerDocs() {
 		tsRoute := a.Get(a.config.TypeScriptURL, func(ctx *Context) error {
 			ctx.SetHeader("Content-Type", "application/typescript; charset=utf-8")
 			ctx.SetHeader("X-Content-Type-Options", "nosniff")
+			setDocsNoCacheHeaders(ctx)
 			return ctx.Send(a.GenerateTypeScript())
 		}).Hidden()
 		a.docsRoutes = append(a.docsRoutes, tsRoute)
@@ -466,6 +491,7 @@ func (a *App) registerDocs() {
 		sdkRoute := a.Get(a.config.TypeScriptSDKURL, func(ctx *Context) error {
 			ctx.SetHeader("Content-Type", "application/typescript; charset=utf-8")
 			ctx.SetHeader("X-Content-Type-Options", "nosniff")
+			setDocsNoCacheHeaders(ctx)
 			return ctx.Send(a.GenerateTypeScriptSDK())
 		}).Hidden()
 		a.docsRoutes = append(a.docsRoutes, sdkRoute)
@@ -522,6 +548,28 @@ func (a *App) GenerateTypeScriptSDK() string {
 	a.cachedSDK = gen.GenerateSDK(a.router.Routes())
 	a.cachedSDKVer = ver
 	return a.cachedSDK
+}
+
+// ExportTypeScript writes the generated TypeScript type definitions (.d.ts) to a file on disk.
+// Automatically creates parent directories if needed. Ideal for CI/CD and offline code generation.
+func (a *App) ExportTypeScript(filepath string) error {
+	if dir := path.Dir(filepath); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return err
+		}
+	}
+	return os.WriteFile(filepath, []byte(a.GenerateTypeScript()), 0644)
+}
+
+// ExportTypeScriptSDK writes the generated standalone TypeScript client SDK (.ts) to a file on disk.
+// Automatically creates parent directories if needed. Ideal for CI/CD and offline code generation.
+func (a *App) ExportTypeScriptSDK(filepath string) error {
+	if dir := path.Dir(filepath); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return err
+		}
+	}
+	return os.WriteFile(filepath, []byte(a.GenerateTypeScriptSDK()), 0644)
 }
 
 // UseDocs appends middlewares executed specifically for documentation routes (DocsURL and OpenAPIURL).
@@ -621,6 +669,17 @@ func (a *App) Server() *http.Server {
 	return a.server
 }
 
+// isProductionEnv reports whether the process environment indicates production mode.
+func isProductionEnv() bool {
+	for _, key := range []string{"ENV", "APP_ENV", "NODE_ENV"} {
+		v := strings.ToLower(os.Getenv(key))
+		if v == "production" || v == "prod" {
+			return true
+		}
+	}
+	return strings.ToLower(os.Getenv("GIN_MODE")) == "release"
+}
+
 // Listen starts an HTTP server listening on the specified address.
 func (a *App) Listen(addr string) error {
 	listen, display := displayAddr(addr)
@@ -637,7 +696,17 @@ func (a *App) Listen(addr string) error {
 		if len(a.docsMiddlewares) > 0 {
 			log.Printf("🔒 Docs protected with %d middleware(s)", len(a.docsMiddlewares))
 		} else {
-			log.Printf("🔒 Docs are public: set Config.DisableDocs = true or use app.UseDocs(...) if exposed to untrusted networks")
+			if isProductionEnv() {
+				log.Printf("⚠️  SECURITY WARNING: Documentation is running without authentication in production! Set Config.DisableDocs = true or configure app.UseDocs(...)")
+			} else {
+				log.Printf("🔒 Docs are public: set Config.DisableDocs = true or use app.UseDocs(...) if exposed to untrusted networks")
+			}
+		}
+
+		if isProductionEnv() && len(a.docsMiddlewares) == 0 &&
+			((a.config.TypeScriptURL != "" && a.config.TypeScriptURL != "-") ||
+				(a.config.TypeScriptSDKURL != "" && a.config.TypeScriptSDKURL != "-")) {
+			log.Printf("⚠️  SECURITY WARNING: TypeScript definitions/SDK are served publicly over HTTP in production. For maximum security, export the SDK offline (app.ExportTypeScriptSDK) during CI/CD and set TypeScriptURL: \"-\" / TypeScriptSDKURL: \"-\".")
 		}
 	}
 
