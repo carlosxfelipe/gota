@@ -9,8 +9,8 @@
 [![Go Version](https://img.shields.io/badge/go-1.26%2B-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Pattern](https://img.shields.io/badge/pattern-REPR-blue)](https://deviq.com/design-patterns/repr-design-pattern/)
-[![OpenAPI](https://img.shields.io/badge/OpenAPI-3.1-6BA539)](http://localhost:3000/openapi.json)
-[![Scalar Docs](https://img.shields.io/badge/Scalar-Classic%20Layout-purple)](http://localhost:3000/docs)
+[![OpenAPI](https://img.shields.io/badge/OpenAPI-3.1-6BA539)](#-interactive-documentation-with-scalar)
+[![Scalar Docs](https://img.shields.io/badge/Scalar-Classic%20Layout-purple)](#-interactive-documentation-with-scalar)
 
 </div>
 
@@ -25,9 +25,9 @@ Inspired by the ergonomic fluency of [Kite](https://github.com/claudiovictors/ki
 - **REPR Design Pattern**: Request-Endpoint-Response architecture with automatic model binding, declarative validation, and typed JSON / streaming responses.
 - **Zero External Dependencies**: Built 100% on the Go standard library.
 - **Native OpenAPI 3.1 & Scalar Docs**: Automatic spec generation from Go types, serving interactive Scalar UI (`classic` layout) at `/docs`.
-- **Auto-Generated TypeScript Definitions & Client SDK**: Optional zero-dependency TypeScript declarations (`/types.d.ts`) and standalone client SDK (`/sdk.ts`), or exported programmatically via `app.GenerateTypeScript()` / `app.GenerateTypeScriptSDK()`, providing end-to-end type safety from Go to frontend without npm or build tools.
+- **Auto-Generated TypeScript Definitions & Client SDK**: Optional zero-dependency TypeScript declarations (`/types.d.ts`) and standalone client SDK (`/sdk.ts`), or exported offline directly to files via `app.ExportTypeScript()` / `app.ExportTypeScriptSDK()`, providing end-to-end type safety from Go to frontend without npm or build tools.
 - **Fluent Route Ergonomics**: Chainable metadata (`.Summary()`, `.Tags()`, `.Middleware()`), route groups, and parameter matching (`:id`, `*wildcard`).
-- **Production-Ready Middlewares**: Built-in JWT (HS256, RS256, ES256, EdDSA), CORS, Security Headers, Rate Limiter, Gzip, Panic Recovery, Request ID, Slog logger, Timeouts, and Graceful Shutdown.
+- **Production-Ready Middlewares**: Built-in BasicAuth, BearerToken, IPWhitelist (CIDR support), JWT (HS256, RS256, ES256, EdDSA), CORS, Security Headers, Rate Limiter, Gzip, Panic Recovery, Request ID, Slog logger, Timeouts, and Graceful Shutdown.
 
 > 📖 Looking for in-depth patterns, validation recipes, security best practices, and AI guidance? See [llms.txt](llms.txt).
 
@@ -53,7 +53,7 @@ Requires Go 1.26 or newer.
 
 ## 🚀 Quickstart (REPR Pattern)
 
-Create a `main.go` file (also available in [`examples/main.go`](file:///examples/main.go)):
+Create a `main.go` file (also available in [`examples/main.go`](examples/main.go)):
 
 ```go
 package main
@@ -241,7 +241,21 @@ Following the [REPR Design Pattern](https://deviq.com/design-patterns/repr-desig
    }
    ```
 
-3. **Response**: Defines the output contract and generates documentation schemas automatically.
+3. **Response**: Defines the output contract and generates documentation schemas automatically:
+   ```go
+   type UserResponse struct {
+       ID   string `json:"id" example:"usr_1"`
+       Name string `json:"name" example:"Jane Doe"`
+   }
+   ```
+
+Finally, register the endpoint on the router with automatic type inference and documentation:
+
+```go
+gota.Get(app, "/users/:id", (&GetUserEndpoint{}).Handle).
+    Summary("Get user profile").
+    Tags("Users")
+```
 
 ---
 
@@ -317,21 +331,43 @@ Gota bridges your Go backend and frontend with **zero-dependency, end-to-end typ
 - **Type Definitions (`/types.d.ts`)**: Pure TypeScript contracts (`.d.ts`). Contains all model interfaces, route signatures, and helper types. Zero runtime footprint (erased at build time).
 - **Client SDK (`/sdk.ts`)**: A complete, zero-dependency client script (`.ts`) that includes all type definitions **plus** the native `createGotaClient` fetch implementation.
 
-### 🚀 Frontend Quickstart
+### 🚀 Generating the SDK for your Frontend
 
-You can pull the client SDK directly into your frontend project (React, Next.js, Vue, Svelte, Node, Bun, etc.):
+The client SDK is generated at **build/development time** (committed to your frontend repo or produced during CI/CD), so the `/sdk.ts` route never needs to be exposed in production:
+
+#### Option A: During Local Development (via curl)
+
+While your local Go development server is running:
 
 ```bash
-# Save the generated SDK into your frontend
+# If docs/SDK routes are protected by BasicAuth (as configured in the Quickstart):
+curl -u admin:admin123 -o src/api.ts http://localhost:3000/sdk.ts
+
+# Or without credentials if app.UseDocs() is not configured:
 curl -o src/api.ts http://localhost:3000/sdk.ts
 ```
 
-Then make fully typed requests with autocomplete and compile-time validation:
+#### Option B: Offline / CI/CD (without running an HTTP server)
+
+Export directly to your frontend project in a build script or CI/CD pipeline (see [`examples/codegen/main.go`](examples/codegen/main.go)):
+
+```go
+_ = app.ExportTypeScriptSDK("./frontend/src/api.ts")
+```
+
+---
+
+### 💻 Using the Generated Client
+
+Once `src/api.ts` is in your frontend, use it with full compile-time type safety and route autocomplete:
 
 ```typescript
 import { createGotaClient } from "./api";
 
-const api = createGotaClient("http://localhost:3000");
+// Configure with your API base URL (env variable in production, localhost in development)
+const api = createGotaClient(
+  process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000",
+);
 
 // 1. The editor autocompletes valid routes as soon as you type quotes:
 // "GET /users" | "GET /users/:id" | "POST /users" | ...
@@ -419,6 +455,11 @@ Then visit:
 - **OpenAPI 3.1 Spec**: [http://localhost:3000/openapi.json](http://localhost:3000/openapi.json)
 - **TypeScript Defs**: [http://localhost:3000/types.d.ts](http://localhost:3000/types.d.ts)
 - **TypeScript Client SDK**: [http://localhost:3000/sdk.ts](http://localhost:3000/sdk.ts)
+
+> 🔐 **Authentication**: Documentation and SDK routes in `examples/main.go` are protected by HTTP Basic Auth.
+>
+> - **Username**: `admin`
+> - **Password**: `admin123` (or the value of `$DOCS_PASSWORD` if set)
 
 > 💡 Looking for a full-featured showcase with JWT authentication, role-based access control, multipart file uploads, Server-Sent Events (SSE), and a Bruno collection? Check out [order-flow-gota](https://github.com/carlosxfelipe/order-flow-gota).
 
