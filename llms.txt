@@ -45,6 +45,7 @@ func main() {
 		DisableDocs:        false,             // Set true to disable /docs and /openapi.json routes (recommended for public production APIs)
 		DocsMiddlewares:    nil,               // Middlewares running specifically on /docs, /openapi.json, /types.d.ts, /sdk.ts
 		DocsRateLimit:      nil,               // Optional *gota.RateLimiterOptions specifically for docs & TS routes (anti brute-force)
+		DocsAllowOrigins:   nil,               // Optional allowed CORS origins for docs & TS routes (isolated from global CORS by default)
 		DisallowUnknownFields: false,          // true: JSON bodies with keys not declared in the request struct fail with 400
 		DocsCSPEnforce:     false,             // Docs CSP is report-only by default; true enforces it (see "Docs Hardening")
 		MaxBodyBytes:       10 << 20,          // Default: 10 MiB (negative value disables limit)
@@ -95,6 +96,7 @@ func main() {
 - The docs page always sends `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` and `Referrer-Policy: no-referrer` (`/openapi.json`, `/types.d.ts`, `/sdk.ts` send `nosniff`).
 - It also sends a Scalar-compatible CSP (`gota.DocsContentSecurityPolicy(scriptURL)`: script only from the Scalar origin or `'self'`, no framing, no `<base>`, no plugins) as **`Content-Security-Policy-Report-Only`** by default, so it can never break the page. After checking the browser console for violations, set `Config{DocsCSPEnforce: true}` to enforce it. Override with `Config{DocsCSP: "..."}` or omit with `DocsCSP: "-"`.
 - The docs CSP is set inside the docs handler, so it takes precedence over a global `SecureHeaders` CSP (e.g. the strict `ApiContentSecurityPolicy`).
+- **CORS Isolation**: Documentation, OpenAPI spec, and TypeScript routes are isolated from global wildcard CORS by default to prevent untrusted third-party websites from reading internal API schemas via cross-origin fetch/XHR. To allow specific trusted origins (e.g. an internal developer portal), configure `Config{DocsAllowOrigins: []string{"https://portal.example.com"}}`. Preflight `OPTIONS` requests for documentation routes are handled cleanly without requiring BasicAuth credentials.
 - **Protecting Docs**: Restrict access to `/docs`, `/openapi.json`, `/types.d.ts`, and `/sdk.ts` using **`app.UseDocs(...)`**, **`Config{DocsMiddlewares: [...]}`**, or **`Config{DocsRateLimit: &gota.RateLimiterOptions{...}}`**. Brute-force protection can be configured via `gota.RateLimiter(...)` or directly via `gota.BasicAuth(user, pass, gota.BasicAuthOptions{RateLimit: &gota.RateLimiterOptions{...}})`. Normal API routes remain unaffected.
 - **Disabling Docs**: Set `DisableDocs: true` in production for APIs exposed to untrusted networks where documentation should not be served at all (`Listen` logs a status reminder).
 

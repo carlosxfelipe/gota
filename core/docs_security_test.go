@@ -287,3 +287,166 @@ func TestUseDocsWithRateLimiterAndBasicAuth(t *testing.T) {
 		t.Fatalf("attempt 3: expected 429 Too Many Requests, got %d", rec3.Code)
 	}
 }
+
+func TestDocsCORSIsolationFromGlobalWildcard(t *testing.T) {
+	app := New(Config{
+		TypeScriptURL:    "/types.d.ts",
+		TypeScriptSDKURL: "/sdk.ts",
+	})
+	app.Use(CORS()) // Global wildcard CORS
+
+	app.Get("/api/ping", func(ctx *Context) error {
+		return ctx.Send("pong")
+	})
+
+	// 1. Regular API route MUST receive CORS header
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/ping", nil)
+	req.Header.Set("Origin", "https://evil.com")
+	app.ServeHTTP(rec, req)
+	if rec.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Errorf("regular route should have CORS allowed, got %q", rec.Header().Get("Access-Control-Allow-Origin"))
+	}
+
+	// Regular API route preflight OPTIONS must succeed with CORS
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest("OPTIONS", "/api/ping", nil)
+	req.Header.Set("Origin", "https://evil.com")
+	app.ServeHTTP(rec, req)
+	if rec.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Errorf("regular route OPTIONS should have CORS allowed, got %q", rec.Header().Get("Access-Control-Allow-Origin"))
+	}
+
+	// 2. Docs and schema endpoints MUST NOT leak CORS headers to untrusted origins
+	docsPaths := []string{"/docs", "/openapi.json", "/types.d.ts", "/sdk.ts"}
+	for _, path := range docsPaths {
+		// GET request
+		rec = httptest.NewRecorder()
+		req = httptest.NewRequest("GET", path, nil)
+		req.Header.Set("Origin", "https://evil.com")
+		app.ServeHTTP(rec, req)
+		if origin := rec.Header().Get("Access-Control-Allow-Origin"); origin != "" {
+			t.Errorf("%s GET: isolated docs route leaked CORS header %q to untrusted origin", path, origin)
+		}
+
+		// OPTIONS preflight request
+		rec = httptest.NewRecorder()
+		req = httptest.NewRequest("OPTIONS", path, nil)
+		req.Header.Set("Origin", "https://evil.com")
+		app.ServeHTTP(rec, req)
+		if origin := rec.Header().Get("Access-Control-Allow-Origin"); origin != "" {
+			t.Errorf("%s OPTIONS: isolated docs route leaked CORS header %q to untrusted origin", path, origin)
+		}
+	}
+}
+
+func TestDocsCORSExplicitAllowedOrigins(t *testing.T) {
+	app := New(Config{
+		DocsAllowOrigins: []string{"https://portal.mycompany.com"},
+		TypeScriptURL:    "/types.d.ts",
+		TypeScriptSDKURL: "/sdk.ts",
+	})
+	app.Use(CORS()) // Global CORS
+
+	docsPaths := []string{"/openapi.json", "/types.d.ts", "/sdk.ts"}
+	for _, path := range docsPaths {
+		// 1. Trusted origin receives CORS grant
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", path, nil)
+		req.Header.Set("Origin", "https://portal.mycompany.com")
+		app.ServeHTTP(rec, req)
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://portal.mycompany.com" {
+			t.Errorf("%s GET: expected CORS grant for trusted origin, got %q", path, got)
+		}
+		if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
+			t.Errorf("%s GET: expected Allow-Credentials: true for explicit origin, got %q", path, got)
+		}
+
+		// 2. Preflight OPTIONS from trusted origin succeeds
+		rec = httptest.NewRecorder()
+		req = httptest.NewRequest("OPTIONS", path, nil)
+		req.Header.Set("Origin", "https://portal.mycompany.com")
+		app.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNoContent {
+			t.Errorf("%s OPTIONS: expected 204 NoContent, got %d", path, rec.Code)
+		}
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://portal.mycompany.com" {
+			t.Errorf("%s OPTIONS: expected CORS grant for trusted origin, got %q", path, got)
+		}
+
+		// 3. Untrusted origin receives NO CORS grant
+		rec = httptest.NewRecorder()
+		req = httptest.NewRequest("GET", path, nil)
+		req.Header.Set("Origin", "https://evil.com")
+		app.ServeHTTP(rec, req)
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+			t.Errorf("%s GET: untrusted origin must not get CORS grant, got %q", path, got)
+		}
+
+		// Untrusted origin preflight receives NO CORS grant
+		rec = httptest.NewRecorder()
+		req = httptest.NewRequest("OPTIONS", path, nil)
+		req.Header.Set("Origin", "https://evil.com")
+		app.ServeHTTP(rec, req)
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+			t.Errorf("%s OPTIONS: untrusted origin preflight must not get CORS grant, got %q", path, got)
+		}
+	}
+}
+
+func TestDocsCORSWithBasicAuthProtection(t *testing.T) {
+	app := New(Config{
+		DocsAllowOrigins: []string{"https://portal.mycompany.com"},
+	})
+	app.Use(CORS())
+	app.UseDocs(BasicAuth("admin", "secret"))
+
+	// 1. Untrusted origin without auth: 401 Unauthorized with NO CORS header
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/openapi.json", nil)
+	req.Header.Set("Origin", "https://evil.com")
+	app.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("401 response must not leak CORS header to untrusted origin, got %q", got)
+	}
+
+	// 2. Preflight OPTIONS from trusted origin succeeds WITHOUT credentials
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest("OPTIONS", "/openapi.json", nil)
+	req.Header.Set("Origin", "https://portal.mycompany.com")
+	app.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("OPTIONS preflight should return 204 without requiring auth, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://portal.mycompany.com" {
+		t.Errorf("expected CORS grant on OPTIONS preflight, got %q", got)
+	}
+}
+
+func TestDocsCORSExplicitWildcard(t *testing.T) {
+	app := New(Config{
+		DocsAllowOrigins: []string{"*"},
+	})
+	app.Use(CORS())
+
+	// 1. Any regular origin matches wildcard
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/openapi.json", nil)
+	req.Header.Set("Origin", "https://external.example.com")
+	app.ServeHTTP(rec, req)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("expected wildcard CORS grant, got %q", got)
+	}
+
+	// 2. Null origin does NOT match wildcard "*" (per CORS security specifications)
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest("GET", "/openapi.json", nil)
+	req.Header.Set("Origin", "null")
+	app.ServeHTTP(rec, req)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("null origin must not match wildcard entry, got %q", got)
+	}
+}

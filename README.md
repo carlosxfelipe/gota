@@ -188,6 +188,8 @@ app.UseDocs(gota.BasicAuth("admin", os.Getenv("DOCS_PASSWORD"), gota.BasicAuthOp
 
 _(You can also configure this declaratively via `DocsMiddlewares: [...]` or `DocsRateLimit: &gota.RateLimiterOptions{...}` inside `gota.Config`.)_
 
+> 🛡️ **CORS Isolation**: Documentation, OpenAPI spec, and TypeScript routes are isolated from global wildcard CORS by default. Untrusted third-party sites cannot read your schemas via cross-origin `fetch()`. To allow specific developer portals, configure `DocsAllowOrigins: []string{"https://portal.example.com"}` in `gota.Config`. Preflight `OPTIONS` requests for documentation routes do not require BasicAuth credentials.
+
 #### 2. Disable Completely in Production (`DisableDocs`)
 
 Completely turn off `/docs` and `/openapi.json` so they are not registered at all (returns 404):

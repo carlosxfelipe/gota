@@ -19,7 +19,25 @@ import (
 	"time"
 )
 
-var middlewareSecuritySchemes sync.Map
+var (
+	middlewareSecuritySchemes sync.Map
+	middlewareKinds           sync.Map
+)
+
+func registerMiddlewareKind(mw MiddlewareFunc, kind string) MiddlewareFunc {
+	if mw != nil && kind != "" {
+		middlewareKinds.Store(reflect.ValueOf(mw).Pointer(), kind)
+	}
+	return mw
+}
+
+func isMiddlewareKind(mw MiddlewareFunc, kind string) bool {
+	if mw == nil {
+		return false
+	}
+	v, ok := middlewareKinds.Load(reflect.ValueOf(mw).Pointer())
+	return ok && v == kind
+}
 
 func registerMiddlewareSecurity(mw MiddlewareFunc, scheme string) MiddlewareFunc {
 	if mw != nil && scheme != "" {
@@ -73,6 +91,11 @@ type Config struct {
 	// DocsRateLimit configures an in-memory RateLimiter specifically for documentation
 	// routes (DocsURL, OpenAPIURL, TypeScriptURL, TypeScriptSDKURL).
 	DocsRateLimit *RateLimiterOptions `json:"-"`
+
+	// DocsAllowOrigins configures explicit CORS allowed origins for documentation and schema
+	// routes (/docs, /openapi.json, /types.d.ts, /sdk.ts). By default (empty), docs routes
+	// are isolated from global wildcard CORS to prevent untrusted websites from reading API schemas.
+	DocsAllowOrigins []string `json:"-"`
 
 	// MaxBodyBytes limits the size of request bodies. Default: 10 MiB.
 	// Use a negative value to disable the limit.
@@ -150,9 +173,10 @@ type App struct {
 
 	// routeCount counts user-registered routes (docs routes excluded) and docsRoutes
 	// holds the built-in documentation routes, which must follow global middlewares.
-	routeCount      int
-	docsRoutes      []*Route
-	docsMiddlewares []MiddlewareFunc
+	routeCount        int
+	docsRoutes        []*Route
+	docsOptionsRoutes []*Route
+	docsMiddlewares   []MiddlewareFunc
 
 	docVersion       atomic.Uint64
 	docsMu           sync.RWMutex
@@ -302,8 +326,19 @@ func (a *App) Use(mw MiddlewareFunc) {
 	a.middlewares = append(a.middlewares, mw)
 
 	// Built-in docs routes are registered in New, so refresh their chain.
+	// Docs routes are isolated from global CORS middleware.
+	docsBase := make([]MiddlewareFunc, 0, len(a.middlewares))
+	for _, m := range a.middlewares {
+		if !isMiddlewareKind(m, "CORS") {
+			docsBase = append(docsBase, m)
+		}
+	}
 	for _, rt := range a.docsRoutes {
-		rt.base = append([]MiddlewareFunc(nil), a.middlewares...)
+		rt.base = append([]MiddlewareFunc(nil), docsBase...)
+		rt.rebuild()
+	}
+	for _, rt := range a.docsOptionsRoutes {
+		rt.base = append([]MiddlewareFunc(nil), docsBase...)
 		rt.rebuild()
 	}
 }
@@ -443,9 +478,85 @@ func setDocsNoCacheHeaders(ctx *Context) {
 	}
 }
 
+func stripCORSHeaders(h http.Header) {
+	h.Del("Access-Control-Allow-Origin")
+	h.Del("Access-Control-Allow-Credentials")
+	h.Del("Access-Control-Allow-Methods")
+	h.Del("Access-Control-Allow-Headers")
+	h.Del("Access-Control-Expose-Headers")
+	h.Del("Access-Control-Max-Age")
+}
+
+func (a *App) isDocsOriginAllowed(origin string) (bool, string) {
+	if origin == "" {
+		return false, ""
+	}
+	for _, o := range a.config.DocsAllowOrigins {
+		if o == "*" && origin != "null" {
+			return true, "*"
+		}
+		if o == origin {
+			return true, origin
+		}
+	}
+	return false, ""
+}
+
+func (a *App) handleDocsOPTIONS(ctx *Context) error {
+	origin := ctx.Request.Header.Get("Origin")
+	if origin != "" {
+		allowed, matched := a.isDocsOriginAllowed(origin)
+		if allowed {
+			ctx.SetHeader("Access-Control-Allow-Origin", matched)
+			if matched != "*" {
+				ctx.SetHeader("Access-Control-Allow-Credentials", "true")
+			}
+			ctx.SetHeader("Access-Control-Allow-Methods", "GET, OPTIONS")
+			ctx.SetHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Origin, X-Requested-With")
+			ctx.ResponseWriter.Header().Add("Vary", "Origin")
+		} else {
+			stripCORSHeaders(ctx.ResponseWriter.Header())
+		}
+	}
+	return ctx.NoContent()
+}
+
+func (a *App) docsCORSMiddleware() MiddlewareFunc {
+	return func(next HandlerFunc) HandlerFunc {
+		return func(ctx *Context) error {
+			origin := ctx.Request.Header.Get("Origin")
+			if origin != "" {
+				allowed, matched := a.isDocsOriginAllowed(origin)
+				if allowed {
+					ctx.SetHeader("Access-Control-Allow-Origin", matched)
+					if matched != "*" {
+						ctx.SetHeader("Access-Control-Allow-Credentials", "true")
+					}
+					ctx.SetHeader("Access-Control-Allow-Methods", "GET, OPTIONS")
+					ctx.SetHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Origin, X-Requested-With")
+					ctx.ResponseWriter.Header().Add("Vary", "Origin")
+				} else {
+					stripCORSHeaders(ctx.ResponseWriter.Header())
+				}
+			}
+
+			err := next(ctx)
+
+			if origin != "" {
+				if allowed, _ := a.isDocsOriginAllowed(origin); !allowed {
+					stripCORSHeaders(ctx.ResponseWriter.Header())
+				}
+			}
+			return err
+		}
+	}
+}
+
 func (a *App) registerDocs() {
 	openAPIURL := a.config.OpenAPIURL
 	docsURL := a.config.DocsURL
+
+	corsMW := a.docsCORSMiddleware()
 
 	// OpenAPI 3.1 JSON spec (cached and invalidated only when routes/docs change)
 	specRoute := a.Get(openAPIURL, func(ctx *Context) error {
@@ -453,6 +564,9 @@ func (a *App) registerDocs() {
 		setDocsNoCacheHeaders(ctx)
 		return ctx.Json(a.openAPISpec())
 	}).Hidden()
+	specRoute.Middleware(corsMW)
+
+	specOptions := a.RegisterRoute(http.MethodOptions, openAPIURL, a.handleDocsOPTIONS).Hidden()
 
 	// Scalar API Reference UI (Layout: classic by default, rendered once and cached)
 	docsRoute := a.Get(docsURL, func(ctx *Context) error {
@@ -474,8 +588,12 @@ func (a *App) registerDocs() {
 		ctx.SetHeader("Content-Type", "text/html; charset=utf-8")
 		return ctx.Send(a.cachedScalarHTML)
 	}).Hidden()
+	docsRoute.Middleware(corsMW)
+
+	docsOptions := a.RegisterRoute(http.MethodOptions, docsURL, a.handleDocsOPTIONS).Hidden()
 
 	a.docsRoutes = []*Route{specRoute, docsRoute}
+	a.docsOptionsRoutes = []*Route{specOptions, docsOptions}
 
 	if a.config.TypeScriptURL != "-" && a.config.TypeScriptURL != "" {
 		tsRoute := a.Get(a.config.TypeScriptURL, func(ctx *Context) error {
@@ -484,7 +602,12 @@ func (a *App) registerDocs() {
 			setDocsNoCacheHeaders(ctx)
 			return ctx.Send(a.GenerateTypeScript())
 		}).Hidden()
+		tsRoute.Middleware(corsMW)
+
+		tsOptions := a.RegisterRoute(http.MethodOptions, a.config.TypeScriptURL, a.handleDocsOPTIONS).Hidden()
+
 		a.docsRoutes = append(a.docsRoutes, tsRoute)
+		a.docsOptionsRoutes = append(a.docsOptionsRoutes, tsOptions)
 	}
 
 	if a.config.TypeScriptSDKURL != "" && a.config.TypeScriptSDKURL != "-" {
@@ -494,7 +617,12 @@ func (a *App) registerDocs() {
 			setDocsNoCacheHeaders(ctx)
 			return ctx.Send(a.GenerateTypeScriptSDK())
 		}).Hidden()
+		sdkRoute.Middleware(corsMW)
+
+		sdkOptions := a.RegisterRoute(http.MethodOptions, a.config.TypeScriptSDKURL, a.handleDocsOPTIONS).Hidden()
+
 		a.docsRoutes = append(a.docsRoutes, sdkRoute)
+		a.docsOptionsRoutes = append(a.docsOptionsRoutes, sdkOptions)
 	}
 
 	for _, mw := range a.docsMiddlewares {

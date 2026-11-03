@@ -52,10 +52,14 @@ Este checklist reúne os pontos de auditoria e hardening identificados para miti
     - Função exportada `gota.IsWeakPassword(password string) bool` no pacote raiz.
   - **Critério de Aceite**: Testes em `core/middleware_test.go` (`TestBasicAuth_WeakPasswordWarning`) validando detecção de senhas fracas, senhas vazias, senha igual ao usuário e silenciamento via `AllowWeakCredentials`.
 
-- [ ] **6. Isolamento de CORS nas Rotas de Documentação e Schemas**
-  - **Cenário de Ataque**: Se o CORS global estiver configurado permissivamente, requisições autenticadas via browser (onde o usuário tem o BasicAuth memorizado) poderiam teoricamente ser lidas por sites terceiros maliciosos se as origens forem refletidas.
+- [x] **6. Isolamento de CORS nas Rotas de Documentação e Schemas**
+  - **Cenário de Ataque**: Se o CORS global estiver configurado permissivamente (`*` ou origens amplas), requisições autenticadas via browser (onde o usuário tem o BasicAuth memorizado ou sessão ativa) poderiam ser lidas por sites terceiros maliciosos via `fetch()` / XHR cross-origin.
   - **Ação**:
-    - Garantir que as rotas de documentação (`docsRoutes`) rejeitem requisições CORS de origens cruzadas não confiáveis ou que não herdem configurações CORS frouxas sem validação explícita.
+    - As rotas de documentação (`/docs`, `/openapi.json`, `/types.d.ts`, `/sdk.ts`) são isoladas por padrão do middleware global de CORS.
+    - Suporte declarativo a `Config.DocsAllowOrigins []string` para liberar origens confiáveis específicas (ex: portais internos de desenvolvedores).
+    - Rotas de preflight `OPTIONS` explícitas para endpoints de documentação que respondem adequadamente sem exigir credenciais BasicAuth.
+    - Rejeição/remoção automática de headers `Access-Control-*` para origens não explicitamente autorizadas em `DocsAllowOrigins`.
+  - **Critério de Aceite**: Testes em `core/docs_security_test.go` (`TestDocsCORSIsolationFromGlobalWildcard`, `TestDocsCORSExplicitAllowedOrigins`, `TestDocsCORSWithBasicAuthProtection`, `TestDocsCORSExplicitWildcard`) validando isolamento contra wildcard global, liberação de origens explícitas, proteção de 401 e comportamento com `OPTIONS`.
 
 - [ ] **7. Ocultação em Lote de Rotas Internas / Administrativas**
   - **Cenário de Ataque**: Esquecer de adicionar `.Hidden()` em uma rota interna ou administrativa faz com que ela seja incluída automaticamente no `/types.d.ts` e `/sdk.ts`.

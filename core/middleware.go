@@ -78,7 +78,7 @@ func CORS(opts ...CORSOptions) MiddlewareFunc {
 		maxAgeStr = strconv.Itoa(cfg.MaxAge)
 	}
 
-	return func(next HandlerFunc) HandlerFunc {
+	mw := func(next HandlerFunc) HandlerFunc {
 		return func(ctx *Context) error {
 			w := ctx.ResponseWriter
 			r := ctx.Request
@@ -133,6 +133,7 @@ func CORS(opts ...CORSOptions) MiddlewareFunc {
 			return next(ctx)
 		}
 	}
+	return registerMiddlewareKind(mw, "CORS")
 }
 
 // Recover catches panics occurring inside handlers and returns a 500 error.
