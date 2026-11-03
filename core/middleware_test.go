@@ -2,12 +2,14 @@ package core
 
 import (
 	"bytes"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -369,6 +371,104 @@ func TestBasicAuth_WeakPasswordWarning(t *testing.T) {
 	}
 }
 
+func TestBasicAuth_RequireTLS(t *testing.T) {
+	app := New(Config{})
+	app.Get("/secure", func(ctx *Context) error {
+		return ctx.Send("ok")
+	}).Middleware(BasicAuth("admin", "secret123", BasicAuthOptions{
+		RequireTLS: true,
+	}))
+
+	// 1. Remote client over plain HTTP -> 403 Forbidden
+	reqRemoteHTTP := httptest.NewRequest("GET", "/secure", nil)
+	reqRemoteHTTP.RemoteAddr = "203.0.113.50:45678"
+	reqRemoteHTTP.SetBasicAuth("admin", "secret123")
+	recRemoteHTTP := httptest.NewRecorder()
+	app.ServeHTTP(recRemoteHTTP, reqRemoteHTTP)
+	if recRemoteHTTP.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for remote non-TLS request, got %d", recRemoteHTTP.Code)
+	}
+	if !strings.Contains(recRemoteHTTP.Body.String(), "HTTPS/TLS is required") {
+		t.Errorf("expected TLS required error message, got %s", recRemoteHTTP.Body.String())
+	}
+
+	// 2. Localhost client over plain HTTP -> Allowed
+	reqLocalHTTP := httptest.NewRequest("GET", "/secure", nil)
+	reqLocalHTTP.RemoteAddr = "127.0.0.1:45678"
+	reqLocalHTTP.SetBasicAuth("admin", "secret123")
+	recLocalHTTP := httptest.NewRecorder()
+	app.ServeHTTP(recLocalHTTP, reqLocalHTTP)
+	if recLocalHTTP.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for local request, got %d", recLocalHTTP.Code)
+	}
+
+	// 3. Localhost IPv6 over plain HTTP -> Allowed
+	reqLocalIPv6 := httptest.NewRequest("GET", "/secure", nil)
+	reqLocalIPv6.RemoteAddr = "[::1]:45678"
+	reqLocalIPv6.SetBasicAuth("admin", "secret123")
+	recLocalIPv6 := httptest.NewRecorder()
+	app.ServeHTTP(recLocalIPv6, reqLocalIPv6)
+	if recLocalIPv6.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for local IPv6 request, got %d", recLocalIPv6.Code)
+	}
+
+	// 4. Remote client behind reverse proxy terminating HTTPS (X-Forwarded-Proto: https) -> Allowed
+	reqProxyHTTPS := httptest.NewRequest("GET", "/secure", nil)
+	reqProxyHTTPS.RemoteAddr = "203.0.113.50:45678"
+	reqProxyHTTPS.Header.Set("X-Forwarded-Proto", "https")
+	reqProxyHTTPS.SetBasicAuth("admin", "secret123")
+	recProxyHTTPS := httptest.NewRecorder()
+	app.ServeHTTP(recProxyHTTPS, reqProxyHTTPS)
+	if recProxyHTTPS.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for proxy HTTPS request, got %d", recProxyHTTPS.Code)
+	}
+
+	// 5. Remote client with direct TLS -> Allowed
+	reqDirectTLS := httptest.NewRequest("GET", "/secure", nil)
+	reqDirectTLS.RemoteAddr = "203.0.113.50:45678"
+	reqDirectTLS.TLS = &tls.ConnectionState{}
+	reqDirectTLS.SetBasicAuth("admin", "secret123")
+	recDirectTLS := httptest.NewRecorder()
+	app.ServeHTTP(recDirectTLS, reqDirectTLS)
+	if recDirectTLS.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for direct TLS request, got %d", recDirectTLS.Code)
+	}
+}
+
+func TestBasicAuth_InsecureHTTPWarningInProduction(t *testing.T) {
+	origENV := os.Getenv("ENV")
+	defer os.Setenv("ENV", origENV)
+	os.Setenv("ENV", "production")
+
+	var warned string
+	origLogger := BasicAuthWarningLogger
+	BasicAuthWarningLogger = func(msg string) {
+		warned = msg
+	}
+	defer func() {
+		BasicAuthWarningLogger = origLogger
+	}()
+
+	app := New(Config{})
+	app.Get("/data", func(ctx *Context) error { return ctx.Send("ok") }).
+		Middleware(BasicAuth("admin", "strong_secret_password_123", BasicAuthOptions{
+			RequireTLS: false,
+		}))
+
+	req := httptest.NewRequest("GET", "/data", nil)
+	req.RemoteAddr = "198.51.100.22:12345"
+	req.SetBasicAuth("admin", "strong_secret_password_123")
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !strings.Contains(warned, "Insecure BasicAuth attempt over HTTP without TLS") {
+		t.Errorf("expected warning in production for insecure BasicAuth, got: %q", warned)
+	}
+}
+
 func TestRateLimiterMiddleware(t *testing.T) {
 	app := New(Config{DisableDocs: true})
 	app.Use(RateLimiter(RateLimiterOptions{
@@ -584,5 +684,147 @@ func TestCORSNullOriginNeverMatchesWildcardEntry(t *testing.T) {
 	app2.Get("/x", func(ctx *Context) error { return ctx.Send("ok") })
 	if got := corsRequest(app2, "GET", "null").Header().Get("Access-Control-Allow-Origin"); got != "null" {
 		t.Errorf("explicitly listed null origin should be allowed, got %q", got)
+	}
+}
+
+func TestIPWhitelistMiddleware(t *testing.T) {
+	app := New(Config{DisableDocs: true})
+	app.Use(IPWhitelist("192.168.1.0/24", "10.0.0.1", "2001:db8::/32"))
+	app.Get("/internal", func(ctx *Context) error { return ctx.Send("ok") })
+
+	// 1. Matching CIDR subnet -> 200 OK
+	req1 := httptest.NewRequest("GET", "/internal", nil)
+	req1.RemoteAddr = "192.168.1.55:12345"
+	rec1 := httptest.NewRecorder()
+	app.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected 200 for 192.168.1.55, got %d", rec1.Code)
+	}
+
+	// 2. Exact IP match -> 200 OK
+	req2 := httptest.NewRequest("GET", "/internal", nil)
+	req2.RemoteAddr = "10.0.0.1:54321"
+	rec2 := httptest.NewRecorder()
+	app.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 for 10.0.0.1, got %d", rec2.Code)
+	}
+
+	// 3. IPv6 CIDR match -> 200 OK
+	reqIPv6 := httptest.NewRequest("GET", "/internal", nil)
+	reqIPv6.RemoteAddr = "[2001:db8:ffff::1]:54321"
+	recIPv6 := httptest.NewRecorder()
+	app.ServeHTTP(recIPv6, reqIPv6)
+	if recIPv6.Code != http.StatusOK {
+		t.Fatalf("expected 200 for IPv6 in 2001:db8::/32, got %d", recIPv6.Code)
+	}
+
+	// 4. Disallowed IP -> 403 Forbidden
+	reqBad := httptest.NewRequest("GET", "/internal", nil)
+	reqBad.RemoteAddr = "203.0.113.195:12345"
+	recBad := httptest.NewRecorder()
+	app.ServeHTTP(recBad, reqBad)
+	if recBad.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for 203.0.113.195, got %d", recBad.Code)
+	}
+
+	// 5. Localhost loopback allowed by default
+	reqLocal := httptest.NewRequest("GET", "/internal", nil)
+	reqLocal.RemoteAddr = "127.0.0.1:12345"
+	recLocal := httptest.NewRecorder()
+	app.ServeHTTP(recLocal, reqLocal)
+	if recLocal.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for localhost loopback, got %d", recLocal.Code)
+	}
+
+	// 6. When AllowLocalhost is explicitly false, loopback not in whitelist is rejected
+	appStrict := New(Config{DisableDocs: true})
+	appStrict.Use(IPWhitelistWithOptions(IPWhitelistOptions{AllowLocalhost: false}, "10.0.0.0/8"))
+	appStrict.Get("/strict", func(ctx *Context) error { return ctx.Send("ok") })
+
+	recStrict := httptest.NewRecorder()
+	reqStrict := httptest.NewRequest("GET", "/strict", nil)
+	reqStrict.RemoteAddr = "127.0.0.1:12345"
+	appStrict.ServeHTTP(recStrict, reqStrict)
+	if recStrict.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden when AllowLocalhost is false, got %d", recStrict.Code)
+	}
+}
+
+func TestBearerTokenMiddleware(t *testing.T) {
+	app := New(Config{})
+	app.Get("/api/secret", func(ctx *Context) error {
+		tok, _ := ctx.Get("token")
+		return ctx.Send("token=" + tok.(string))
+	}).Middleware(BearerToken("super-secret-dev-token", BearerTokenOptions{
+		Realm:      "DeveloperArea",
+		RequireTLS: true,
+		RateLimit: &RateLimiterOptions{
+			Max:    2,
+			Window: time.Minute,
+		},
+	}))
+
+	// 1. Missing Authorization header -> 401
+	rec1 := httptest.NewRecorder()
+	req1 := httptest.NewRequest("GET", "/api/secret", nil)
+	req1.RemoteAddr = "127.0.0.1:1234"
+	app.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec1.Code)
+	}
+	if rec1.Header().Get("WWW-Authenticate") != `Bearer realm="DeveloperArea"` {
+		t.Errorf("expected WWW-Authenticate header, got %q", rec1.Header().Get("WWW-Authenticate"))
+	}
+
+	// 2. Wrong token -> 401
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest("GET", "/api/secret", nil)
+	req2.RemoteAddr = "127.0.0.1:1234"
+	req2.Header.Set("Authorization", "Bearer invalid-token")
+	app.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for wrong token, got %d", rec2.Code)
+	}
+
+	// 3. Attempt 3 with wrong token exceeds rate limit (Max=2) -> 429
+	rec3 := httptest.NewRecorder()
+	req3 := httptest.NewRequest("GET", "/api/secret", nil)
+	req3.RemoteAddr = "127.0.0.1:1234"
+	req3.Header.Set("Authorization", "Bearer wrong-token-again")
+	app.ServeHTTP(rec3, req3)
+	if rec3.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 Too Many Requests, got %d", rec3.Code)
+	}
+
+	// 4. Remote non-TLS request with RequireTLS -> 403 Forbidden
+	app2 := New(Config{})
+	app2.Get("/tls-check", func(ctx *Context) error { return ctx.Send("ok") }).
+		Middleware(BearerToken("valid-token", BearerTokenOptions{RequireTLS: true}))
+
+	reqRemote := httptest.NewRequest("GET", "/tls-check", nil)
+	reqRemote.RemoteAddr = "203.0.113.10:45678"
+	reqRemote.Header.Set("Authorization", "Bearer valid-token")
+	recRemote := httptest.NewRecorder()
+	app2.ServeHTTP(recRemote, reqRemote)
+	if recRemote.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for remote non-TLS, got %d", recRemote.Code)
+	}
+
+	// 5. Valid token over HTTPS -> 200 OK
+	reqValid := httptest.NewRequest("GET", "/tls-check", nil)
+	reqValid.RemoteAddr = "203.0.113.10:45678"
+	reqValid.Header.Set("X-Forwarded-Proto", "https")
+	reqValid.Header.Set("Authorization", "Bearer valid-token")
+	recValid := httptest.NewRecorder()
+	app2.ServeHTTP(recValid, reqValid)
+	if recValid.Code != http.StatusOK || recValid.Body.String() != "ok" {
+		t.Fatalf("expected 200 OK, got %d: %s", recValid.Code, recValid.Body.String())
+	}
+
+	// 6. Documents BearerAuth in OpenAPI
+	spec := app.openAPISpec()
+	if _, ok := spec.Components.SecuritySchemes["BearerAuth"]; !ok {
+		t.Errorf("expected BearerAuth in components.securitySchemes, got %+v", spec.Components.SecuritySchemes)
 	}
 }

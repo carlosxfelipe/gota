@@ -310,6 +310,10 @@ type BasicAuthOptions struct {
 	RateLimit *RateLimiterOptions
 	// AllowWeakCredentials suppresses security warning logs when using common or weak passwords (e.g. for testing).
 	AllowWeakCredentials bool
+	// RequireTLS enforces that incoming requests must use TLS/HTTPS (or originate from localhost/loopback).
+	// If a non-TLS request arrives from a remote client, it is rejected with 403 Forbidden
+	// to prevent cleartext credential transmission over unencrypted networks.
+	RequireTLS bool
 }
 
 // BasicAuthWarningLogger, if set, redirects BasicAuth security warning messages.
@@ -346,6 +350,37 @@ func emitBasicAuthWarning(msg string) {
 	}
 }
 
+func isLoopbackHost(hostOrIP string) bool {
+	if hostOrIP == "" || hostOrIP == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(hostOrIP)
+	if ip != nil && ip.IsLoopback() {
+		return true
+	}
+	return false
+}
+
+func isRequestTLS(ctx *Context) bool {
+	if ctx.Request.TLS != nil {
+		return true
+	}
+	if strings.EqualFold(ctx.Request.Header.Get("X-Forwarded-Proto"), "https") {
+		return true
+	}
+	if strings.EqualFold(ctx.Request.Header.Get("X-Forwarded-Scheme"), "https") {
+		return true
+	}
+	if strings.EqualFold(ctx.Request.Header.Get("X-Forwarded-Ssl"), "on") {
+		return true
+	}
+	fwd := strings.ToLower(ctx.Request.Header.Get("Forwarded"))
+	if strings.Contains(fwd, "proto=https") {
+		return true
+	}
+	return false
+}
+
 // BasicAuth returns an HTTP Basic Authentication middleware using constant-time credential comparison.
 // Automatically documents the "BasicAuth" security scheme in OpenAPI 3.1 when applied to routes or groups.
 func BasicAuth(username, password string, opts ...BasicAuthOptions) MiddlewareFunc {
@@ -354,6 +389,7 @@ func BasicAuth(username, password string, opts ...BasicAuthOptions) MiddlewareFu
 	var validator func(u, p string) bool
 	var rateLimiter MiddlewareFunc
 	allowWeak := false
+	requireTLS := false
 
 	if len(opts) > 0 {
 		if opts[0].Realm != "" {
@@ -367,6 +403,7 @@ func BasicAuth(username, password string, opts ...BasicAuthOptions) MiddlewareFu
 			rateLimiter = RateLimiter(*opts[0].RateLimit)
 		}
 		allowWeak = opts[0].AllowWeakCredentials
+		requireTLS = opts[0].RequireTLS
 	}
 
 	if !allowWeak {
@@ -387,6 +424,21 @@ func BasicAuth(username, password string, opts ...BasicAuthOptions) MiddlewareFu
 
 	mw := func(next HandlerFunc) HandlerFunc {
 		authHandler := func(ctx *Context) error {
+			isLocal := isLoopbackHost(ctx.ClientIP())
+			isTLS := isRequestTLS(ctx)
+
+			if requireTLS && !isLocal && !isTLS {
+				return ctx.Status(http.StatusForbidden).Json(ErrorResponse{
+					Error:     "Forbidden: HTTPS/TLS is required for authentication",
+					Status:    http.StatusForbidden,
+					RequestID: ctx.RequestID(),
+				})
+			}
+
+			if !isLocal && !isTLS && isProductionEnv() {
+				emitBasicAuthWarning(fmt.Sprintf("Insecure BasicAuth attempt over HTTP without TLS from remote client %s. Enable BasicAuthOptions.RequireTLS or terminate HTTPS.", ctx.ClientIP()))
+			}
+
 			u, p, ok := ctx.Request.BasicAuth()
 			if ok {
 				var valid bool
@@ -419,6 +471,164 @@ func BasicAuth(username, password string, opts ...BasicAuthOptions) MiddlewareFu
 		return authHandler
 	}
 	return registerMiddlewareSecurity(mw, "BasicAuth")
+}
+
+// IPWhitelistOptions configures the IPWhitelist middleware.
+type IPWhitelistOptions struct {
+	// AllowLocalhost permits loopback traffic (127.0.0.1, ::1, localhost) regardless of the Allowed list (default: true).
+	AllowLocalhost bool
+	// KeyFunc customizes client IP extraction (default: ctx.ClientIP).
+	KeyFunc func(ctx *Context) string
+}
+
+// IPWhitelist restricts access to specific IP addresses (e.g. "203.0.113.195", "10.0.0.1")
+// or CIDR subnets (e.g. "192.168.1.0/24", "10.0.0.0/8").
+// Loopback/localhost traffic is allowed by default for local development.
+// Non-matching requests are rejected with 403 Forbidden.
+func IPWhitelist(allowed ...string) MiddlewareFunc {
+	return IPWhitelistWithOptions(IPWhitelistOptions{AllowLocalhost: true}, allowed...)
+}
+
+// IPWhitelistWithOptions restricts access to specific IP addresses or CIDR subnets with custom options.
+func IPWhitelistWithOptions(opts IPWhitelistOptions, allowed ...string) MiddlewareFunc {
+	var ips []net.IP
+	var nets []*net.IPNet
+
+	for _, entry := range allowed {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if strings.Contains(entry, "/") {
+			_, ipNet, err := net.ParseCIDR(entry)
+			if err == nil {
+				nets = append(nets, ipNet)
+			}
+		} else {
+			ip := net.ParseIP(entry)
+			if ip != nil {
+				ips = append(ips, ip)
+			}
+		}
+	}
+
+	keyFunc := opts.KeyFunc
+	if keyFunc == nil {
+		keyFunc = func(ctx *Context) string {
+			return ctx.ClientIP()
+		}
+	}
+
+	return func(next HandlerFunc) HandlerFunc {
+		return func(ctx *Context) error {
+			clientIPStr := keyFunc(ctx)
+
+			if opts.AllowLocalhost && isLoopbackHost(clientIPStr) {
+				return next(ctx)
+			}
+
+			clientIP := net.ParseIP(clientIPStr)
+			if clientIP != nil {
+				for _, ipNet := range nets {
+					if ipNet.Contains(clientIP) {
+						return next(ctx)
+					}
+				}
+				for _, ip := range ips {
+					if ip.Equal(clientIP) {
+						return next(ctx)
+					}
+				}
+			}
+
+			return ctx.Status(http.StatusForbidden).Json(ErrorResponse{
+				Error:     "Forbidden: IP address not allowed",
+				Status:    http.StatusForbidden,
+				RequestID: ctx.RequestID(),
+			})
+		}
+	}
+}
+
+// BearerTokenOptions configures the BearerToken middleware.
+type BearerTokenOptions struct {
+	// Realm sets the WWW-Authenticate realm (default: "Restricted").
+	Realm string
+	// ContextKey is the context store key where the authenticated token is saved (default: "token").
+	ContextKey string
+	// RateLimit optionally configures an in-memory RateLimiter for this token auth instance.
+	RateLimit *RateLimiterOptions
+	// RequireTLS enforces that incoming requests must use TLS/HTTPS (or originate from localhost/loopback).
+	RequireTLS bool
+}
+
+// BearerToken returns a middleware validating static API keys or developer tokens sent via
+// "Authorization: Bearer <token>" using constant-time comparison.
+// Automatically documents the "BearerAuth" security scheme in OpenAPI 3.1.
+func BearerToken(expectedToken string, opts ...BearerTokenOptions) MiddlewareFunc {
+	realm := "Restricted"
+	contextKey := "token"
+	var rateLimiter MiddlewareFunc
+	requireTLS := false
+
+	if len(opts) > 0 {
+		if opts[0].Realm != "" {
+			realm = opts[0].Realm
+		}
+		if opts[0].ContextKey != "" {
+			contextKey = opts[0].ContextKey
+		}
+		if opts[0].RateLimit != nil {
+			rateLimiter = RateLimiter(*opts[0].RateLimit)
+		}
+		requireTLS = opts[0].RequireTLS
+	}
+
+	expectedHash := sha256.Sum256([]byte(expectedToken))
+	wwwAuth := fmt.Sprintf("Bearer realm=%q", realm)
+
+	mw := func(next HandlerFunc) HandlerFunc {
+		authHandler := func(ctx *Context) error {
+			isLocal := isLoopbackHost(ctx.ClientIP())
+			isTLS := isRequestTLS(ctx)
+
+			if requireTLS && !isLocal && !isTLS {
+				return ctx.Status(http.StatusForbidden).Json(ErrorResponse{
+					Error:     "Forbidden: HTTPS/TLS is required for authentication",
+					Status:    http.StatusForbidden,
+					RequestID: ctx.RequestID(),
+				})
+			}
+
+			auth := ctx.Request.Header.Get("Authorization")
+			var token string
+			if strings.HasPrefix(auth, "Bearer ") || strings.HasPrefix(auth, "bearer ") {
+				token = strings.TrimSpace(auth[7:])
+			}
+
+			if token != "" {
+				tokenHash := sha256.Sum256([]byte(token))
+				if subtle.ConstantTimeCompare(tokenHash[:], expectedHash[:]) == 1 {
+					ctx.Set(contextKey, token)
+					return next(ctx)
+				}
+			}
+
+			ctx.SetHeader("WWW-Authenticate", wwwAuth)
+			return ctx.Status(http.StatusUnauthorized).Json(ErrorResponse{
+				Error:     "Unauthorized",
+				Status:    http.StatusUnauthorized,
+				RequestID: ctx.RequestID(),
+			})
+		}
+
+		if rateLimiter != nil {
+			return rateLimiter(authHandler)
+		}
+		return authHandler
+	}
+
+	return registerMiddlewareSecurity(mw, "BearerAuth")
 }
 
 // normalizeIPKey groups IPv6 addresses by their /64 prefix (a single host or subscriber

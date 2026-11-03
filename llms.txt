@@ -1,6 +1,6 @@
 # Gota Framework 💧
 
-> Minimalist, zero-dependency Go web micro-framework built around the REPR Design Pattern (Request-Endpoint-Response) with native interactive API documentation powered by Scalar and OpenAPI 3.1.
+> Minimalist, zero-dependency Go web framework built around the REPR Design Pattern (Request-Endpoint-Response) with native interactive API documentation powered by Scalar and OpenAPI 3.1.
 
 This document is the definitive specification, API reference, and rulebook for the **Gota** web framework in Go. Because Gota has deliberate design choices and fail-fast runtime checks, strictly follow the signatures, struct tags, and constraints documented here rather than guessing or borrowing idioms from Gin, Echo, Fiber, or Chi.
 
@@ -484,11 +484,23 @@ app.Use(gota.Gzip(gota.GzipOptions{Level: 5, MinLength: 1024})) // Level: -2..9,
 
 // 9. Constant-Time HTTP Basic Auth (automatically documents BasicAuth in OpenAPI 3.1)
 //    Supports optional RateLimit to protect against brute-force and credential-stuffing attacks.
+//    Supports RequireTLS to reject remote non-HTTPS requests with 403 Forbidden.
 //    Warns at startup if configured with weak/default credentials (suppress with AllowWeakCredentials: true).
 adminGroup.Use(gota.BasicAuth("admin", os.Getenv("ADMIN_PASS"), gota.BasicAuthOptions{
 	Realm:                "Admin Area", // Optional: Validator func(user, pass string) bool, ContextKey string
 	RateLimit:            &gota.RateLimiterOptions{Max: 5, Window: time.Minute},
 	AllowWeakCredentials: false,        // true silences weak/default password warnings
+	RequireTLS:           true,         // true rejects remote plain-HTTP requests with 403 (allows localhost & HTTPS proxies)
+}))
+
+// 10. IP & CIDR Whitelisting (rejects non-matching requests with 403 Forbidden)
+//     Allows loopback/localhost by default for local development. Supports IPv4, IPv6, and CIDR ranges.
+app.Use(gota.IPWhitelist("10.0.0.0/8", "192.168.1.0/24", "203.0.113.50"))
+
+// 11. Bearer Token Authentication (validates Authorization: Bearer <token> using constant-time comparison)
+//     Automatically documents BearerAuth in OpenAPI 3.1. Supports RateLimit and RequireTLS options.
+adminGroup.Use(gota.BearerToken(os.Getenv("DEV_TOKEN"), gota.BearerTokenOptions{
+	RequireTLS: true,
 }))
 ```
 

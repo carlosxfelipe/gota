@@ -37,6 +37,8 @@ type (
 	RequestIDOptions      = core.RequestIDOptions
 	SlogLoggerOptions     = core.SlogLoggerOptions
 	BasicAuthOptions      = core.BasicAuthOptions
+	IPWhitelistOptions    = core.IPWhitelistOptions
+	BearerTokenOptions    = core.BearerTokenOptions
 	RateLimiterOptions    = core.RateLimiterOptions
 	ServerConfig          = core.ServerConfig
 	RouteDoc              = core.RouteDoc
@@ -125,6 +127,23 @@ func SlogLogger(opts ...SlogLoggerOptions) MiddlewareFunc {
 
 func BasicAuth(username, password string, opts ...BasicAuthOptions) MiddlewareFunc {
 	return core.BasicAuth(username, password, opts...)
+}
+
+// IPWhitelist restricts access to specific IP addresses or CIDR subnets (e.g. "192.168.1.0/24", "10.0.0.1").
+// Allows loopback/localhost by default for local development.
+func IPWhitelist(allowed ...string) MiddlewareFunc {
+	return core.IPWhitelist(allowed...)
+}
+
+// IPWhitelistWithOptions restricts access to specific IP addresses or CIDR subnets with custom options.
+func IPWhitelistWithOptions(opts IPWhitelistOptions, allowed ...string) MiddlewareFunc {
+	return core.IPWhitelistWithOptions(opts, allowed...)
+}
+
+// BearerToken validates static API keys or developer tokens sent via "Authorization: Bearer <token>"
+// using constant-time comparison, with optional RateLimit and RequireTLS.
+func BearerToken(expectedToken string, opts ...BearerTokenOptions) MiddlewareFunc {
+	return core.BearerToken(expectedToken, opts...)
 }
 
 // IsWeakPassword reports whether a password matches known default credentials or is under 4 characters.

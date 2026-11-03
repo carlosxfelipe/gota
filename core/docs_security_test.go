@@ -455,7 +455,7 @@ func TestExampleSetup_ExactConfig(t *testing.T) {
 	app := New(Config{
 		Title:            "Gota REPR API",
 		Version:          "1.0.0",
-		Description:      "Go micro-framework oriented around the REPR Pattern with native interactive Scalar UI.",
+		Description:      "Go web framework oriented around the REPR Pattern with native interactive Scalar UI.",
 		TypeScriptURL:    "/types.d.ts",
 		TypeScriptSDKURL: "/sdk.ts",
 	})
@@ -483,5 +483,50 @@ func TestExampleSetup_ExactConfig(t *testing.T) {
 		if rec.Header().Get("WWW-Authenticate") != `Basic realm="Gota API Documentation"` {
 			t.Errorf("%s expected WWW-Authenticate header, got %q", path, rec.Header().Get("WWW-Authenticate"))
 		}
+	}
+}
+
+func TestProtectDocsWithIPWhitelist(t *testing.T) {
+	app := New(Config{})
+	app.UseDocs(IPWhitelist("10.0.0.0/8", "192.168.1.0/24"))
+
+	// 1. Client from whitelisted corporate VPN IP -> 200 OK
+	recVPN := httptest.NewRecorder()
+	reqVPN := httptest.NewRequest("GET", "/docs", nil)
+	reqVPN.RemoteAddr = "10.24.1.100:12345"
+	app.ServeHTTP(recVPN, reqVPN)
+	if recVPN.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for VPN IP, got %d", recVPN.Code)
+	}
+
+	// 2. Client from untrusted external IP -> 403 Forbidden
+	recBad := httptest.NewRecorder()
+	reqBad := httptest.NewRequest("GET", "/docs", nil)
+	reqBad.RemoteAddr = "198.51.100.99:12345"
+	app.ServeHTTP(recBad, reqBad)
+	if recBad.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for untrusted external IP, got %d", recBad.Code)
+	}
+}
+
+func TestProtectDocsWithBearerToken(t *testing.T) {
+	app := New(Config{})
+	app.UseDocs(BearerToken("dev-secret-token-12345"))
+
+	// 1. Missing token -> 401
+	recMissing := httptest.NewRecorder()
+	reqMissing := httptest.NewRequest("GET", "/openapi.json", nil)
+	app.ServeHTTP(recMissing, reqMissing)
+	if recMissing.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", recMissing.Code)
+	}
+
+	// 2. Valid Bearer token -> 200 OK
+	recValid := httptest.NewRecorder()
+	reqValid := httptest.NewRequest("GET", "/openapi.json", nil)
+	reqValid.Header.Set("Authorization", "Bearer dev-secret-token-12345")
+	app.ServeHTTP(recValid, reqValid)
+	if recValid.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", recValid.Code)
 	}
 }

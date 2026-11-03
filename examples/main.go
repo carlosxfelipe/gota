@@ -73,7 +73,7 @@ func main() {
 	app := gota.New(gota.Config{
 		Title:            "Gota REPR API",
 		Version:          "1.0.0",
-		Description:      "Go micro-framework oriented around the REPR Pattern with native interactive Scalar UI.",
+		Description:      "Go web framework oriented around the REPR Pattern with native interactive Scalar UI.",
 		TypeScriptURL:    tsURL,
 		TypeScriptSDKURL: tsSDKURL,
 	})
@@ -99,7 +99,8 @@ func main() {
 			Max:    10,          // Max 10 attempts
 			Window: time.Minute, // per minute per client IP
 		},
-		AllowWeakCredentials: true, // silences the weak password warning during local development
+		AllowWeakCredentials: true,   // silences the weak password warning during local development
+		RequireTLS:           isProd, // enforces HTTPS for remote clients in production
 	}))
 
 	// 1. Healthcheck Endpoint (Empty Request)

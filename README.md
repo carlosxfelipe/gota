@@ -14,7 +14,7 @@
 
 </div>
 
-**Gota** is a minimalist, high-performance web micro-framework for Go with **zero external dependencies**, built around the [REPR Design Pattern (Request-Endpoint-Response)](https://deviq.com/design-patterns/repr-design-pattern/) and featuring native interactive API documentation powered by **Scalar** (configured with the `classic` layout by default).
+**Gota** is a minimalist, high-performance web framework for Go with **zero external dependencies**, built around the [REPR Design Pattern (Request-Endpoint-Response)](https://deviq.com/design-patterns/repr-design-pattern/) and featuring native interactive API documentation powered by **Scalar** (configured with the `classic` layout by default).
 
 Inspired by the ergonomic fluency of [Kite](https://github.com/claudiovictors/kite) and the cohesive endpoint architecture popularized by [FastEndpoints](https://fast-endpoints.com/).
 
@@ -53,51 +53,159 @@ Requires Go 1.26 or newer.
 
 ## 🚀 Quickstart (REPR Pattern)
 
-Create a `main.go` file:
+Create a `main.go` file (also available in [`examples/main.go`](file:///examples/main.go)):
 
 ```go
 package main
 
 import (
 	"log"
+	"os"
+	"time"
 
 	"github.com/carlosxfelipe/gota"
 )
 
-// 1. Request DTO with automated binding and validation
+// ----------------------------------------------------------------------
+// Request and Response Contracts (REPR Pattern)
+// ----------------------------------------------------------------------
+
 type CreateUserRequest struct {
-	Name  string `json:"name" doc:"Full name" example:"Jane Doe" validate:"required,min=3"`
-	Email string `json:"email" doc:"Corporate email" example:"jane.doe@example.com" validate:"required,email"`
+	Name  string `json:"name" doc:"Full name of user" example:"Jane Doe" validate:"required,min=3"`
+	Email string `json:"email" doc:"Valid corporate or personal email" example:"jane.doe@example.com" validate:"required,email"`
+	Role  string `json:"role" doc:"User access role" example:"admin" default:"member"`
 }
 
-// 2. Response DTO
+type GetUserRequest struct {
+	ID string `param:"id" doc:"User unique identifier" example:"usr_1"`
+}
+
 type UserResponse struct {
-	ID    string `json:"id" example:"usr_100"`
+	ID    string `json:"id" example:"usr_1"`
 	Name  string `json:"name" example:"Jane Doe"`
 	Email string `json:"email" example:"jane.doe@example.com"`
+	Role  string `json:"role" example:"admin"`
 }
 
+type HealthResponse struct {
+	Status  string `json:"status" example:"ok"`
+	Version string `json:"version" example:"1.0.0"`
+}
+
+var mockUsers = []UserResponse{
+	{ID: "usr_1", Name: "Jane Doe", Email: "jane.doe@example.com", Role: "admin"},
+	{ID: "usr_2", Name: "John Smith", Email: "john.smith@example.com", Role: "member"},
+}
+
+// ----------------------------------------------------------------------
+// Struct-Based REPR Endpoint Example
+// ----------------------------------------------------------------------
+
+type GetUserEndpoint struct{}
+
+func (e *GetUserEndpoint) Handle(ctx *gota.Context, req GetUserRequest) (UserResponse, error) {
+	for _, u := range mockUsers {
+		if u.ID == req.ID {
+			return u, nil
+		}
+	}
+	return UserResponse{}, gota.NotFound("User not found")
+}
+
+// ----------------------------------------------------------------------
+// Main Application
+// ----------------------------------------------------------------------
+
 func main() {
+	isProd := os.Getenv("ENV") == "production"
+
+	// In production, disable runtime HTTP TypeScript endpoints (use offline export instead)
+	tsURL := "/types.d.ts"
+	tsSDKURL := "/sdk.ts"
+	if isProd {
+		tsURL = "-"
+		tsSDKURL = "-"
+	}
+
+	// Initializes Gota with built-in OpenAPI 3.1, Scalar docs, and TypeScript SDK routes
 	app := gota.New(gota.Config{
-		Title:       "Gota API",
-		Version:     "1.0.0",
-		Description: "REST API built with the REPR Design Pattern.",
+		Title:            "Gota REPR API",
+		Version:          "1.0.0",
+		Description:      "Go web framework oriented around the REPR Pattern with native interactive Scalar UI.",
+		TypeScriptURL:    tsURL,
+		TypeScriptSDKURL: tsSDKURL,
 	})
 
-	// 3. REPR Endpoint
-	gota.Post(app, "/users", func(ctx *gota.Context, req CreateUserRequest) (UserResponse, error) {
-		// Input binding and validation have already executed automatically!
-		created := UserResponse{
-			ID:    "usr_1",
-			Name:  req.Name,
-			Email: req.Email,
+	// Global Middlewares
+	app.Use(gota.RequestID())
+	app.Use(gota.Logger())
+	app.Use(gota.Recover())
+	app.Use(gota.CORS())
+
+	// Protect documentation, schemas, and SDK routes (/docs, /openapi.json, /types.d.ts, /sdk.ts)
+	// with HTTP Basic Auth and built-in Rate Limiting to prevent brute-force attacks:
+	docsPassword := os.Getenv("DOCS_PASSWORD")
+	if docsPassword == "" {
+		if isProd {
+			log.Fatal("DOCS_PASSWORD environment variable must be set in production")
 		}
-		return created, nil // Automatically serialized and returned as 200 OK (use .Status(201) when preferred)
+		docsPassword = "admin123" // Fallback password for local development
+	}
+	app.UseDocs(gota.BasicAuth("admin", docsPassword, gota.BasicAuthOptions{
+		Realm: "Gota API Documentation",
+		RateLimit: &gota.RateLimiterOptions{
+			Max:    10,          // Max 10 attempts
+			Window: time.Minute, // per minute per client IP
+		},
+		AllowWeakCredentials: true,   // silences the weak password warning during local development
+		RequireTLS:           isProd, // enforces HTTPS for remote clients in production
+	}))
+
+	// 1. Healthcheck Endpoint (Empty Request)
+	gota.Get(app, "/", func(ctx *gota.Context, _ gota.Empty) (HealthResponse, error) {
+		return HealthResponse{Status: "ok", Version: "1.0.0"}, nil
 	}).
-		Summary("Register user").
+		Summary("Healthcheck").
+		Description("Returns system status and current version").
+		Tags("System")
+
+	// 2. List Users (Empty Request)
+	gota.Get(app, "/users", func(ctx *gota.Context, _ gota.Empty) ([]UserResponse, error) {
+		return mockUsers, nil
+	}).
+		Summary("List all users").
 		Tags("Users")
 
-	log.Fatal(app.Listen(":3000"))
+	// 3. Get User by ID (Struct-based REPR Endpoint)
+	userEndpoint := &GetUserEndpoint{}
+	gota.Get(app, "/users/:id", userEndpoint.Handle).
+		Summary("Get user by ID").
+		Tags("Users")
+
+	// 4. Create User (Function-based REPR with automatic binding and validation)
+	gota.Post(app, "/users", func(ctx *gota.Context, req CreateUserRequest) (UserResponse, error) {
+		newUser := UserResponse{
+			ID:    "usr_3",
+			Name:  req.Name,
+			Email: req.Email,
+			Role:  req.Role,
+		}
+		mockUsers = append(mockUsers, newUser)
+		return newUser, nil
+	}).
+		Status(201).
+		Summary("Register user").
+		Description("Validates input data automatically and returns the created user (201 Created)").
+		Tags("Users")
+
+	// 5. Classic route (without REPR structs, for quick hooks)
+	app.Get("/ping", func(ctx *gota.Context) error {
+		return ctx.Json(gota.Map{"message": "pong"})
+	}).Summary("Ping Pong").Tags("System")
+
+	if err := app.ListenGraceful(":3000"); err != nil {
+		log.Printf("Server error: %v", err)
+	}
 }
 ```
 
@@ -165,34 +273,25 @@ app := gota.New(gota.Config{
 
 ### 🔒 Securing or Disabling Documentation in Production
 
-Documentation routes (`/docs` and `/openapi.json`) are public by default. For production environments, Gota provides two recommended approaches:
+Documentation routes (`/docs`, `/openapi.json`, `/types.d.ts`, `/sdk.ts`) are public by default with automatic anti-caching and CORS isolation. For production environments, Gota provides flexible protection options:
 
 #### 1. Protect with Credentials (`app.UseDocs`)
 
-Keep documentation accessible to your team while preventing public access using HTTP Basic Auth (or any custom middleware):
-
 ```go
-// Restricts access to /docs, /openapi.json, /types.d.ts, and /sdk.ts with brute-force protection
-app.UseDocs(
-    gota.RateLimiter(gota.RateLimiterOptions{Max: 5, Window: time.Minute}),
-    gota.BasicAuth("admin", os.Getenv("DOCS_PASSWORD")),
-)
-
-// Or configure brute-force protection directly within BasicAuthOptions:
+// Protect with BasicAuth, rate limiting, and HTTPS enforcement:
 app.UseDocs(gota.BasicAuth("admin", os.Getenv("DOCS_PASSWORD"), gota.BasicAuthOptions{
-    RateLimit: &gota.RateLimiterOptions{Max: 5, Window: time.Minute},
+    RateLimit:  &gota.RateLimiterOptions{Max: 5, Window: time.Minute},
+    RequireTLS: os.Getenv("ENV") == "production", // Rejects remote plain-HTTP credentials
 }))
+
+// Or restrict to private VPN / CIDR subnets:
+app.UseDocs(gota.IPWhitelist("10.0.0.0/8", "192.168.1.0/24"))
+
+// Or protect with a developer token (Authorization: Bearer <token>):
+app.UseDocs(gota.BearerToken(os.Getenv("DOCS_TOKEN")))
 ```
 
-> 💡 Gota automatically warns at startup if `BasicAuth` is configured with empty, short, or common default passwords (e.g. `"admin123"`, `"secret"`). Suppress this with `BasicAuthOptions{AllowWeakCredentials: true}` in local test suites.
-
-_(You can also configure this declaratively via `DocsMiddlewares: [...]` or `DocsRateLimit: &gota.RateLimiterOptions{...}` inside `gota.Config`.)_
-
-> 🛡️ **CORS Isolation**: Documentation, OpenAPI spec, and TypeScript routes are isolated from global wildcard CORS by default. Untrusted third-party sites cannot read your schemas via cross-origin `fetch()`. To allow specific developer portals, configure `DocsAllowOrigins: []string{"https://portal.example.com"}` in `gota.Config`. Preflight `OPTIONS` requests for documentation routes do not require BasicAuth credentials.
-
 #### 2. Disable Completely in Production (`DisableDocs`)
-
-Completely turn off `/docs` and `/openapi.json` so they are not registered at all (returns 404):
 
 ```go
 app := gota.New(gota.Config{
@@ -202,7 +301,7 @@ app := gota.New(gota.Config{
 
 #### 3. Batch Route Hiding (`Group.Hidden()`)
 
-Hide entire internal, administrative, or diagnostic subtrees from both OpenAPI/Scalar documentation and TypeScript declarations/SDK in a single call:
+Hide entire internal, administrative, or diagnostic subtrees from both OpenAPI documentation and TypeScript generation in a single call:
 
 ```go
 admin := app.Group("/admin").Hidden()
