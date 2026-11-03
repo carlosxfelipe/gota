@@ -1066,11 +1066,15 @@ func (rt *Route) Status(code int) *Route {
 	return rt
 }
 
-// Doc sets or replaces route documentation metadata while preserving any inherited security schemes.
+// Doc sets or replaces route documentation metadata while preserving any inherited security schemes and hidden state.
 func (rt *Route) Doc(doc RouteDoc) *Route {
 	current := rt.ensureDoc()
 	inheritedSec := current.Security
+	inheritedHidden := current.Hidden
 	*current = doc
+	if inheritedHidden {
+		current.Hidden = true
+	}
 	if len(inheritedSec) > 0 {
 		merged := make([]string, 0, len(inheritedSec)+len(doc.Security))
 		merged = append(merged, inheritedSec...)
@@ -1086,7 +1090,23 @@ type RouteGroup struct {
 	prefix      string
 	middlewares []MiddlewareFunc
 	security    []string
+	hidden      bool
+	routes      []*Route
+	children    []*RouteGroup
 	registered  bool
+}
+
+// Hidden marks all routes registered in this group (and nested groups) as hidden
+// from OpenAPI, Scalar documentation, and TypeScript declarations/SDK.
+func (g *RouteGroup) Hidden() *RouteGroup {
+	g.hidden = true
+	for _, rt := range g.routes {
+		rt.Hidden()
+	}
+	for _, child := range g.children {
+		child.Hidden()
+	}
+	return g
 }
 
 // Security documents one or more OpenAPI security scheme names for all routes in this group.
@@ -1142,9 +1162,13 @@ func (g *RouteGroup) Patch(path string, h HandlerFunc) *Route {
 func (g *RouteGroup) RegisterRoute(method, path string, h HandlerFunc) *Route {
 	g.registered = true
 	rt := g.app.registerRouteWithBase(method, joinPrefix(g.prefix, path), h, g.middlewares)
+	if g.hidden {
+		rt.Hidden()
+	}
 	if len(g.security) > 0 {
 		rt.Security(g.security...)
 	}
+	g.routes = append(g.routes, rt)
 	return rt
 }
 
@@ -1155,7 +1179,15 @@ func (g *RouteGroup) Group(prefix string) *RouteGroup {
 	copy(inherited, g.middlewares)
 	sec := make([]string, len(g.security))
 	copy(sec, g.security)
-	return &RouteGroup{app: g.app, prefix: fullPrefix, middlewares: inherited, security: sec}
+	child := &RouteGroup{
+		app:         g.app,
+		prefix:      fullPrefix,
+		middlewares: inherited,
+		security:    sec,
+		hidden:      g.hidden,
+	}
+	g.children = append(g.children, child)
+	return child
 }
 
 func joinPrefix(prefix, path string) string {

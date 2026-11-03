@@ -61,10 +61,14 @@ Este checklist reúne os pontos de auditoria e hardening identificados para miti
     - Rejeição/remoção automática de headers `Access-Control-*` para origens não explicitamente autorizadas em `DocsAllowOrigins`.
   - **Critério de Aceite**: Testes em `core/docs_security_test.go` (`TestDocsCORSIsolationFromGlobalWildcard`, `TestDocsCORSExplicitAllowedOrigins`, `TestDocsCORSWithBasicAuthProtection`, `TestDocsCORSExplicitWildcard`) validando isolamento contra wildcard global, liberação de origens explícitas, proteção de 401 e comportamento com `OPTIONS`.
 
-- [ ] **7. Ocultação em Lote de Rotas Internas / Administrativas**
-  - **Cenário de Ataque**: Esquecer de adicionar `.Hidden()` em uma rota interna ou administrativa faz com que ela seja incluída automaticamente no `/types.d.ts` e `/sdk.ts`.
+- [x] **7. Ocultação em Lote de Rotas Internas / Administrativas**
+  - **Cenário de Ataque**: Esquecer de adicionar `.Hidden()` individualmente em cada rota interna ou administrativa faz com que ela seja incluída automaticamente no `/types.d.ts`, `/sdk.ts` e `/openapi.json`. Um atacante pode explorar endpoints de métricas, debug ou admin que deveriam ser confidenciais.
   - **Ação**:
-    - Permitir aplicar `.Hidden()` a grupos inteiros de rotas (`Group.Hidden()`), garantindo que subárvores inteiras (ex: `/internal/*`, `/admin/*`) fiquem fora da documentação e do SDK público por padrão.
+    - Implementado método fluente `Group.Hidden() *RouteGroup`, ocultando todas as rotas registradas no grupo e em subgrupos filhos.
+    - Suporte a chamadas fluentes (`app.Group("/admin").Hidden()`) ou posteriores (`admin.Hidden()`).
+    - Propagação em cascata para subgrupos aninhados (`admin.Group("/internal")`).
+    - Preservação do estado `Hidden` no registro de endpoints REPR (`gota.Get`, `gota.Post`, etc.) via `Route.Doc()`.
+  - **Critério de Aceite**: Testes em `core/app_test.go` (`TestRouteGroup_Hidden`) e `endpoint_test.go` (`TestRouteGroup_Hidden_REPREndpoints`) comprovando que as rotas continuam respondendo via HTTP mas não aparecem no OpenAPI spec, no `/types.d.ts` e no `/sdk.ts`.
 
 ---
 

@@ -200,6 +200,15 @@ app := gota.New(gota.Config{
 })
 ```
 
+#### 3. Batch Route Hiding (`Group.Hidden()`)
+
+Hide entire internal, administrative, or diagnostic subtrees from both OpenAPI/Scalar documentation and TypeScript declarations/SDK in a single call:
+
+```go
+admin := app.Group("/admin").Hidden()
+admin.Get("/metrics", metricsHandler) // Executable via HTTP, but absent from /openapi.json and /types.d.ts
+```
+
 ---
 
 ## 🔷 Auto-Generated TypeScript Definitions & Client SDK

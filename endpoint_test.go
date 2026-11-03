@@ -968,3 +968,73 @@ func TestRoot_AuditModel(t *testing.T) {
 		t.Fatalf("expected 2 warnings from root AuditModel, got %d: %v", len(warnings), warnings)
 	}
 }
+
+type AdminMetricsReq struct {
+	Scope string `query:"scope" doc:"Metrics scope"`
+}
+
+type AdminMetricsRes struct {
+	TotalUsers int `json:"total_users"`
+}
+
+func TestRouteGroup_Hidden_REPREndpoints(t *testing.T) {
+	app := New(Config{
+		TypeScriptURL:    "/types.d.ts",
+		TypeScriptSDKURL: "/sdk.ts",
+	})
+
+	// Public REPR endpoint
+	Get(app, "/public/ping", func(ctx *Context, req struct{}) (string, error) {
+		return "pong", nil
+	})
+
+	// Hidden group with REPR endpoint
+	admin := app.Group("/admin").Hidden()
+	Get(admin, "/metrics", func(ctx *Context, req AdminMetricsReq) (AdminMetricsRes, error) {
+		return AdminMetricsRes{TotalUsers: 42}, nil
+	})
+
+	// 1. Verify /admin/metrics executes properly via HTTP
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest("GET", "/admin/metrics?scope=all", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var res AdminMetricsRes
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil || res.TotalUsers != 42 {
+		t.Fatalf("unexpected response body: %s", rec.Body.String())
+	}
+
+	// 2. Verify OpenAPI spec does NOT contain /admin/metrics
+	specRec := httptest.NewRecorder()
+	app.ServeHTTP(specRec, httptest.NewRequest("GET", "/openapi.json", nil))
+	if specRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on /openapi.json, got %d", specRec.Code)
+	}
+	if strings.Contains(specRec.Body.String(), "/admin/metrics") {
+		t.Errorf("hidden REPR endpoint found in /openapi.json")
+	}
+	if !strings.Contains(specRec.Body.String(), "/public/ping") {
+		t.Errorf("public REPR endpoint missing from /openapi.json")
+	}
+
+	// 3. Verify TypeScript definitions do NOT contain /admin/metrics
+	tsRec := httptest.NewRecorder()
+	app.ServeHTTP(tsRec, httptest.NewRequest("GET", "/types.d.ts", nil))
+	if strings.Contains(tsRec.Body.String(), "/admin/metrics") {
+		t.Errorf("hidden REPR endpoint found in /types.d.ts")
+	}
+	if !strings.Contains(tsRec.Body.String(), "/public/ping") {
+		t.Errorf("public REPR endpoint missing from /types.d.ts")
+	}
+
+	// 4. Verify TypeScript SDK does NOT contain /admin/metrics
+	sdkRec := httptest.NewRecorder()
+	app.ServeHTTP(sdkRec, httptest.NewRequest("GET", "/sdk.ts", nil))
+	if strings.Contains(sdkRec.Body.String(), "/admin/metrics") {
+		t.Errorf("hidden REPR endpoint found in /sdk.ts")
+	}
+	if !strings.Contains(sdkRec.Body.String(), "/public/ping") {
+		t.Errorf("public REPR endpoint missing from /sdk.ts")
+	}
+}

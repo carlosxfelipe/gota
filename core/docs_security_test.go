@@ -450,3 +450,38 @@ func TestDocsCORSExplicitWildcard(t *testing.T) {
 		t.Errorf("null origin must not match wildcard entry, got %q", got)
 	}
 }
+
+func TestExampleSetup_ExactConfig(t *testing.T) {
+	app := New(Config{
+		Title:            "Gota REPR API",
+		Version:          "1.0.0",
+		Description:      "Go micro-framework oriented around the REPR Pattern with native interactive Scalar UI.",
+		TypeScriptURL:    "/types.d.ts",
+		TypeScriptSDKURL: "/sdk.ts",
+	})
+
+	app.Use(RequestID())
+	app.Use(Logger())
+	app.Use(Recover())
+	app.Use(CORS())
+
+	app.UseDocs(BasicAuth("admin", "admin123", BasicAuthOptions{
+		Realm: "Gota API Documentation",
+		RateLimit: &RateLimiterOptions{
+			Max:    10,
+			Window: time.Minute,
+		},
+		AllowWeakCredentials: true,
+	}))
+
+	for _, path := range []string{"/docs", "/openapi.json", "/types.d.ts", "/sdk.ts"} {
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s without credentials expected 401, got %d", path, rec.Code)
+		}
+		if rec.Header().Get("WWW-Authenticate") != `Basic realm="Gota API Documentation"` {
+			t.Errorf("%s expected WWW-Authenticate header, got %q", path, rec.Header().Get("WWW-Authenticate"))
+		}
+	}
+}

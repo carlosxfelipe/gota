@@ -699,11 +699,11 @@ gota.Get(app, "/api/users/:id", getUserHandler).
 	Response(http.StatusNotFound, gota.ErrorResponse{}, "Not found"). // Documents extra OpenAPI status codes
 	Middleware(auditMiddleware).                                     // Appends route-specific middleware(s)
 	Name("users.show")                                               // Registers route name for app.URLFor
-	// Also available on *gota.Route (and .BearerAuth() / .Security(...) on *gota.RouteGroup):
+	// Also available on *gota.Route (and .BearerAuth() / .Security(...) / .Hidden() on *gota.RouteGroup):
 	// .BearerAuth()                                                 // Documents BearerAuth in OpenAPI & Scalar (auto-applied by gota.JWT*)
 	// .Security("BearerAuth")                                       // Documents custom/named security scheme(s)
 	// .Deprecated()                                                 // Marks deprecated in OpenAPI
-	// .Hidden()                                                     // Hides route from OpenAPI & Scalar UI
+	// .Hidden()                                                     // Hides route (or entire RouteGroup & children) from OpenAPI, Scalar, and TypeScript SDK
 	// .Body(model, desc...), .Query(name, model, desc...), .Header(name, model, desc...) // Manual docs for low-level routes
 ```
 

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -265,5 +266,98 @@ func TestIsProductionEnv(t *testing.T) {
 	os.Setenv("APP_ENV", "prod")
 	if !isProductionEnv() {
 		t.Errorf("expected isProductionEnv to be true when APP_ENV=prod")
+	}
+}
+
+func TestRouteGroup_Hidden(t *testing.T) {
+	app := New(Config{
+		TypeScriptURL:    "/types.d.ts",
+		TypeScriptSDKURL: "/sdk.ts",
+	})
+
+	// 1. Public group - routes should be documented
+	public := app.Group("/public")
+	public.Get("/info", func(ctx *Context) error { return ctx.Send("public info") })
+
+	// 2. Hidden group created fluently - all routes should be hidden from docs & TS
+	admin := app.Group("/admin").Hidden()
+	admin.Get("/users", func(ctx *Context) error { return ctx.Send("users list") })
+	admin.Post("/ban", func(ctx *Context) error { return ctx.Send("user banned") })
+
+	// 3. Nested child group under hidden group should automatically inherit hidden state
+	internal := admin.Group("/internal")
+	internal.Get("/metrics", func(ctx *Context) error { return ctx.Send("internal metrics") })
+
+	// 4. Group that calls .Hidden() after registering some routes
+	late := app.Group("/late")
+	late.Get("/early_route", func(ctx *Context) error { return ctx.Send("early") })
+	late.Hidden()
+	late.Get("/after_route", func(ctx *Context) error { return ctx.Send("after") })
+
+	// Verify all routes execute properly via HTTP
+	routesToTest := []struct {
+		method string
+		path   string
+		want   string
+	}{
+		{"GET", "/public/info", "public info"},
+		{"GET", "/admin/users", "users list"},
+		{"POST", "/admin/ban", "user banned"},
+		{"GET", "/admin/internal/metrics", "internal metrics"},
+		{"GET", "/late/early_route", "early"},
+		{"GET", "/late/after_route", "after"},
+	}
+
+	for _, rt := range routesToTest {
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, httptest.NewRequest(rt.method, rt.path, nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s %s expected 200, got %d", rt.method, rt.path, rec.Code)
+		}
+		if rec.Body.String() != rt.want {
+			t.Errorf("%s %s expected %q, got %q", rt.method, rt.path, rt.want, rec.Body.String())
+		}
+	}
+
+	// Verify OpenAPI spec
+	spec := app.openAPISpec()
+	if _, ok := spec.Paths["/public/info"]; !ok {
+		t.Errorf("expected /public/info in OpenAPI spec")
+	}
+
+	hiddenPaths := []string{
+		"/admin/users",
+		"/admin/ban",
+		"/admin/internal/metrics",
+		"/late/early_route",
+		"/late/after_route",
+	}
+
+	for _, p := range hiddenPaths {
+		if _, ok := spec.Paths[p]; ok {
+			t.Errorf("hidden path %q unexpectedly found in OpenAPI spec", p)
+		}
+	}
+
+	// Verify TypeScript generation
+	ts := app.GenerateTypeScript()
+	if !strings.Contains(ts, "/public/info") {
+		t.Errorf("expected /public/info in TypeScript definitions")
+	}
+	for _, p := range hiddenPaths {
+		if strings.Contains(ts, p) {
+			t.Errorf("hidden path %q unexpectedly found in TypeScript definitions", p)
+		}
+	}
+
+	// Verify TypeScript SDK generation
+	sdk := app.GenerateTypeScriptSDK()
+	if !strings.Contains(sdk, "/public/info") {
+		t.Errorf("expected /public/info in TypeScript SDK")
+	}
+	for _, p := range hiddenPaths {
+		if strings.Contains(sdk, p) {
+			t.Errorf("hidden path %q unexpectedly found in TypeScript SDK", p)
+		}
 	}
 }
