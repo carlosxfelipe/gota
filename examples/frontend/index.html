@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gota 💧 — Todo REPR Frontend (No Build Step)</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script
+      src="https://unpkg.com/vue@3/dist/vue.global.prod.js"
+      defer
+    ></script>
+    <script src="./app.js" defer></script>
+  </head>
+  <body
+    class="bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 min-h-screen antialiased selection:bg-sky-500/20 selection:text-sky-700 dark:selection:bg-sky-500/30 dark:selection:text-sky-200 transition-colors"
+  >
+    <div id="app" v-cloak class="max-w-4xl mx-auto px-4 py-10">
+      <!-- Header -->
+      <header
+        class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 pb-8 border-b border-slate-200 dark:border-slate-800"
+      >
+        <div class="min-w-0">
+          <div class="flex items-center gap-2.5 flex-wrap">
+            <span class="text-2xl">💧</span>
+            <h1
+              class="text-2xl font-bold tracking-tight text-slate-900 dark:text-white"
+            >
+              Gota REPR Todo App
+            </h1>
+            <span
+              class="text-xs font-mono uppercase px-2.5 py-0.5 rounded-full bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/25"
+            >
+              Zero Build
+            </span>
+          </div>
+          <p class="text-sm text-slate-600 dark:text-slate-400 mt-1">
+            Vue 3 + Tailwind CDN consuming
+            <code class="text-slate-800 dark:text-slate-300 font-mono"
+              >GET /todos</code
+            >,
+            <code class="text-slate-800 dark:text-slate-300 font-mono"
+              >GET /todos/:id</code
+            >, and
+            <code class="text-slate-800 dark:text-slate-300 font-mono"
+              >POST /todos</code
+            >.
+          </p>
+        </div>
+
+        <div class="flex items-center gap-2 shrink-0">
+          <input
+            v-model="baseUrl"
+            @change="loadTodos"
+            type="text"
+            placeholder="http://localhost:3000"
+            class="h-9 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-lg px-3 text-xs font-mono text-slate-700 dark:text-slate-300 focus:outline-none focus:border-sky-500 w-44 shadow-xs"
+          />
+          <a
+            :href="baseUrl + '/docs'"
+            target="_blank"
+            rel="noopener"
+            class="h-9 inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 text-xs font-medium px-3.5 rounded-lg bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-800 text-slate-700 dark:text-slate-200 shadow-xs transition"
+          >
+            <span>Scalar Docs</span>
+            <span aria-hidden="true" class="text-slate-400 dark:text-slate-500"
+              >↗</span
+            >
+          </a>
+        </div>
+      </header>
+
+      <!-- Connection Banner -->
+      <div
+        v-if="connectionError"
+        class="mt-6 p-4 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800/60 text-rose-800 dark:text-rose-200 text-sm flex items-center justify-between gap-4"
+      >
+        <div>
+          <span class="font-semibold"
+            >Cannot reach Gota API at {{ baseUrl }}</span
+          >
+          <p class="text-xs text-rose-600 dark:text-rose-300/80 mt-0.5">
+            Make sure the server is running with
+            <code
+              class="font-mono bg-rose-100 dark:bg-rose-900/50 px-1.5 py-0.5 rounded"
+              >go run ./examples/main.go</code
+            >
+          </p>
+        </div>
+        <button
+          @click="loadTodos"
+          class="px-3 py-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-xs font-medium shrink-0 cursor-pointer"
+        >
+          Retry
+        </button>
+      </div>
+
+      <!-- Main Grid -->
+      <div class="grid grid-cols-1 md:grid-cols-12 gap-6 mt-8">
+        <!-- Left Column: Create Todo + Lookup by ID -->
+        <div class="md:col-span-5 space-y-6">
+          <!-- Create Todo Card (POST /todos) -->
+          <section
+            class="bg-white dark:bg-slate-900/70 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 shadow-xs"
+          >
+            <div class="flex items-center justify-between mb-4">
+              <h2 class="text-sm font-semibold text-slate-900 dark:text-white">
+                Create Todo
+              </h2>
+              <span
+                class="text-[11px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/25"
+              >
+                POST /todos
+              </span>
+            </div>
+
+            <form @submit.prevent="createTodo" class="space-y-4">
+              <div>
+                <label
+                  class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5"
+                  >Title</label
+                >
+                <input
+                  v-model="form.title"
+                  type="text"
+                  placeholder="e.g. Write integration tests"
+                  class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl px-3.5 py-2 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-sky-500"
+                />
+                <p class="text-[11px] text-slate-500 mt-1">
+                  Tip: submit empty or &lt;3 chars to test Gota's
+                  <code class="text-slate-700 dark:text-slate-400">422</code>
+                  validation.
+                </p>
+              </div>
+
+              <div>
+                <label
+                  class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5"
+                  >Priority</label
+                >
+                <div class="grid grid-cols-3 gap-2">
+                  <button
+                    v-for="p in ['low', 'normal', 'high']"
+                    :key="p"
+                    type="button"
+                    @click="form.priority = p"
+                    :class="[
+                    'py-1.5 text-xs font-medium rounded-lg border capitalize transition cursor-pointer',
+                    form.priority === p
+                      ? 'bg-sky-500/15 border-sky-500 text-sky-700 dark:text-sky-300'
+                      : 'bg-slate-50 dark:bg-slate-950 border-slate-300 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:border-slate-400 dark:hover:border-slate-700'
+                  ]"
+                  >
+                    {{ p }}
+                  </button>
+                </div>
+              </div>
+
+              <!-- Validation / API Error Box -->
+              <div
+                v-if="createError"
+                class="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800/60 text-xs text-rose-800 dark:text-rose-200 space-y-1"
+              >
+                <div class="font-semibold">{{ createError.message }}</div>
+                <ul
+                  v-if="createError.fields"
+                  class="list-disc list-inside text-rose-700 dark:text-rose-300/90"
+                >
+                  <li v-for="(msg, field) in createError.fields" :key="field">
+                    <span class="font-mono">{{ field }}</span>: {{ msg }}
+                  </li>
+                </ul>
+              </div>
+
+              <button
+                type="submit"
+                :disabled="creating"
+                class="w-full py-2.5 px-4 rounded-xl bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-white dark:text-slate-950 font-semibold text-sm transition cursor-pointer shadow-xs"
+              >
+                {{ creating ? 'Creating...' : '+ Add Todo' }}
+              </button>
+            </form>
+          </section>
+
+          <!-- Inspect Todo by ID Card (GET /todos/:id) -->
+          <section
+            class="bg-white dark:bg-slate-900/70 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 shadow-xs"
+          >
+            <div class="flex items-center justify-between mb-4">
+              <h2 class="text-sm font-semibold text-slate-900 dark:text-white">
+                Inspect by ID
+              </h2>
+              <span
+                class="text-[11px] font-mono px-2 py-0.5 rounded bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/25"
+              >
+                GET /todos/:id
+              </span>
+            </div>
+
+            <form @submit.prevent="fetchTodoById(searchId)" class="flex gap-2">
+              <input
+                v-model="searchId"
+                type="text"
+                placeholder="todo_1 or todo_999"
+                class="flex-1 bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl px-3.5 py-2 text-sm font-mono text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-sky-500"
+              />
+              <button
+                type="submit"
+                class="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 transition cursor-pointer"
+              >
+                Fetch
+              </button>
+            </form>
+
+            <div
+              v-if="lookupError"
+              class="mt-3 p-3 rounded-xl bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800/50 text-xs text-amber-800 dark:text-amber-200"
+            >
+              {{ lookupError }}
+            </div>
+
+            <div
+              v-if="selectedTodo"
+              class="mt-3 p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs font-mono space-y-1.5"
+            >
+              <div
+                class="flex items-center justify-between text-slate-500 dark:text-slate-400"
+              >
+                <span>Response payload:</span>
+                <button
+                  @click="selectedTodo = null"
+                  class="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+              <pre class="text-sky-700 dark:text-sky-300 overflow-x-auto">
+{{ JSON.stringify(selectedTodo, null, 2) }}</pre
+              >
+            </div>
+          </section>
+        </div>
+
+        <!-- Right Column: Todo List (GET /todos) -->
+        <div class="md:col-span-7">
+          <section
+            class="bg-white dark:bg-slate-900/70 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 shadow-xs"
+          >
+            <div class="flex items-center justify-between mb-4">
+              <div class="flex items-center gap-2">
+                <h2
+                  class="text-sm font-semibold text-slate-900 dark:text-white"
+                >
+                  Todos
+                </h2>
+                <span
+                  class="text-xs px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-mono"
+                >
+                  {{ todos.length }}
+                </span>
+              </div>
+              <div class="flex items-center gap-2">
+                <span
+                  class="text-[11px] font-mono px-2 py-0.5 rounded bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/25"
+                >
+                  GET /todos
+                </span>
+                <button
+                  @click="loadTodos"
+                  class="text-xs px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 transition cursor-pointer"
+                >
+                  ↻ Refresh
+                </button>
+              </div>
+            </div>
+
+            <div
+              v-if="loading"
+              class="py-12 text-center text-sm text-slate-500"
+            >
+              Loading todos...
+            </div>
+
+            <div
+              v-else-if="todos.length === 0"
+              class="py-12 text-center text-sm text-slate-500"
+            >
+              No todos found.
+            </div>
+
+            <ul
+              v-else
+              class="divide-y divide-slate-200 dark:divide-slate-800/80"
+            >
+              <li
+                v-for="item in todos"
+                :key="item.id"
+                @click="selectFromList(item.id)"
+                class="py-3.5 px-3 -mx-3 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-900 transition flex items-center justify-between gap-3 cursor-pointer"
+              >
+                <div class="flex items-center gap-3 min-w-0">
+                  <span
+                    :class="[
+                    'w-2.5 h-2.5 rounded-full shrink-0',
+                    item.done ? 'bg-emerald-500 dark:bg-emerald-400' : 'bg-slate-300 dark:bg-slate-600'
+                  ]"
+                  ></span>
+                  <div class="min-w-0">
+                    <p
+                      :class="['text-sm font-medium truncate', item.done ? 'line-through text-slate-400 dark:text-slate-500' : 'text-slate-900 dark:text-slate-100']"
+                    >
+                      {{ item.title }}
+                    </p>
+                    <p class="text-[11px] font-mono text-slate-500">
+                      {{ item.id }} · click to inspect via GET /todos/:id
+                    </p>
+                  </div>
+                </div>
+
+                <span
+                  :class="[
+                  'text-[11px] font-mono uppercase px-2.5 py-0.5 rounded-full border shrink-0',
+                  priorityBadgeClass(item.priority)
+                ]"
+                >
+                  {{ item.priority }}
+                </span>
+              </li>
+            </ul>
+          </section>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

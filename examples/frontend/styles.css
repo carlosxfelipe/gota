@@ -1,0 +1,21 @@
+:root {
+  color-scheme: light dark;
+}
+
+[v-cloak] {
+  display: none;
+}
+
+/* Custom scrollbar for JSON payload preview */
+pre::-webkit-scrollbar {
+  height: 6px;
+}
+
+pre::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+pre::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.3);
+  border-radius: 9999px;
+}

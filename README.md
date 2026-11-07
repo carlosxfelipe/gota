@@ -302,7 +302,7 @@ Then explore:
 
 For exhaustive documentation on all middlewares (JWT, CORS, RateLimiter, SecureHeaders), model validation tags, file uploads, SSE streaming, and agent prompts, refer to:
 
-👉 **[llms.txt](llms.txt)**
+👉 [llms.txt](llms.txt)
 
 ---
 
