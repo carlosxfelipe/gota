@@ -4,6 +4,7 @@ import (
 	"log"
 
 	"github.com/carlosxfelipe/gota"
+	"github.com/carlosxfelipe/gota/examples/todos"
 )
 
 // Example demonstrating offline TypeScript SDK code generation (e.g. for CI/CD or build scripts).
@@ -17,18 +18,17 @@ import (
 func main() {
 	// 1. Initialize your app (or import your app router configuration)
 	app := gota.New(gota.Config{
-		Title:       "Production API",
+		Title:       "Gota REPR API",
 		Version:     "1.0.0",
-		Description: "Offline-generated client SDK example",
+		Description: "Minimal Request-Endpoint-Response (REPR) API with Scalar OpenAPI 3.1 and TypeScript SDK.",
 		// In production, keep HTTP endpoints disabled
 		TypeScriptURL:    "-",
 		TypeScriptSDKURL: "-",
 	})
 
-	// 2. Register your models and endpoints
-	gota.Get(app, "/health", func(ctx *gota.Context, _ gota.Empty) (gota.Map, error) {
-		return gota.Map{"status": "ok"}, nil
-	}).Summary("Healthcheck")
+	// 2. Register your models and endpoints from the example package
+	store := todos.NewTodoStore()
+	todos.RegisterRoutes(app, store)
 
 	// 3. Export TypeScript SDK and Definitions directly to disk
 	sdkTarget := "./dist/sdk.ts"
