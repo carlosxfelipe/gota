@@ -701,7 +701,7 @@ func (g *TypeScriptGenerator) GenerateSDK(routes []*Node) string {
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ message: res.statusText }));
-        throw Object.assign(new Error((err && err.message) || res.statusText), { status: res.status, data: err });
+        throw Object.assign(new Error((err && (err.message || err.error)) || res.statusText), { status: res.status, data: err });
       }
       if (res.status === 204) return undefined as any;
       const ctype = res.headers.get("content-type") || "";

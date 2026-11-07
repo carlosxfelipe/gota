@@ -38,7 +38,7 @@ type CreateTodoRequest struct {
 type TodoResponse struct {
 	ID       string `json:"id" doc:"Todo ID" example:"todo_1"`
 	Title    string `json:"title" doc:"Task title" example:"Review pull requests"`
-	Priority string `json:"priority" doc:"Task priority" example:"normal"`
+	Priority string `json:"priority" doc:"Task priority" example:"normal" validate:"oneof=low,normal,high"`
 	Done     bool   `json:"done" doc:"Completion status" example:"false"`
 }
 
