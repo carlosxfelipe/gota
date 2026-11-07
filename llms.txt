@@ -107,6 +107,20 @@ To self-host or use a custom CDN:
 - Set `ScalarScriptURL` (and optionally `ScalarSRI`; leaving `ScalarSRI` empty skips the integrity attribute).
 - `ScalarSRI` is ignored unless `ScalarScriptURL` is also set. Never pair an SRI hash with a floating `@latest` URL.
 
+### Auto-Generated TypeScript Definitions, Client SDK & Schema Auditing
+
+Gota generates zero-dependency TypeScript declarations (`.d.ts`) and a ready-to-run client SDK (`sdk.ts`) directly from registered routes and REPR structs:
+- **HTTP Routes (opt-in)**: Set `TypeScriptURL: "/types.d.ts"` and/or `TypeScriptSDKURL: "/sdk.ts"` in `gota.Config` (or `"-"` to explicitly disable in production). Protected by `app.UseDocs(...)` middlewares and isolated from global CORS.
+- **Offline / CI-CD Export**: Use `app.ExportTypeScript(path)` / `app.ExportTypeScriptSDK(path)` (or `app.GenerateTypeScript()` / `app.GenerateTypeScriptSDK()`) to write the client SDK directly to the frontend repository without starting an HTTP server.
+- **Request vs. Response Field Optionality**:
+  - **Request structs**: Fields are required (`field: T`) only when tagged with `validate:"required"`; otherwise optional (`field?: T`).
+  - **Response structs**: Non-pointer fields without `json:",omitempty"` or `json:",omitzero"` are required (`field: T`); pointer fields (`*T`) or fields with `omitempty`/`omitzero` are optional (`field?: T`).
+  - `validate:"oneof=..."` on string fields generates TypeScript string literal union types (e.g. `"admin" | "member"`).
+- **Generated `createGotaClient(baseUrl?, clientOptions?: GotaClientOptions)`**:
+  - `GotaClientOptions` supports `headers` (static `Record<string, string>` or sync/async callback `() => Record<string, string> | Promise<Record<string, string>>`), `credentials` (`RequestCredentials`), and custom `fetch`.
+  - `client.fetch("METHOD /path", options?)` infers `params`, `query`, `body`, and `response` types per endpoint, omits the 2nd argument when an endpoint requires no input, sorts `:param` keys longest-first to avoid prefix collisions, serializes JSON/FormData automatically, handles `204 No Content`, and throws typed errors with `status` and `data` on non-2xx responses.
+- **Sensitive Field Auditing**: `gota.AuditModel(model)` (and `gota.IsSensitiveFieldName(fieldName)`) inspects structs recursively in unit tests and returns warnings if exported fields like `PasswordHash`, `Salt`, `ClientSecret`, or `ResetToken` lack `json:"-"` (use `validate:"nowarn"` to silence intentional cases).
+
 ---
 
 ## 3. The REPR Pattern in Gota (Request – Endpoint – Response)

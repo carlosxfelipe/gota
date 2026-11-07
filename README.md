@@ -364,9 +364,15 @@ Once `src/api.ts` is in your frontend, use it with full compile-time type safety
 ```typescript
 import { createGotaClient } from "./api";
 
-// Configure with your API base URL (env variable in production, localhost in development)
+// Configure with your API base URL and optional global client settings (auth headers, cookies, custom fetch)
 const api = createGotaClient(
   process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000",
+  {
+    credentials: "include",
+    headers: async () => ({
+      Authorization: `Bearer ${await getAccessToken()}`,
+    }),
+  },
 );
 
 // 1. The editor autocompletes valid routes as soon as you type quotes:
@@ -375,7 +381,7 @@ const user = await api.fetch("GET /users/:id", {
   params: { id: "usr_1" }, // TypeScript enforces required route params!
 });
 
-console.log(user.name); // 100% typed: inferred directly from Go struct UserResponse
+console.log(user.name); // 100% typed (non-optional string): inferred directly from Go struct UserResponse
 
 // 2. Type-safe POST/PUT requests with autocompleted bodies
 const newUser = await api.fetch("POST /users", {
@@ -392,7 +398,9 @@ const newUser = await api.fetch("POST /users", {
 The built-in client wrapper solves classic frontend `fetch` pitfalls with zero external npm dependencies:
 
 - **End-to-End Type Safety**: If a Go struct field or route changes, your frontend fails at compile/build time, preventing runtime bugs before deployment.
-- **Safe Route Interpolation**: Automatically encodes and replaces `:param` and `*wildcard` values using `encodeURIComponent`.
+- **Smart Request vs. Response Contracts**: Request fields are required when marked with `validate:"required"`, while Response fields are automatically non-optional (`T`) unless they are pointers (`*T`) or tagged with `json:",omitempty"` / `omitzero`.
+- **Global Client Options (`GotaClientOptions`)**: Configure static or async dynamic `headers` (e.g. injecting fresh JWT tokens), `credentials` (`"include"`), and custom `fetch` implementations once at client creation, with per-request overrides.
+- **Safe Route Interpolation**: Automatically sorts parameter keys longest-first (preventing `:id` vs `:id_item` prefix collisions) and encodes `:param` and `*wildcard` values using `encodeURIComponent`.
 - **Automatic Query String Serialization**: Pass `{ query: { page: 1, search: "go" } }` without manual URL string concatenation.
 - **Body & FormData Auto-Detection**: Automatically serializes objects to JSON with `Content-Type: application/json`, or preserves multipart boundaries for `FormData` file uploads.
 - **True Error Handling**: Native `fetch` does not reject promises on HTTP 4xx/5xx; `createGotaClient` automatically parses error payloads and throws catchable errors with `status` and `data`.

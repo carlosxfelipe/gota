@@ -29,10 +29,12 @@ type TestCreateUserReq struct {
 }
 
 type TestUserRes struct {
-	ID    string `json:"id" example:"usr_123"`
-	Name  string `json:"name"`
-	Email string `json:"email"`
-	Role  string `json:"role"`
+	ID       string  `json:"id" example:"usr_123"`
+	Name     string  `json:"name"`
+	Email    string  `json:"email"`
+	Role     string  `json:"role"`
+	Nickname string  `json:"nickname,omitempty"`
+	Avatar   *string `json:"avatar"`
 }
 
 type TestQueryParams struct {
@@ -154,8 +156,25 @@ func TestTypeScriptGenerator_BasicAndModels(t *testing.T) {
 		t.Errorf("expected response: void for 204 endpoint, got:\n%s", ts)
 	}
 
-	// Verify declare function createGotaClient in .d.ts
-	if !strings.Contains(ts, "export declare function createGotaClient(baseUrl?: string): GotaClient;") {
+	// Verify Response struct fields (A: non-pointer fields without omitempty are required; omitempty/pointer are optional)
+	if !strings.Contains(ts, "export interface TestUserRes {") {
+		t.Errorf("expected TestUserRes interface, got:\n%s", ts)
+	}
+	if !strings.Contains(ts, "  id: string;\n") {
+		t.Errorf("expected required id: string in TestUserRes, got:\n%s", ts)
+	}
+	if !strings.Contains(ts, "  nickname?: string;\n") {
+		t.Errorf("expected optional nickname?: string (omitempty) in TestUserRes, got:\n%s", ts)
+	}
+	if !strings.Contains(ts, "  avatar?: string;\n") {
+		t.Errorf("expected optional avatar?: string (pointer) in TestUserRes, got:\n%s", ts)
+	}
+
+	// Verify declare function createGotaClient in .d.ts (C: with GotaClientOptions)
+	if !strings.Contains(ts, "export interface GotaClientOptions {") {
+		t.Errorf("expected GotaClientOptions interface, got:\n%s", ts)
+	}
+	if !strings.Contains(ts, "export declare function createGotaClient(baseUrl?: string, clientOptions?: GotaClientOptions): GotaClient;") {
 		t.Errorf("expected declare function createGotaClient, got:\n%s", ts)
 	}
 }
@@ -173,14 +192,17 @@ func TestTypeScriptGenerator_SDKImplementation(t *testing.T) {
 	sdk := app.GenerateTypeScriptSDK()
 
 	// Should have the full createGotaClient implementation
-	if !strings.Contains(sdk, "export function createGotaClient(baseUrl = \"\"): GotaClient {") {
+	if !strings.Contains(sdk, "export function createGotaClient(baseUrl = \"\", clientOptions: GotaClientOptions = {}): GotaClient {") {
 		t.Errorf("expected implementation of createGotaClient, got:\n%s", sdk)
+	}
+	if !strings.Contains(sdk, "const keys = Object.keys(options.params).sort((a, b) => b.length - a.length);") {
+		t.Errorf("expected sorted path param keys to avoid prefix collision, got:\n%s", sdk)
 	}
 	if !strings.Contains(sdk, "path.replace(\":\" + k, encodeURIComponent(String(v)))") {
 		t.Errorf("expected path param substitution logic, got:\n%s", sdk)
 	}
-	if !strings.Contains(sdk, "const res = await fetch(url, {") {
-		t.Errorf("expected fetch invocation, got:\n%s", sdk)
+	if !strings.Contains(sdk, "const res = await fetchFn(url, {") {
+		t.Errorf("expected fetchFn invocation, got:\n%s", sdk)
 	}
 }
 

@@ -166,7 +166,22 @@ func parseOneOfChoices(validateTag string) []string {
 	return nil
 }
 
-func (g *TypeScriptGenerator) typeToTS(t reflect.Type, seen map[reflect.Type]bool) string {
+// hasJSONOmitOption reports whether a json struct tag contains omitempty or omitzero.
+func hasJSONOmitOption(jsonTag string) bool {
+	if jsonTag == "" {
+		return false
+	}
+	parts := strings.Split(jsonTag, ",")
+	for _, opt := range parts[1:] {
+		opt = strings.TrimSpace(opt)
+		if opt == "omitempty" || opt == "omitzero" {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *TypeScriptGenerator) typeToTS(t reflect.Type, seen map[reflect.Type]bool, isResponse bool) string {
 	if t == nil {
 		return "void"
 	}
@@ -197,13 +212,13 @@ func (g *TypeScriptGenerator) typeToTS(t reflect.Type, seen map[reflect.Type]boo
 		if t.Elem() == fileHeaderType || reflect.PointerTo(t.Elem()) == reflect.PointerTo(fileHeaderType) {
 			return "File[] | Blob[]"
 		}
-		elemTS := g.typeToTS(t.Elem(), seen)
+		elemTS := g.typeToTS(t.Elem(), seen, isResponse)
 		if strings.Contains(elemTS, " ") && !strings.HasPrefix(elemTS, "{") && !strings.HasPrefix(elemTS, "Record<") {
 			return "(" + elemTS + ")[]"
 		}
 		return elemTS + "[]"
 	case reflect.Map:
-		valTS := g.typeToTS(t.Elem(), seen)
+		valTS := g.typeToTS(t.Elem(), seen, isResponse)
 		return fmt.Sprintf("Record<string, %s>", valTS)
 	case reflect.Interface:
 		return "any"
@@ -217,13 +232,13 @@ func (g *TypeScriptGenerator) typeToTS(t reflect.Type, seen map[reflect.Type]boo
 
 		name := t.Name()
 		if name == "" || strings.HasPrefix(name, "struct {") {
-			return g.inlineStructTS(t, seen)
+			return g.inlineStructTS(t, seen, isResponse)
 		}
 
 		sName := g.schemaName(t)
 		if _, exists := g.schemas[sName]; !exists {
 			g.schemas[sName] = "" // placeholder for recursive types
-			g.generateInterface(sName, t, seen)
+			g.generateInterface(sName, t, seen, isResponse)
 		}
 		return sName
 	default:
@@ -239,7 +254,7 @@ type structFieldDoc struct {
 	example     string
 }
 
-func (g *TypeScriptGenerator) collectStructFields(t reflect.Type, fields *[]structFieldDoc, seen map[reflect.Type]bool, embedding map[reflect.Type]bool) {
+func (g *TypeScriptGenerator) collectStructFields(t reflect.Type, fields *[]structFieldDoc, seen map[reflect.Type]bool, embedding map[reflect.Type]bool, isResponse bool) {
 	if embedding[t] {
 		return
 	}
@@ -260,7 +275,7 @@ func (g *TypeScriptGenerator) collectStructFields(t reflect.Type, fields *[]stru
 
 		if ft, ok := EmbeddedStructType(field); ok {
 			var sub []structFieldDoc
-			g.collectStructFields(ft, &sub, seen, embedding)
+			g.collectStructFields(ft, &sub, seen, embedding, isResponse)
 			promotedFields = append(promotedFields, sub...)
 			continue
 		}
@@ -300,6 +315,9 @@ func (g *TypeScriptGenerator) collectStructFields(t reflect.Type, fields *[]stru
 				break
 			}
 		}
+		if !isRequired && isResponse && field.Type.Kind() != reflect.Pointer && !hasJSONOmitOption(jsonTag) {
+			isRequired = true
+		}
 
 		underlyingType := field.Type
 		for underlyingType.Kind() == reflect.Pointer {
@@ -315,7 +333,7 @@ func (g *TypeScriptGenerator) collectStructFields(t reflect.Type, fields *[]stru
 			}
 			tsType = strings.Join(formatted, " | ")
 		} else {
-			tsType = g.typeToTS(field.Type, seen)
+			tsType = g.typeToTS(field.Type, seen, isResponse)
 		}
 
 		own[name] = true
@@ -336,7 +354,7 @@ func (g *TypeScriptGenerator) collectStructFields(t reflect.Type, fields *[]stru
 	}
 }
 
-func (g *TypeScriptGenerator) inlineStructTS(t reflect.Type, seen map[reflect.Type]bool) string {
+func (g *TypeScriptGenerator) inlineStructTS(t reflect.Type, seen map[reflect.Type]bool, isResponse bool) string {
 	if seen[t] {
 		return "Record<string, any>"
 	}
@@ -344,7 +362,7 @@ func (g *TypeScriptGenerator) inlineStructTS(t reflect.Type, seen map[reflect.Ty
 	defer delete(seen, t)
 
 	var fields []structFieldDoc
-	g.collectStructFields(t, &fields, seen, map[reflect.Type]bool{})
+	g.collectStructFields(t, &fields, seen, map[reflect.Type]bool{}, isResponse)
 	if len(fields) == 0 {
 		return "Record<string, never>"
 	}
@@ -360,9 +378,9 @@ func (g *TypeScriptGenerator) inlineStructTS(t reflect.Type, seen map[reflect.Ty
 	return "{ " + strings.Join(parts, "; ") + " }"
 }
 
-func (g *TypeScriptGenerator) generateInterface(name string, t reflect.Type, seen map[reflect.Type]bool) {
+func (g *TypeScriptGenerator) generateInterface(name string, t reflect.Type, seen map[reflect.Type]bool, isResponse bool) {
 	var fields []structFieldDoc
-	g.collectStructFields(t, &fields, seen, map[reflect.Type]bool{})
+	g.collectStructFields(t, &fields, seen, map[reflect.Type]bool{}, isResponse)
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("export interface %s {\n", name))
@@ -427,7 +445,7 @@ func (g *TypeScriptGenerator) inspectRoute(rt *Node) routeTS {
 			mType := reflect.TypeOf(p.Model)
 			pType := "string"
 			if mType != nil {
-				pType = g.typeToTS(mType, map[reflect.Type]bool{})
+				pType = g.typeToTS(mType, map[reflect.Type]bool{}, false)
 			}
 			opt := "?"
 			if p.Required || p.In == "path" {
@@ -470,7 +488,7 @@ func (g *TypeScriptGenerator) inspectRoute(rt *Node) routeTS {
 			if mType != nil && mType.Kind() == reflect.Struct && mType.NumField() == 0 {
 				r.bodyTS = "void"
 			} else if mType != nil {
-				r.bodyTS = g.typeToTS(mType, map[reflect.Type]bool{})
+				r.bodyTS = g.typeToTS(mType, map[reflect.Type]bool{}, false)
 			}
 		}
 	}
@@ -505,7 +523,7 @@ func (g *TypeScriptGenerator) inspectRoute(rt *Node) routeTS {
 				if mType != nil && mType.Kind() == reflect.Struct && mType.NumField() == 0 {
 					r.responseTS = "void"
 				} else if mType != nil {
-					r.responseTS = g.typeToTS(mType, map[reflect.Type]bool{})
+					r.responseTS = g.typeToTS(mType, map[reflect.Type]bool{}, true)
 				}
 			}
 		}
@@ -589,8 +607,15 @@ export type RequestOptions<K extends EndpointKey> =
   (RequestQuery<K> extends void ? { query?: never } : { query?: RequestQuery<K> }) &
   (RequestBody<K> extends void ? { body?: never } : { body: RequestBody<K> }) & {
     headers?: Record<string, string>;
+    credentials?: RequestCredentials;
     signal?: AbortSignal;
   };
+
+export interface GotaClientOptions {
+  headers?: Record<string, string> | (() => Record<string, string> | Promise<Record<string, string>>);
+  credentials?: RequestCredentials;
+  fetch?: typeof fetch;
+}
 
 export interface GotaClient {
   readonly baseUrl: string;
@@ -602,7 +627,7 @@ export interface GotaClient {
   ): Promise<ResponseData<K>>;
 }
 
-export declare function createGotaClient(baseUrl?: string): GotaClient;
+export declare function createGotaClient(baseUrl?: string, clientOptions?: GotaClientOptions): GotaClient;
 `)
 
 	return sb.String()
@@ -613,8 +638,8 @@ func (g *TypeScriptGenerator) GenerateSDK(routes []*Node) string {
 	tsDefs := g.Generate(routes)
 
 	// Replace the declare function with the actual implementation
-	decl := "export declare function createGotaClient(baseUrl?: string): GotaClient;\n"
-	impl := `export function createGotaClient(baseUrl = ""): GotaClient {
+	decl := "export declare function createGotaClient(baseUrl?: string, clientOptions?: GotaClientOptions): GotaClient;\n"
+	impl := `export function createGotaClient(baseUrl = "", clientOptions: GotaClientOptions = {}): GotaClient {
   return {
     baseUrl,
     async fetch(endpoint, ...args) {
@@ -622,7 +647,9 @@ func (g *TypeScriptGenerator) GenerateSDK(routes []*Node) string {
       const [method, pathTemplate] = endpoint.split(" ");
       let path = pathTemplate;
       if (options.params) {
-        for (const [k, v] of Object.entries(options.params)) {
+        const keys = Object.keys(options.params).sort((a, b) => b.length - a.length);
+        for (const k of keys) {
+          const v = options.params[k];
           path = path.replace(":" + k, encodeURIComponent(String(v)));
           path = path.replace("*" + k, String(v));
         }
@@ -638,20 +665,32 @@ func (g *TypeScriptGenerator) GenerateSDK(routes []*Node) string {
         const qs = q.toString();
         if (qs) url += (url.includes("?") ? "&" : "?") + qs;
       }
-      const headers = new Headers(options.headers);
+      const baseHeaders = typeof clientOptions.headers === "function"
+        ? await clientOptions.headers()
+        : clientOptions.headers;
+      const headers = new Headers(baseHeaders);
+      if (options.headers) {
+        for (const [k, v] of Object.entries(options.headers)) {
+          headers.set(k, String(v));
+        }
+      }
       let body: any = undefined;
       if (options.body !== undefined) {
         if (typeof FormData !== "undefined" && options.body instanceof FormData) {
           body = options.body;
         } else {
-          headers.set("Content-Type", "application/json");
+          if (!headers.has("Content-Type")) {
+            headers.set("Content-Type", "application/json");
+          }
           body = JSON.stringify(options.body);
         }
       }
-      const res = await fetch(url, {
+      const fetchFn = clientOptions.fetch || fetch;
+      const res = await fetchFn(url, {
         method,
         headers,
         body,
+        credentials: options.credentials ?? clientOptions.credentials,
         signal: options.signal,
       });
       if (!res.ok) {
