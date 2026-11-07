@@ -7,18 +7,18 @@
  */
 
 /**
- * Runtime equivalent of createGotaClient() generated in examples/codegen/dist/sdk.ts
+ * Exact runtime implementation of createGotaClient() generated in examples/codegen/dist/sdk.ts
  * @param {string} [baseUrl=""]
+ * @param {import("../codegen/dist/sdk").GotaClientOptions} [clientOptions={}]
  * @returns {GotaClient}
  */
-function createGotaClient(baseUrl = "") {
+function createGotaClient(baseUrl = "", clientOptions = {}) {
   return {
     baseUrl,
     async fetch(endpoint, ...args) {
       const options = /** @type {any} */ (args[0] || {});
       const [method, pathTemplate] = endpoint.split(" ");
       let path = pathTemplate;
-
       if (options.params) {
         const keys = Object.keys(options.params).sort(
           (a, b) => b.length - a.length,
@@ -29,33 +29,69 @@ function createGotaClient(baseUrl = "") {
           path = path.replace("*" + k, String(v));
         }
       }
-
-      const url = baseUrl.replace(/\/$/, "") + path;
-      const headers = new Headers(options.headers || {});
+      let url = baseUrl + path;
+      if (options.query) {
+        const q = new URLSearchParams();
+        for (const [k, v] of Object.entries(options.query)) {
+          if (v !== undefined && v !== null) {
+            q.set(k, String(v));
+          }
+        }
+        const qs = q.toString();
+        if (qs) url += (url.includes("?") ? "&" : "?") + qs;
+      }
+      const baseHeaders =
+        typeof clientOptions.headers === "function"
+          ? await clientOptions.headers()
+          : clientOptions.headers;
+      const headers = new Headers(baseHeaders);
+      if (options.headers) {
+        for (const [k, v] of Object.entries(options.headers)) {
+          headers.set(k, String(v));
+        }
+      }
       let body = undefined;
-
       if (options.body !== undefined) {
-        headers.set("Content-Type", "application/json");
-        body = JSON.stringify(options.body);
+        if (
+          typeof FormData !== "undefined" &&
+          options.body instanceof FormData
+        ) {
+          body = options.body;
+        } else {
+          if (!headers.has("Content-Type")) {
+            headers.set("Content-Type", "application/json");
+          }
+          body = JSON.stringify(options.body);
+        }
       }
-
-      const res = await fetch(url, { method, headers, body });
-      const data = await res.json().catch(() => null);
-
+      const fetchFn = clientOptions.fetch || fetch;
+      const res = await fetchFn(url, {
+        method,
+        headers,
+        body,
+        credentials: options.credentials ?? clientOptions.credentials,
+        signal: options.signal,
+      });
       if (!res.ok) {
-        const err = /** @type {any} */ (
-          new Error(
-            data?.message ||
-              data?.error ||
-              `HTTP ${res.status}: ${res.statusText}`,
-          )
+        const err = await res.json().catch(() => ({ message: res.statusText }));
+        throw Object.assign(
+          new Error((err && (err.message || err.error)) || res.statusText),
+          { status: res.status, data: err },
         );
-        err.status = res.status;
-        err.fields = data?.errors || null;
-        throw err;
       }
-
-      return data;
+      if (res.status === 204) return /** @type {any} */ (undefined);
+      const ctype = res.headers.get("content-type") || "";
+      if (ctype.includes("application/json")) {
+        return res.json();
+      }
+      if (ctype.includes("text/event-stream") && res.body) {
+        return /** @type {any} */ (
+          typeof TextDecoderStream !== "undefined"
+            ? res.body.pipeThrough(new TextDecoderStream())
+            : res.body
+        );
+      }
+      return /** @type {any} */ (res.text());
     },
   };
 }
@@ -119,7 +155,7 @@ createApp({
       } catch (/** @type {any} */ err) {
         createError.value = {
           message: err.message,
-          fields: err.fields,
+          fields: err.data?.errors || null,
         };
       } finally {
         creating.value = false;
