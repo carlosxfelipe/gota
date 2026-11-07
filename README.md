@@ -53,7 +53,7 @@ Requires Go 1.26 or newer.
 
 ## 🚀 Quickstart (REPR Pattern)
 
-Create a `main.go` file (also available in [`examples/main.go`](examples/main.go)):
+Create a `main.go` file:
 
 ```go
 package main
@@ -61,63 +61,82 @@ package main
 import (
 	"fmt"
 	"log"
-	"os"
+	"net/http"
 	"sync"
-	"time"
 
 	"github.com/carlosxfelipe/gota"
 )
 
 // ----------------------------------------------------------------------
-// Request and Response Contracts (REPR Pattern)
+// Shared Dependency (Injected into Endpoint structs)
 // ----------------------------------------------------------------------
 
-type CreateUserRequest struct {
-	Name  string `json:"name" doc:"Full name of user" example:"Jane Doe" validate:"required,min=3"`
-	Email string `json:"email" doc:"Valid corporate or personal email" example:"jane.doe@example.com" validate:"required,email"`
-	Role  string `json:"role" doc:"User access role" example:"admin" default:"member" validate:"oneof=admin,member"`
+type TodoStore struct {
+	mu    sync.RWMutex
+	items map[string]TodoResponse
 }
 
-type GetUserRequest struct {
-	ID string `param:"id" doc:"User unique identifier" example:"usr_1"`
-}
-
-type UserResponse struct {
-	ID    string `json:"id" example:"usr_1"`
-	Name  string `json:"name" example:"Jane Doe"`
-	Email string `json:"email" example:"jane.doe@example.com"`
-	Role  string `json:"role" example:"admin"`
-}
-
-type HealthResponse struct {
-	Status  string `json:"status" example:"ok"`
-	Version string `json:"version" example:"1.0.0"`
-}
-
-var (
-	mockUsersMu sync.RWMutex
-	mockUsers   = []UserResponse{
-		{ID: "usr_1", Name: "Jane Doe", Email: "jane.doe@example.com", Role: "admin"},
-		{ID: "usr_2", Name: "John Smith", Email: "john.smith@example.com", Role: "member"},
+func NewTodoStore() *TodoStore {
+	return &TodoStore{
+		items: map[string]TodoResponse{
+			"todo_1": {ID: "todo_1", Title: "Learn Gota REPR Pattern", Done: true},
+		},
 	}
-)
+}
 
 // ----------------------------------------------------------------------
-// Struct-Based REPR Endpoint Example
+// Feature 1: Get Todo by ID (Request -> Endpoint -> Response)
 // ----------------------------------------------------------------------
 
-type GetUserEndpoint struct{}
+type GetTodoRequest struct {
+	ID string `param:"id" doc:"Todo identifier" example:"todo_1" validate:"required"`
+}
 
-func (e *GetUserEndpoint) Handle(ctx *gota.Context, req GetUserRequest) (UserResponse, error) {
-	mockUsersMu.RLock()
-	defer mockUsersMu.RUnlock()
+type TodoResponse struct {
+	ID    string `json:"id" doc:"Todo ID" example:"todo_1"`
+	Title string `json:"title" doc:"Task title" example:"Learn Gota REPR Pattern"`
+	Done  bool   `json:"done" doc:"Completion status" example:"false"`
+}
 
-	for _, u := range mockUsers {
-		if u.ID == req.ID {
-			return u, nil
-		}
+type GetTodoEndpoint struct {
+	Store *TodoStore
+}
+
+func (e *GetTodoEndpoint) Handle(ctx *gota.Context, req GetTodoRequest) (TodoResponse, error) {
+	e.Store.mu.RLock()
+	defer e.Store.mu.RUnlock()
+
+	todo, ok := e.Store.items[req.ID]
+	if !ok {
+		return TodoResponse{}, gota.NotFound("Todo not found")
 	}
-	return UserResponse{}, gota.NotFound("User not found")
+	return todo, nil
+}
+
+// ----------------------------------------------------------------------
+// Feature 2: Create Todo (Request -> Endpoint -> Response)
+// ----------------------------------------------------------------------
+
+type CreateTodoRequest struct {
+	Title string `json:"title" doc:"Task title" example:"Ship production API" validate:"required,min=3"`
+}
+
+type CreateTodoEndpoint struct {
+	Store *TodoStore
+}
+
+func (e *CreateTodoEndpoint) Handle(ctx *gota.Context, req CreateTodoRequest) (TodoResponse, error) {
+	e.Store.mu.Lock()
+	defer e.Store.mu.Unlock()
+
+	id := fmt.Sprintf("todo_%d", len(e.Store.items)+1)
+	todo := TodoResponse{
+		ID:    id,
+		Title: req.Title,
+		Done:  false,
+	}
+	e.Store.items[id] = todo
+	return todo, nil
 }
 
 // ----------------------------------------------------------------------
@@ -125,107 +144,30 @@ func (e *GetUserEndpoint) Handle(ctx *gota.Context, req GetUserRequest) (UserRes
 // ----------------------------------------------------------------------
 
 func main() {
-	isProd := os.Getenv("ENV") == "production"
-
-	// In production, disable runtime HTTP TypeScript endpoints (use offline export instead)
-	tsURL := "/types.d.ts"
-	tsSDKURL := "/sdk.ts"
-	if isProd {
-		tsURL = "-"
-		tsSDKURL = "-"
-	}
-
-	// Initializes Gota with built-in OpenAPI 3.1, Scalar docs, and TypeScript SDK routes
 	app := gota.New(gota.Config{
-		Title:                 "Gota REPR API",
+		Title:                 "Gota Minimal REPR Example",
 		Version:               "1.0.0",
-		Description:           "Go web framework oriented around the REPR Pattern with native interactive Scalar UI.",
-		TypeScriptURL:         tsURL,
-		TypeScriptSDKURL:      tsSDKURL,
+		Description:           "Minimal Request-Endpoint-Response (REPR) example using gota.HandleEndpoint.",
 		DisallowUnknownFields: true,
 		DocsCSPEnforce:        true,
 	})
 
-	// Global Middlewares
 	app.Use(gota.RequestID())
 	app.Use(gota.Logger())
 	app.Use(gota.Recover())
 	app.Use(gota.SecureHeaders())
-	app.Use(gota.CORS())
 
-	// Protect documentation, schemas, and SDK routes (/docs, /openapi.json, /types.d.ts, /sdk.ts)
-	// with HTTP Basic Auth and built-in Rate Limiting to prevent brute-force attacks:
-	docsPassword := os.Getenv("DOCS_PASSWORD")
-	if docsPassword == "" {
-		if isProd {
-			log.Fatal("DOCS_PASSWORD environment variable must be set in production")
-		}
-		docsPassword = "admin123" // Fallback password for local development
-	}
-	app.UseDocs(gota.BasicAuth("admin", docsPassword, gota.BasicAuthOptions{
-		Realm: "Gota API Documentation",
-		RateLimit: &gota.RateLimiterOptions{
-			Max:    10,          // Max 10 attempts
-			Window: time.Minute, // per minute per client IP
-		},
-		AllowWeakCredentials: !isProd, // silences the weak password warning only outside production
-		RequireTLS:           isProd,  // enforces HTTPS for remote clients in production
-	}))
+	store := NewTodoStore()
 
-	// 1. Healthcheck Endpoint (Empty Request)
-	gota.Get(app, "/", func(ctx *gota.Context, _ gota.Empty) (HealthResponse, error) {
-		return HealthResponse{Status: "ok", Version: "1.0.0"}, nil
-	}).
-		Summary("Healthcheck").
-		Description("Returns system status and current version").
-		Tags("System")
+	// Register REPR Endpoints with gota.HandleEndpoint
+	gota.HandleEndpoint(app, http.MethodGet, "/todos/:id", &GetTodoEndpoint{Store: store}).
+		Summary("Get todo by ID").
+		Tags("Todos")
 
-	// 2. List Users (Empty Request)
-	gota.Get(app, "/users", func(ctx *gota.Context, _ gota.Empty) ([]UserResponse, error) {
-		mockUsersMu.RLock()
-		defer mockUsersMu.RUnlock()
-
-		snapshot := make([]UserResponse, len(mockUsers))
-		copy(snapshot, mockUsers)
-		return snapshot, nil
-	}).
-		Summary("List all users").
-		Tags("Users")
-
-	// 3. Get User by ID (Struct-based REPR Endpoint)
-	userEndpoint := &GetUserEndpoint{}
-	gota.Get(app, "/users/:id", userEndpoint.Handle).
-		Summary("Get user by ID").
-		Tags("Users")
-
-	// 4. Create User (Function-based REPR with automatic binding and validation)
-	gota.Post(app, "/users", func(ctx *gota.Context, req CreateUserRequest) (UserResponse, error) {
-		role := req.Role
-		if role == "" {
-			role = "member"
-		}
-
-		mockUsersMu.Lock()
-		newUser := UserResponse{
-			ID:    fmt.Sprintf("usr_%d", len(mockUsers)+1),
-			Name:  req.Name,
-			Email: req.Email,
-			Role:  role,
-		}
-		mockUsers = append(mockUsers, newUser)
-		mockUsersMu.Unlock()
-
-		return newUser, nil
-	}).
-		Status(201).
-		Summary("Register user").
-		Description("Validates input data automatically and returns the created user (201 Created)").
-		Tags("Users")
-
-	// 5. Classic route (without REPR structs, for quick hooks)
-	app.Get("/ping", func(ctx *gota.Context) error {
-		return ctx.Json(gota.Map{"message": "pong"})
-	}).Summary("Ping Pong").Tags("System")
+	gota.HandleEndpoint(app, http.MethodPost, "/todos", &CreateTodoEndpoint{Store: store}).
+		Status(http.StatusCreated).
+		Summary("Create a new todo").
+		Tags("Todos")
 
 	if err := app.ListenGraceful(":3000"); err != nil {
 		log.Printf("Server error: %v", err)
