@@ -511,10 +511,12 @@ func (g *TypeScriptGenerator) inspectRoute(rt *Node) routeTS {
 
 		if chosenCode > 0 {
 			resp := rt.Doc.Responses[chosenCode]
-			if chosenCode == 204 || resp.Model == nil {
+			if chosenCode == 204 {
 				r.responseTS = "void"
 			} else if resp.ContentType == "text/event-stream" {
 				r.responseTS = "ReadableStream<string>"
+			} else if resp.Model == nil {
+				r.responseTS = "void"
 			} else {
 				mType := reflect.TypeOf(resp.Model)
 				if mType != nil && mType.Kind() == reflect.Pointer {

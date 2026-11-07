@@ -1038,3 +1038,37 @@ func TestRouteGroup_Hidden_REPREndpoints(t *testing.T) {
 		t.Errorf("public REPR endpoint missing from /sdk.ts")
 	}
 }
+
+func TestEndpoint_SSETypeScriptAndMismatchedParamPanic(t *testing.T) {
+	app := New(Config{})
+
+	type TrackReq struct {
+		OrderID string `param:"orderId"`
+	}
+	Get(app, "/orders/:orderId/track", func(ctx *Context, req TrackReq) (SSEStream, error) {
+		return SSEStream{}, nil
+	})
+
+	ts := app.GenerateTypeScript()
+	if !strings.Contains(ts, "response: ReadableStream<string>;") {
+		t.Errorf("expected SSEStream endpoint to have response: ReadableStream<string>, got:\n%s", ts)
+	}
+
+	// Verify mismatched param tag panics at registration
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatalf("expected panic when struct param tag does not match route path")
+		}
+		if !strings.Contains(fmt.Sprint(r), `has param:"id" tag, but route path does not contain :id`) {
+			t.Fatalf("unexpected panic message: %v", r)
+		}
+	}()
+
+	type MismatchedReq struct {
+		ID string `param:"id"`
+	}
+	Get(app, "/orders/:orderId", func(ctx *Context, req MismatchedReq) (Empty, error) {
+		return Empty{}, nil
+	})
+}

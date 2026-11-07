@@ -447,9 +447,30 @@ func inspectRequestStruct(t reflect.Type, params *[]core.ParamDoc, hasBodyFields
 	}
 }
 
+func checkRoutePathParams[Req any](method, fullPath string, params []core.ParamDoc) {
+	routeParams := make(map[string]bool)
+	for _, seg := range strings.Split(fullPath, "/") {
+		if strings.HasPrefix(seg, ":") && len(seg) > 1 {
+			routeParams[seg[1:]] = true
+		} else if strings.HasPrefix(seg, "*") {
+			if len(seg) > 1 {
+				routeParams[seg[1:]] = true
+			} else {
+				routeParams["*"] = true
+			}
+		}
+	}
+	for _, p := range params {
+		if p.In == "path" && !routeParams[p.Name] {
+			panic(fmt.Sprintf("gota: %s %q: struct %T has param:%q tag, but route path does not contain :%s or *%s", method, fullPath, *new(Req), p.Name, p.Name, p.Name))
+		}
+	}
+}
+
 func registerEndpoint[Req any, Res any](target RouterTarget, method, path string, handler EndpointFunc[Req, Res]) *core.Route {
 	h, doc := WrapEndpoint(handler, http.StatusOK)
 	route := target.RegisterRoute(method, path, h)
+	checkRoutePathParams[Req](method, route.Node.FullPath, doc.Parameters)
 	route.Doc(*doc)
 	return route
 }
