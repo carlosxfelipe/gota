@@ -13,31 +13,46 @@ import (
 
 type TodoStore struct {
 	mu    sync.RWMutex
-	items map[string]TodoResponse
+	items []TodoResponse
 }
 
 func NewTodoStore() *TodoStore {
 	return &TodoStore{
-		items: map[string]TodoResponse{
-			"todo_1": {ID: "todo_1", Title: "Learn Gota REPR Pattern", Priority: "high", Done: true},
+		items: []TodoResponse{
+			{ID: "todo_1", Title: "Update README badges", Priority: "low", Done: true},
+			{ID: "todo_2", Title: "Review pull requests", Priority: "normal", Done: false},
+			{ID: "todo_3", Title: "Deploy release v1.0", Priority: "high", Done: false},
 		},
 	}
 }
 
 type GetTodoRequest struct {
-	ID string `param:"id" doc:"Todo identifier" example:"todo_1" validate:"required"`
+	ID string `param:"id" doc:"Todo identifier" example:"todo_1" validate:"required" msg:"Todo ID is required"`
 }
 
 type CreateTodoRequest struct {
-	Title    string `json:"title" doc:"Task title" example:"Ship production API" validate:"required,min=3"`
-	Priority string `json:"priority" doc:"Task priority" example:"high" default:"normal" validate:"oneof=low,normal,high"`
+	Title    string `json:"title" doc:"Task title" example:"Review pull requests" validate:"required,min=3" msg:"required:Title is required|min:Title must be at least 3 characters"`
+	Priority string `json:"priority" doc:"Task priority" example:"high" default:"normal" validate:"oneof=low,normal,high" msg:"Priority must be low, normal, or high"`
 }
 
 type TodoResponse struct {
 	ID       string `json:"id" doc:"Todo ID" example:"todo_1"`
-	Title    string `json:"title" doc:"Task title" example:"Learn Gota REPR Pattern"`
-	Priority string `json:"priority" doc:"Task priority" example:"high"`
+	Title    string `json:"title" doc:"Task title" example:"Review pull requests"`
+	Priority string `json:"priority" doc:"Task priority" example:"normal"`
 	Done     bool   `json:"done" doc:"Completion status" example:"false"`
+}
+
+type ListTodosEndpoint struct {
+	Store *TodoStore
+}
+
+func (e *ListTodosEndpoint) Handle(ctx *gota.Context, _ gota.Empty) ([]TodoResponse, error) {
+	e.Store.mu.RLock()
+	defer e.Store.mu.RUnlock()
+
+	out := make([]TodoResponse, len(e.Store.items))
+	copy(out, e.Store.items)
+	return out, nil
 }
 
 type GetTodoEndpoint struct {
@@ -48,11 +63,12 @@ func (e *GetTodoEndpoint) Handle(ctx *gota.Context, req GetTodoRequest) (TodoRes
 	e.Store.mu.RLock()
 	defer e.Store.mu.RUnlock()
 
-	todo, ok := e.Store.items[req.ID]
-	if !ok {
-		return TodoResponse{}, gota.NotFound("Todo not found")
+	for _, t := range e.Store.items {
+		if t.ID == req.ID {
+			return t, nil
+		}
 	}
-	return todo, nil
+	return TodoResponse{}, gota.NotFound("Todo not found")
 }
 
 type CreateTodoEndpoint struct {
@@ -68,14 +84,13 @@ func (e *CreateTodoEndpoint) Handle(ctx *gota.Context, req CreateTodoRequest) (T
 	e.Store.mu.Lock()
 	defer e.Store.mu.Unlock()
 
-	id := fmt.Sprintf("todo_%d", len(e.Store.items)+1)
 	todo := TodoResponse{
-		ID:       id,
+		ID:       fmt.Sprintf("todo_%d", len(e.Store.items)+1),
 		Title:    req.Title,
 		Priority: priority,
 		Done:     false,
 	}
-	e.Store.items[id] = todo
+	e.Store.items = append(e.Store.items, todo)
 	return todo, nil
 }
 
@@ -118,6 +133,10 @@ func main() {
 	}))
 
 	store := NewTodoStore()
+
+	gota.HandleEndpoint(app, http.MethodGet, "/todos", &ListTodosEndpoint{Store: store}).
+		Summary("List all todos").
+		Tags("Todos")
 
 	gota.HandleEndpoint(app, http.MethodGet, "/todos/:id", &GetTodoEndpoint{Store: store}).
 		Summary("Get todo by ID").
