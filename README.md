@@ -155,6 +155,7 @@ func (e *CreateTodoEndpoint) Handle(ctx *gota.Context, req CreateTodoRequest) (T
 func main() {
 	isProd := os.Getenv("ENV") == "production"
 
+	// Disable runtime TypeScript HTTP routes in production (use app.ExportTypeScriptSDK in CI/CD instead)
 	tsURL, tsSDKURL := "/types.d.ts", "/sdk.ts"
 	if isProd {
 		tsURL, tsSDKURL = "-", "-"
@@ -174,8 +175,10 @@ func main() {
 	app.Use(gota.Logger())
 	app.Use(gota.Recover())
 	app.Use(gota.SecureHeaders())
+	app.Use(gota.Gzip())
 	app.Use(gota.CORS())
 
+	// Protect /docs, /openapi.json, /types.d.ts, and /sdk.ts with Basic Auth and rate limiting
 	docsPassword := os.Getenv("DOCS_PASSWORD")
 	if docsPassword == "" {
 		if isProd {
@@ -192,17 +195,25 @@ func main() {
 
 	store := NewTodoStore()
 
+	// Redirect root to Scalar UI and hide this route from OpenAPI/SDK
+	app.Get("/", func(ctx *gota.Context) error {
+		return ctx.Redirect("/docs")
+	}).Hidden()
+
 	gota.HandleEndpoint(app, http.MethodGet, "/todos", &ListTodosEndpoint{Store: store}).
 		Summary("List all todos").
+		Description("Returns all todo items in the store.").
 		Tags("Todos")
 
 	gota.HandleEndpoint(app, http.MethodGet, "/todos/:id", &GetTodoEndpoint{Store: store}).
 		Summary("Get todo by ID").
+		Description("Retrieves a single todo item by its unique identifier.").
 		Tags("Todos")
 
 	gota.HandleEndpoint(app, http.MethodPost, "/todos", &CreateTodoEndpoint{Store: store}).
 		Status(http.StatusCreated).
 		Summary("Create a new todo").
+		Description("Validates the input payload and creates a new todo item.").
 		Tags("Todos")
 
 	if err := app.ListenGraceful(":3000"); err != nil {
