@@ -2,7 +2,6 @@ package core
 
 import (
 	"strconv"
-	"strings"
 )
 
 // SecureHeadersOptions configures the SecureHeaders middleware.
@@ -86,8 +85,5 @@ func SecureHeaders(opts ...SecureHeadersOptions) MiddlewareFunc {
 }
 
 func isHTTPSRequest(ctx *Context) bool {
-	if ctx.Request.TLS != nil {
-		return true
-	}
-	return ctx.trustProxy && strings.EqualFold(strings.TrimSpace(ctx.Header("X-Forwarded-Proto")), "https")
+	return isRequestTLS(ctx)
 }

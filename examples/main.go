@@ -1,8 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/carlosxfelipe/gota"
@@ -15,7 +17,7 @@ import (
 type CreateUserRequest struct {
 	Name  string `json:"name" doc:"Full name of user" example:"Jane Doe" validate:"required,min=3"`
 	Email string `json:"email" doc:"Valid corporate or personal email" example:"jane.doe@example.com" validate:"required,email"`
-	Role  string `json:"role" doc:"User access role" example:"admin" default:"member"`
+	Role  string `json:"role" doc:"User access role" example:"admin" default:"member" validate:"oneof=admin,member"`
 }
 
 type GetUserRequest struct {
@@ -34,10 +36,13 @@ type HealthResponse struct {
 	Version string `json:"version" example:"1.0.0"`
 }
 
-var mockUsers = []UserResponse{
-	{ID: "usr_1", Name: "Jane Doe", Email: "jane.doe@example.com", Role: "admin"},
-	{ID: "usr_2", Name: "John Smith", Email: "john.smith@example.com", Role: "member"},
-}
+var (
+	mockUsersMu sync.RWMutex
+	mockUsers   = []UserResponse{
+		{ID: "usr_1", Name: "Jane Doe", Email: "jane.doe@example.com", Role: "admin"},
+		{ID: "usr_2", Name: "John Smith", Email: "john.smith@example.com", Role: "member"},
+	}
+)
 
 // ----------------------------------------------------------------------
 // Struct-Based REPR Endpoint Example
@@ -46,6 +51,9 @@ var mockUsers = []UserResponse{
 type GetUserEndpoint struct{}
 
 func (e *GetUserEndpoint) Handle(ctx *gota.Context, req GetUserRequest) (UserResponse, error) {
+	mockUsersMu.RLock()
+	defer mockUsersMu.RUnlock()
+
 	for _, u := range mockUsers {
 		if u.ID == req.ID {
 			return u, nil
@@ -71,17 +79,20 @@ func main() {
 
 	// Initializes Gota with built-in OpenAPI 3.1, Scalar docs, and TypeScript SDK routes
 	app := gota.New(gota.Config{
-		Title:            "Gota REPR API",
-		Version:          "1.0.0",
-		Description:      "Go web framework oriented around the REPR Pattern with native interactive Scalar UI.",
-		TypeScriptURL:    tsURL,
-		TypeScriptSDKURL: tsSDKURL,
+		Title:                 "Gota REPR API",
+		Version:               "1.0.0",
+		Description:           "Go web framework oriented around the REPR Pattern with native interactive Scalar UI.",
+		TypeScriptURL:         tsURL,
+		TypeScriptSDKURL:      tsSDKURL,
+		DisallowUnknownFields: true,
+		DocsCSPEnforce:        true,
 	})
 
 	// Global Middlewares
 	app.Use(gota.RequestID())
 	app.Use(gota.Logger())
 	app.Use(gota.Recover())
+	app.Use(gota.SecureHeaders())
 	app.Use(gota.CORS())
 
 	// Protect documentation, schemas, and SDK routes (/docs, /openapi.json, /types.d.ts, /sdk.ts)
@@ -99,8 +110,8 @@ func main() {
 			Max:    10,          // Max 10 attempts
 			Window: time.Minute, // per minute per client IP
 		},
-		AllowWeakCredentials: true,   // silences the weak password warning during local development
-		RequireTLS:           isProd, // enforces HTTPS for remote clients in production
+		AllowWeakCredentials: !isProd, // silences the weak password warning only outside production
+		RequireTLS:           isProd,  // enforces HTTPS for remote clients in production
 	}))
 
 	// 1. Healthcheck Endpoint (Empty Request)
@@ -113,7 +124,12 @@ func main() {
 
 	// 2. List Users (Empty Request)
 	gota.Get(app, "/users", func(ctx *gota.Context, _ gota.Empty) ([]UserResponse, error) {
-		return mockUsers, nil
+		mockUsersMu.RLock()
+		defer mockUsersMu.RUnlock()
+
+		snapshot := make([]UserResponse, len(mockUsers))
+		copy(snapshot, mockUsers)
+		return snapshot, nil
 	}).
 		Summary("List all users").
 		Tags("Users")
@@ -126,13 +142,21 @@ func main() {
 
 	// 4. Create User (Function-based REPR with automatic binding and validation)
 	gota.Post(app, "/users", func(ctx *gota.Context, req CreateUserRequest) (UserResponse, error) {
+		role := req.Role
+		if role == "" {
+			role = "member"
+		}
+
+		mockUsersMu.Lock()
 		newUser := UserResponse{
-			ID:    "usr_3",
+			ID:    fmt.Sprintf("usr_%d", len(mockUsers)+1),
 			Name:  req.Name,
 			Email: req.Email,
-			Role:  req.Role,
+			Role:  role,
 		}
 		mockUsers = append(mockUsers, newUser)
+		mockUsersMu.Unlock()
+
 		return newUser, nil
 	}).
 		Status(201).

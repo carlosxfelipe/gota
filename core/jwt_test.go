@@ -49,6 +49,14 @@ func TestVerifyJWTMalformedExpIsRejected(t *testing.T) {
 	if err := VerifyJWT(secret, token, nil); err == nil {
 		t.Fatal("expected error for string exp")
 	}
+
+	// exp with zero or negative timestamp must be rejected as expired even when RequireExp is false.
+	for _, nonPositiveExp := range []int64{0, -1, -1000} {
+		token, _ = SignJWT(secret, map[string]any{"sub": "1", "exp": nonPositiveExp})
+		if err := VerifyJWT(secret, token, nil); err == nil || err.Error() != "token expired" {
+			t.Fatalf("expected 'token expired' for exp=%d, got %v", nonPositiveExp, err)
+		}
+	}
 }
 
 func TestVerifyJWTNotBefore(t *testing.T) {

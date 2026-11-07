@@ -38,8 +38,12 @@ func IsSensitiveFieldName(name string) (bool, string) {
 		return true, "cryptographic salt"
 	case strings.Contains(lower, "clientsecret") || strings.Contains(lower, "apisecret") || strings.Contains(lower, "jwtsecret") || lower == "secret":
 		return true, "secret key"
+	case strings.Contains(lower, "privatekey") || strings.Contains(lower, "signingkey") || strings.Contains(lower, "encryptionkey") || strings.Contains(lower, "masterkey"):
+		return true, "private/cryptographic key"
 	case strings.Contains(lower, "resettoken") || strings.Contains(lower, "refreshtoken") || strings.Contains(lower, "authtoken") || strings.Contains(lower, "sessiontoken"):
 		return true, "authentication/session token"
+	case lower == "cvv" || lower == "cvc" || lower == "cardcvv" || lower == "cardpin":
+		return true, "payment security code"
 	default:
 		return false, ""
 	}

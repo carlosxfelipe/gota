@@ -194,8 +194,8 @@ func verifyToken(tokenString string, target any, chk jwtChecks, expectedAlg stri
 		leeway = maxJWTLeeway
 	}
 	now := float64(time.Now().Unix())
-	if timeCheck.Exp != nil && *timeCheck.Exp > 0 {
-		if now > *timeCheck.Exp+leeway.Seconds() {
+	if timeCheck.Exp != nil {
+		if *timeCheck.Exp <= 0 || now > *timeCheck.Exp+leeway.Seconds() {
 			return errors.New("token expired")
 		}
 	} else if chk.RequireExp {

@@ -83,6 +83,7 @@ const (
 	DefaultMaxHeaderBytes     = core.DefaultMaxHeaderBytes
 	DefaultRateLimiterMaxKeys = core.DefaultRateLimiterMaxKeys
 	DefaultGzipMinLength      = core.DefaultGzipMinLength
+	DefaultSSEWriteTimeout    = core.DefaultSSEWriteTimeout
 )
 
 // New initializes and returns a new Gota application instance.
@@ -297,4 +298,16 @@ func InternalServerError(message string) *HTTPError {
 // Useful in unit tests to ensure internal entity fields are not leaked to API contracts.
 func AuditModel(model any) []string {
 	return core.AuditModel(model)
+}
+
+// IsSensitiveFieldName reports whether a struct field name strongly resembles a sensitive secret
+// and returns the category description when true.
+func IsSensitiveFieldName(name string) (bool, string) {
+	return core.IsSensitiveFieldName(name)
+}
+
+// SanitizeFilename strips directory paths, control characters, and null bytes from a user-supplied
+// filename, returning an empty string if the name is unsafe or hidden.
+func SanitizeFilename(name string) string {
+	return core.SanitizeFilename(name)
 }

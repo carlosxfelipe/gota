@@ -10,9 +10,12 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Map is a convenient alias for map[string]any.
@@ -230,6 +233,80 @@ func (c *Context) MultipartForm() (*multipart.Form, error) {
 	return c.Request.MultipartForm, nil
 }
 
+// SanitizeFilename strips directory paths (both Unix '/' and Windows '\\'), control characters,
+// and null bytes from a user-supplied filename. It returns an empty string if the resulting
+// name is empty, ".", "..", or starts with a dot (hidden file).
+func SanitizeFilename(name string) string {
+	name = strings.ReplaceAll(name, "\\", "/")
+	if idx := strings.LastIndexByte(name, '/'); idx != -1 {
+		name = name[idx+1:]
+	}
+	var sb strings.Builder
+	sb.Grow(len(name))
+	for i := 0; i < len(name); i++ {
+		ch := name[i]
+		if ch < 0x20 || ch == 0x7f || ch == '/' || ch == '\\' || ch == ':' {
+			continue
+		}
+		sb.WriteByte(ch)
+	}
+	clean := strings.TrimSpace(sb.String())
+	if clean == "" || clean == "." || clean == ".." || strings.HasPrefix(clean, ".") {
+		return ""
+	}
+	return clean
+}
+
+// SaveUploadedFile safely saves a multipart FileHeader inside dstDir, neutralizing path
+// traversal attempts ("../", backslashes, control characters, or hidden dotfiles).
+// An optional overrideName can be passed to specify the target filename instead of fh.Filename.
+// Returns the full cleaned destination path written on disk.
+func (c *Context) SaveUploadedFile(fh *multipart.FileHeader, dstDir string, overrideName ...string) (string, error) {
+	if fh == nil {
+		return "", errors.New("gota: nil multipart FileHeader")
+	}
+	if strings.TrimSpace(dstDir) == "" {
+		return "", errors.New("gota: destination directory cannot be empty")
+	}
+
+	rawName := fh.Filename
+	if len(overrideName) > 0 && overrideName[0] != "" {
+		rawName = overrideName[0]
+	}
+	safeName := SanitizeFilename(rawName)
+	if safeName == "" {
+		return "", errors.New("gota: invalid or unsafe upload filename")
+	}
+
+	cleanDir := filepath.Clean(dstDir)
+	targetPath := filepath.Join(cleanDir, safeName)
+	rel, err := filepath.Rel(cleanDir, targetPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.Base(targetPath) != safeName {
+		return "", errors.New("gota: upload path traversal detected")
+	}
+
+	if err := os.MkdirAll(cleanDir, 0750); err != nil {
+		return "", err
+	}
+
+	src, err := fh.Open()
+	if err != nil {
+		return "", err
+	}
+	defer src.Close()
+
+	dst, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return "", err
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, src); err != nil {
+		return "", err
+	}
+	return targetPath, nil
+}
+
 // Body reads and caches the raw HTTP request body bytes.
 // At most Config.MaxBodyBytes are read (DefaultMaxBodyBytes outside App.ServeHTTP); larger bodies
 // fail with *http.MaxBytesError, which Gota maps to 413 Request Entity Too Large.
@@ -339,9 +416,23 @@ func (c *Context) StatusCode() int {
 	return c.statusCode
 }
 
-// SetHeader sets an HTTP header on the response. Chainable.
+func sanitizeHeaderValue(s string) string {
+	if !strings.ContainsAny(s, "\r\n\x00") {
+		return s
+	}
+	var sb strings.Builder
+	sb.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c != '\r' && c != '\n' && c != 0 {
+			sb.WriteByte(c)
+		}
+	}
+	return sb.String()
+}
+
+// SetHeader sets an HTTP header on the response after stripping CR, LF, and NUL bytes. Chainable.
 func (c *Context) SetHeader(key, val string) *Context {
-	c.ResponseWriter.Header().Set(key, val)
+	c.ResponseWriter.Header().Set(sanitizeHeaderValue(key), sanitizeHeaderValue(val))
 	return c
 }
 
@@ -458,6 +549,10 @@ func sseEventName(event string) string {
 	return strings.NewReplacer("\r", "", "\n", "").Replace(event)
 }
 
+// DefaultSSEWriteTimeout bounds the time spent writing and flushing a single SSE frame
+// so a slow-reading or stalled client cannot block a streaming goroutine indefinitely.
+const DefaultSSEWriteTimeout = 10 * time.Second
+
 // SSEvent sends a Server-Sent Event formatted frame and flushes it immediately.
 func (c *Context) SSEvent(event string, data any) error {
 	if !c.written {
@@ -503,6 +598,12 @@ func (c *Context) SSEvent(event string, data any) error {
 		sb.WriteByte('\n')
 	}
 	sb.WriteByte('\n')
+
+	rc := http.NewResponseController(c.ResponseWriter)
+	_ = rc.SetWriteDeadline(time.Now().Add(DefaultSSEWriteTimeout))
+	defer func() {
+		_ = rc.SetWriteDeadline(time.Time{})
+	}()
 
 	if _, err := c.ResponseWriter.Write([]byte(sb.String())); err != nil {
 		return err

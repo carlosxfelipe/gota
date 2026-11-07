@@ -414,4 +414,14 @@ func TestAuditModel_SecurityDetection(t *testing.T) {
 	if len(embWarnings) != 4 {
 		t.Fatalf("expected 4 warnings for embedded entity, got %d: %v", len(embWarnings), embWarnings)
 	}
+
+	// 5. Detects private keys and payment security codes
+	type paymentAndKeys struct {
+		PrivateKey string `json:"private_key"`
+		CVV        string `json:"cvv"`
+	}
+	pkWarnings := AuditModel(paymentAndKeys{})
+	if len(pkWarnings) != 2 {
+		t.Fatalf("expected 2 warnings for private_key and cvv, got %d: %v", len(pkWarnings), pkWarnings)
+	}
 }

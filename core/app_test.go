@@ -1,12 +1,15 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"math"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -359,5 +362,74 @@ func TestRouteGroup_Hidden(t *testing.T) {
 		if strings.Contains(sdk, p) {
 			t.Errorf("hidden path %q unexpectedly found in TypeScript SDK", p)
 		}
+	}
+}
+
+func TestSetHeaderSanitizesControlChars(t *testing.T) {
+	rec := httptest.NewRecorder()
+	ctx := NewContext(rec, httptest.NewRequest("GET", "/", nil), nil)
+	ctx.SetHeader("X-Custom\r\n-Header", "val1\r\nX-Injected: evil\x00value")
+
+	got := rec.Header().Get("X-Custom-Header")
+	if got != "val1X-Injected: evilvalue" {
+		t.Fatalf("expected sanitized header value, got %q", got)
+	}
+	if rec.Header().Get("X-Injected") != "" {
+		t.Fatal("header injection must be prevented")
+	}
+}
+
+func TestSanitizeFilenameAndSaveUploadedFile(t *testing.T) {
+	cases := map[string]string{
+		"avatar.png":                     "avatar.png",
+		"../../etc/passwd":               "passwd",
+		`..\..\Windows\System32\cmd.exe`: "cmd.exe",
+		".env":                           "",
+		"..":                             "",
+		".":                              "",
+		"":                               "",
+		"///":                            "",
+		"file\x00name\r\n.txt":           "filename.txt",
+	}
+	for input, want := range cases {
+		if got := SanitizeFilename(input); got != want {
+			t.Errorf("SanitizeFilename(%q) = %q, want %q", input, got, want)
+		}
+	}
+
+	tmpDir := t.TempDir()
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	part, err := mw.CreateFormFile("file", "../../outside.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write([]byte("safe-content"))
+	_ = mw.Close()
+
+	req := httptest.NewRequest("POST", "/upload", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	ctx := NewContext(httptest.NewRecorder(), req, nil)
+
+	fh, err := ctx.FormFile("file")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	savedPath, err := ctx.SaveUploadedFile(fh, tmpDir)
+	if err != nil {
+		t.Fatalf("SaveUploadedFile failed: %v", err)
+	}
+	if filepath.Dir(savedPath) != filepath.Clean(tmpDir) || filepath.Base(savedPath) != "outside.txt" {
+		t.Fatalf("file escaped destination directory: %q (want inside %q)", savedPath, tmpDir)
+	}
+	data, err := os.ReadFile(savedPath)
+	if err != nil || string(data) != "safe-content" {
+		t.Fatalf("unexpected saved file content: %q (%v)", string(data), err)
+	}
+
+	// Hidden dotfile override must be rejected
+	if _, err := ctx.SaveUploadedFile(fh, tmpDir, ".htaccess"); err == nil {
+		t.Fatal("expected error when saving hidden dotfile")
 	}
 }

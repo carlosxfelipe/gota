@@ -51,7 +51,7 @@ func main() {
 		MaxBodyBytes:       10 << 20,          // Default: 10 MiB (negative value disables limit)
 		MaxMultipartMemory: 32 << 20,          // Default: 32 MiB RAM for multipart parsing (negative disables limit)
 		MaxHeaderBytes:     1 << 20,           // Default: 1 MiB (<= 0 uses the default); over the limit -> 431
-		TrustProxyHeaders:  false,             // true ONLY behind a trusted reverse proxy (X-Forwarded-For / X-Real-IP)
+		TrustProxyHeaders:  false,             // true ONLY behind a trusted reverse proxy (honors X-Forwarded-For, X-Real-IP, X-Forwarded-Proto)
 		TrustedProxyCount:  1,                 // Default: 1. Proxies in front of the app; ClientIP reads the Nth X-Forwarded-For entry FROM THE RIGHT
 		ReadTimeout:        30 * time.Second,  // Default: 30s (negative disables; ReadHeaderTimeout is fixed at 10s)
 		WriteTimeout:       30 * time.Second,  // Default: 30s (negative disables; automatically lifted for streams)
@@ -119,7 +119,7 @@ Gota generates zero-dependency TypeScript declarations (`.d.ts`) and a ready-to-
 - **Generated `createGotaClient(baseUrl?, clientOptions?: GotaClientOptions)`**:
   - `GotaClientOptions` supports `headers` (static `Record<string, string>` or sync/async callback `() => Record<string, string> | Promise<Record<string, string>>`), `credentials` (`RequestCredentials`), and custom `fetch`.
   - `client.fetch("METHOD /path", options?)` infers `params`, `query`, `body`, and `response` types per endpoint, omits the 2nd argument when an endpoint requires no input, sorts `:param` keys longest-first to avoid prefix collisions, serializes JSON/FormData automatically, handles `204 No Content`, and throws typed errors with `status` and `data` on non-2xx responses.
-- **Sensitive Field Auditing**: `gota.AuditModel(model)` (and `gota.IsSensitiveFieldName(fieldName)`) inspects structs recursively in unit tests and returns warnings if exported fields like `PasswordHash`, `Salt`, `ClientSecret`, or `ResetToken` lack `json:"-"` (use `validate:"nowarn"` to silence intentional cases).
+- **Sensitive Field Auditing**: `gota.AuditModel(model)` (and `gota.IsSensitiveFieldName(fieldName)`) inspects structs recursively in unit tests and returns warnings if exported fields like `PasswordHash`, `Salt`, `ClientSecret`, `PrivateKey`, `ResetToken`, or `CVV` lack `json:"-"` (use `validate:"nowarn"` to silence intentional cases).
 
 ---
 
@@ -235,7 +235,7 @@ Nested structs (`Address AddressDTO`, `*AddressDTO`) and slices of structs (`Ite
 At route registration, `WrapEndpoint` runs `validation.CheckTags`:
 - **Intentional Panics**: Unsupported tags like `path:"id"`, `message:"text"` (use `msg`), `gota:"nowarn"` (use `validate:"...,nowarn"`), unknown validation rules (e.g. `requried`, `gte=5`, `lte=10`, `length=5`, `dive`, `isdefault`), bad rule parameters (`min=abc`), or `msg` referencing undeclared rules **panic immediately at startup** with corrective suggestions.
 - **Startup Warnings**: Non-fatal warnings are logged once per type for `validate:"omitempty"` (no-op in Gota) and `validate:"required"` on non-pointer numeric/bool primitives. Silence per-field with `validate:"...,nowarn"`, or globally with `Config{SilenceTagWarnings: true}` or `gota.SilenceTagWarnings(true)`.
-- **Sensitive Field Leak Warnings**: Non-fatal security warnings are logged if exported struct fields appear to contain sensitive secrets (e.g. `PasswordHash`, `ClientSecret`, `Salt`, `ResetToken`) without a `json:"-"` tag. Silence per-field with `validate:"nowarn"` or globally with `SilenceTagWarnings: true`.
+- **Sensitive Field Leak Warnings**: Non-fatal security warnings are logged if exported struct fields appear to contain sensitive secrets (e.g. `PasswordHash`, `ClientSecret`, `PrivateKey`, `Salt`, `ResetToken`, `CVV`) without a `json:"-"` tag. Silence per-field with `validate:"nowarn"` or globally with `SilenceTagWarnings: true`.
 - **Model Security Auditing**: `gota.AuditModel(model any) []string` inspects any struct (and nested/embedded structs) and returns warning messages if sensitive fields lack `json:"-"`. Ideal for unit tests to prevent accidental database/domain schema leakage in API contracts.
 
 #### Custom Error Messages (`msg` Tag)
@@ -310,14 +310,15 @@ type UploadReceiptResponse struct {
 }
 
 gota.Post(app, "/api/orders/:orderId/receipt", func(ctx *gota.Context, req UploadReceiptRequest) (UploadReceiptResponse, error) {
-	file, err := req.Receipt.Open()
+	// Save safely to disk (neutralizes path traversal like "../../", backslashes, null bytes, and hidden dotfiles):
+	savedPath, err := ctx.SaveUploadedFile(req.Receipt, "./uploads")
 	if err != nil {
-		return UploadReceiptResponse{}, gota.BadRequest("Failed to open uploaded file")
+		return UploadReceiptResponse{}, gota.BadRequest("Failed to save uploaded file")
 	}
-	defer file.Close()
+	_ = savedPath
 
 	return UploadReceiptResponse{
-		Filename: req.Receipt.Filename,
+		Filename: gota.SanitizeFilename(req.Receipt.Filename),
 		Size:     req.Receipt.Size,
 		Notes:    req.Notes,
 	}, nil
@@ -326,7 +327,7 @@ gota.Post(app, "/api/orders/:orderId/receipt", func(ctx *gota.Context, req Uploa
 	Tags("Orders")
 ```
 
-> **Multipart memory**: `Config.MaxMultipartMemory` (default 32 MiB) caps how much multipart data stays in RAM before spilling to temp files; total payload size is still capped by `Config.MaxBodyBytes` (default 10 MiB — raise `MaxBodyBytes` when accepting uploads larger than 10 MiB!). To override multipart RAM per-route, call `ctx.SetMaxMultipartMemory(bytes)` in a middleware (before automatic REPR binding runs).
+> **Multipart memory & safe filenames**: `Config.MaxMultipartMemory` (default 32 MiB) caps how much multipart data stays in RAM before spilling to temp files; total payload size is still capped by `Config.MaxBodyBytes` (default 10 MiB — raise `MaxBodyBytes` when accepting uploads larger than 10 MiB!). To override multipart RAM per-route, call `ctx.SetMaxMultipartMemory(bytes)` in a middleware (before automatic REPR binding runs). Always use `ctx.SaveUploadedFile(fh, dstDir, overrideName...)` or `gota.SanitizeFilename(fh.Filename)` instead of trusting raw `fh.Filename`.
 
 #### Example 2: Server-Sent Events (`gota.SSEStream`)
 
@@ -352,7 +353,7 @@ gota.Get(app, "/api/orders/:orderId/track", func(ctx *gota.Context, req TrackOrd
 	Tags("Orders")
 ```
 
-*(Note: `SSEvent.Data` writes `string` and `[]byte` as text, and JSON-marshals any other Go value. Output is sanitized against SSE injection: CR/LF are stripped from `Event`, and multi-line `Data` is emitted as one `data:` field per line, so user-controlled content cannot forge fields or events.)*
+*(Note: `SSEvent.Data` writes `string` and `[]byte` as text, and JSON-marshals any other Go value. Output is sanitized against SSE injection: CR/LF are stripped from `Event`, and multi-line `Data` is emitted as one `data:` field per line, so user-controlled content cannot forge fields or events. Each `SSEvent` write applies a 10s per-frame write deadline and clears it after flushing, preventing slow-reading TCP clients from blocking streaming goroutines indefinitely.)*
 
 #### Example 3: Chunked Byte Streaming (`gota.StreamFunc`)
 
@@ -504,7 +505,7 @@ adminGroup.Use(gota.BasicAuth("admin", os.Getenv("ADMIN_PASS"), gota.BasicAuthOp
 	Realm:                "Admin Area", // Optional: Validator func(user, pass string) bool, ContextKey string
 	RateLimit:            &gota.RateLimiterOptions{Max: 5, Window: time.Minute},
 	AllowWeakCredentials: false,        // true silences weak/default password warnings
-	RequireTLS:           true,         // true rejects remote plain-HTTP requests with 403 (allows localhost & HTTPS proxies)
+	RequireTLS:           true,         // true rejects remote plain-HTTP requests with 403 (allows localhost, direct TLS, & HTTPS proxies when TrustProxyHeaders is true)
 }))
 
 // 10. IP & CIDR Whitelisting (rejects non-matching requests with 403 Forbidden)
@@ -512,7 +513,7 @@ adminGroup.Use(gota.BasicAuth("admin", os.Getenv("ADMIN_PASS"), gota.BasicAuthOp
 app.Use(gota.IPWhitelist("10.0.0.0/8", "192.168.1.0/24", "203.0.113.50"))
 
 // 11. Bearer Token Authentication (validates Authorization: Bearer <token> using constant-time comparison)
-//     Automatically documents BearerAuth in OpenAPI 3.1. Supports RateLimit and RequireTLS options.
+//     Automatically documents BearerAuth in OpenAPI 3.1. Supports RateLimit and RequireTLS (honors proxy headers only when TrustProxyHeaders is true).
 adminGroup.Use(gota.BearerToken(os.Getenv("DEV_TOKEN"), gota.BearerTokenOptions{
 	RequireTLS: true,
 }))
@@ -630,7 +631,7 @@ token, err := gota.SignJWT(jwtSecret, CustomClaims{
 	Exp:    time.Now().Add(24 * time.Hour).Unix(),
 }) // or gota.SignJWT(jwtSecret, claims, "hmac-kid-1")
 
-// Verify standalone token (enforces exp/nbf if present; pass nil target to verify signature/time only):
+// Verify standalone token (enforces exp/nbf if present and rejects exp <= 0; pass nil target to verify signature/time only):
 var claims CustomClaims
 err = gota.VerifyJWT(jwtSecret, tokenString, &claims)
 ```
@@ -778,9 +779,9 @@ app.Get("/healthz", func(ctx *gota.Context) error {
   - Query: `ctx.Query(name) string`, `ctx.QueryDefault(name, def) string`, `ctx.QueryInt(name, def) int`, `ctx.QueryBool(name, def) bool`
   - Headers & Cookies: `ctx.Header(name) string`, `ctx.Cookie(name) (*http.Cookie, error)`
   - Client & Correlation: `ctx.ClientIP() string`, `ctx.RequestID() string`
-  - Body & Forms: `ctx.Body() ([]byte, error)` *(cached, safe to call multiple times; reads at most `Config.MaxBodyBytes` — `DefaultMaxBodyBytes` for a `Context` created outside `App.ServeHTTP` — and returns `*http.MaxBytesError` beyond it)*, `ctx.BindJson(targetPtr) error`, `ctx.Form(name) string`, `ctx.FormFile(name) (*multipart.FileHeader, error)`, `ctx.MultipartForm() (*multipart.Form, error)`, `ctx.MaxMultipartMemory() int64`, `ctx.SetMaxMultipartMemory(limit int64)`
+  - Body & Forms: `ctx.Body() ([]byte, error)` *(cached, safe to call multiple times; reads at most `Config.MaxBodyBytes` — `DefaultMaxBodyBytes` for a `Context` created outside `App.ServeHTTP` — and returns `*http.MaxBytesError` beyond it)*, `ctx.BindJson(targetPtr) error`, `ctx.Form(name) string`, `ctx.FormFile(name) (*multipart.FileHeader, error)`, `ctx.SaveUploadedFile(fh *multipart.FileHeader, dstDir string, overrideName ...string) (string, error)` *(saves safely with path-traversal protection and `0600` permissions; see also `gota.SanitizeFilename(name)`)*, `ctx.MultipartForm() (*multipart.Form, error)`, `ctx.MaxMultipartMemory() int64`, `ctx.SetMaxMultipartMemory(limit int64)`
 - **Response Helpers**:
-  - Status & Headers: `ctx.Status(code int) *gota.Context`, `ctx.StatusCode() int`, `ctx.StatusExplicit() bool`, `ctx.SetHeader(key, val string) *gota.Context`, `ctx.SetCookie(cookie *http.Cookie) *gota.Context`, `ctx.Written() bool`
+  - Status & Headers: `ctx.Status(code int) *gota.Context`, `ctx.StatusCode() int`, `ctx.StatusExplicit() bool`, `ctx.SetHeader(key, val string) *gota.Context` *(strips CR, LF, and NUL bytes)*, `ctx.SetCookie(cookie *http.Cookie) *gota.Context`, `ctx.Written() bool`
   - Writers: `ctx.Json(data any) error`, `ctx.Send(text string) error`, `ctx.SendBytes(data []byte) error`, `ctx.NoContent() error`, `ctx.Redirect(url string, code ...int) error`, `ctx.RedirectLocal(path string, code ...int) error` *(same-site paths only, else 400 — ALWAYS use it when the target comes from user input, e.g. `?next=`, to prevent open redirects)*
   - Streaming: `ctx.Stream(step func(w io.Writer) bool) error`, `ctx.SSEvent(event string, data any) error`
 

@@ -365,13 +365,16 @@ func isRequestTLS(ctx *Context) bool {
 	if ctx.Request.TLS != nil {
 		return true
 	}
-	if strings.EqualFold(ctx.Request.Header.Get("X-Forwarded-Proto"), "https") {
+	if !ctx.trustProxy {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(ctx.Request.Header.Get("X-Forwarded-Proto")), "https") {
 		return true
 	}
-	if strings.EqualFold(ctx.Request.Header.Get("X-Forwarded-Scheme"), "https") {
+	if strings.EqualFold(strings.TrimSpace(ctx.Request.Header.Get("X-Forwarded-Scheme")), "https") {
 		return true
 	}
-	if strings.EqualFold(ctx.Request.Header.Get("X-Forwarded-Ssl"), "on") {
+	if strings.EqualFold(strings.TrimSpace(ctx.Request.Header.Get("X-Forwarded-Ssl")), "on") {
 		return true
 	}
 	fwd := strings.ToLower(ctx.Request.Header.Get("Forwarded"))

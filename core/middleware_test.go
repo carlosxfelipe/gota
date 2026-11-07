@@ -412,18 +412,35 @@ func TestBasicAuth_RequireTLS(t *testing.T) {
 		t.Fatalf("expected 200 OK for local IPv6 request, got %d", recLocalIPv6.Code)
 	}
 
-	// 4. Remote client behind reverse proxy terminating HTTPS (X-Forwarded-Proto: https) -> Allowed
+	// 4. Forged X-Forwarded-Proto: https when TrustProxyHeaders is false -> 403 Forbidden
+	reqSpoofHTTPS := httptest.NewRequest("GET", "/secure", nil)
+	reqSpoofHTTPS.RemoteAddr = "203.0.113.50:45678"
+	reqSpoofHTTPS.Header.Set("X-Forwarded-Proto", "https")
+	reqSpoofHTTPS.SetBasicAuth("admin", "secret123")
+	recSpoofHTTPS := httptest.NewRecorder()
+	app.ServeHTTP(recSpoofHTTPS, reqSpoofHTTPS)
+	if recSpoofHTTPS.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for untrusted X-Forwarded-Proto, got %d", recSpoofHTTPS.Code)
+	}
+
+	// 5. Remote client behind trusted reverse proxy terminating HTTPS (TrustProxyHeaders: true) -> Allowed
+	trustedApp := New(Config{TrustProxyHeaders: true})
+	trustedApp.Get("/secure", func(ctx *Context) error {
+		return ctx.Send("ok")
+	}).Middleware(BasicAuth("admin", "secret123", BasicAuthOptions{
+		RequireTLS: true,
+	}))
 	reqProxyHTTPS := httptest.NewRequest("GET", "/secure", nil)
 	reqProxyHTTPS.RemoteAddr = "203.0.113.50:45678"
 	reqProxyHTTPS.Header.Set("X-Forwarded-Proto", "https")
 	reqProxyHTTPS.SetBasicAuth("admin", "secret123")
 	recProxyHTTPS := httptest.NewRecorder()
-	app.ServeHTTP(recProxyHTTPS, reqProxyHTTPS)
+	trustedApp.ServeHTTP(recProxyHTTPS, reqProxyHTTPS)
 	if recProxyHTTPS.Code != http.StatusOK {
-		t.Fatalf("expected 200 OK for proxy HTTPS request, got %d", recProxyHTTPS.Code)
+		t.Fatalf("expected 200 OK for trusted proxy HTTPS request, got %d", recProxyHTTPS.Code)
 	}
 
-	// 5. Remote client with direct TLS -> Allowed
+	// 6. Remote client with direct TLS -> Allowed
 	reqDirectTLS := httptest.NewRequest("GET", "/secure", nil)
 	reqDirectTLS.RemoteAddr = "203.0.113.50:45678"
 	reqDirectTLS.TLS = &tls.ConnectionState{}
@@ -797,27 +814,31 @@ func TestBearerTokenMiddleware(t *testing.T) {
 		t.Fatalf("expected 429 Too Many Requests, got %d", rec3.Code)
 	}
 
-	// 4. Remote non-TLS request with RequireTLS -> 403 Forbidden
+	// 4. Remote non-TLS request with RequireTLS -> 403 Forbidden (even with forged X-Forwarded-Proto when TrustProxyHeaders is false)
 	app2 := New(Config{})
 	app2.Get("/tls-check", func(ctx *Context) error { return ctx.Send("ok") }).
 		Middleware(BearerToken("valid-token", BearerTokenOptions{RequireTLS: true}))
 
 	reqRemote := httptest.NewRequest("GET", "/tls-check", nil)
 	reqRemote.RemoteAddr = "203.0.113.10:45678"
+	reqRemote.Header.Set("X-Forwarded-Proto", "https")
 	reqRemote.Header.Set("Authorization", "Bearer valid-token")
 	recRemote := httptest.NewRecorder()
 	app2.ServeHTTP(recRemote, reqRemote)
 	if recRemote.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 Forbidden for remote non-TLS, got %d", recRemote.Code)
+		t.Fatalf("expected 403 Forbidden for remote non-TLS with untrusted proxy header, got %d", recRemote.Code)
 	}
 
-	// 5. Valid token over HTTPS -> 200 OK
+	// 5. Valid token over HTTPS behind trusted proxy (TrustProxyHeaders: true) -> 200 OK
+	appTrusted := New(Config{TrustProxyHeaders: true})
+	appTrusted.Get("/tls-check", func(ctx *Context) error { return ctx.Send("ok") }).
+		Middleware(BearerToken("valid-token", BearerTokenOptions{RequireTLS: true}))
 	reqValid := httptest.NewRequest("GET", "/tls-check", nil)
 	reqValid.RemoteAddr = "203.0.113.10:45678"
 	reqValid.Header.Set("X-Forwarded-Proto", "https")
 	reqValid.Header.Set("Authorization", "Bearer valid-token")
 	recValid := httptest.NewRecorder()
-	app2.ServeHTTP(recValid, reqValid)
+	appTrusted.ServeHTTP(recValid, reqValid)
 	if recValid.Code != http.StatusOK || recValid.Body.String() != "ok" {
 		t.Fatalf("expected 200 OK, got %d: %s", recValid.Code, recValid.Body.String())
 	}
