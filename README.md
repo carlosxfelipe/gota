@@ -62,14 +62,12 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"sync"
+	"time"
 
 	"github.com/carlosxfelipe/gota"
 )
-
-// ----------------------------------------------------------------------
-// Shared Dependency (Injected into Endpoint structs)
-// ----------------------------------------------------------------------
 
 type TodoStore struct {
 	mu    sync.RWMutex
@@ -79,23 +77,25 @@ type TodoStore struct {
 func NewTodoStore() *TodoStore {
 	return &TodoStore{
 		items: map[string]TodoResponse{
-			"todo_1": {ID: "todo_1", Title: "Learn Gota REPR Pattern", Done: true},
+			"todo_1": {ID: "todo_1", Title: "Learn Gota REPR Pattern", Priority: "high", Done: true},
 		},
 	}
 }
-
-// ----------------------------------------------------------------------
-// Feature 1: Get Todo by ID (Request -> Endpoint -> Response)
-// ----------------------------------------------------------------------
 
 type GetTodoRequest struct {
 	ID string `param:"id" doc:"Todo identifier" example:"todo_1" validate:"required"`
 }
 
+type CreateTodoRequest struct {
+	Title    string `json:"title" doc:"Task title" example:"Ship production API" validate:"required,min=3"`
+	Priority string `json:"priority" doc:"Task priority" example:"high" default:"normal" validate:"oneof=low,normal,high"`
+}
+
 type TodoResponse struct {
-	ID    string `json:"id" doc:"Todo ID" example:"todo_1"`
-	Title string `json:"title" doc:"Task title" example:"Learn Gota REPR Pattern"`
-	Done  bool   `json:"done" doc:"Completion status" example:"false"`
+	ID       string `json:"id" doc:"Todo ID" example:"todo_1"`
+	Title    string `json:"title" doc:"Task title" example:"Learn Gota REPR Pattern"`
+	Priority string `json:"priority" doc:"Task priority" example:"high"`
+	Done     bool   `json:"done" doc:"Completion status" example:"false"`
 }
 
 type GetTodoEndpoint struct {
@@ -113,41 +113,44 @@ func (e *GetTodoEndpoint) Handle(ctx *gota.Context, req GetTodoRequest) (TodoRes
 	return todo, nil
 }
 
-// ----------------------------------------------------------------------
-// Feature 2: Create Todo (Request -> Endpoint -> Response)
-// ----------------------------------------------------------------------
-
-type CreateTodoRequest struct {
-	Title string `json:"title" doc:"Task title" example:"Ship production API" validate:"required,min=3"`
-}
-
 type CreateTodoEndpoint struct {
 	Store *TodoStore
 }
 
 func (e *CreateTodoEndpoint) Handle(ctx *gota.Context, req CreateTodoRequest) (TodoResponse, error) {
+	priority := req.Priority
+	if priority == "" {
+		priority = "normal"
+	}
+
 	e.Store.mu.Lock()
 	defer e.Store.mu.Unlock()
 
 	id := fmt.Sprintf("todo_%d", len(e.Store.items)+1)
 	todo := TodoResponse{
-		ID:    id,
-		Title: req.Title,
-		Done:  false,
+		ID:       id,
+		Title:    req.Title,
+		Priority: priority,
+		Done:     false,
 	}
 	e.Store.items[id] = todo
 	return todo, nil
 }
 
-// ----------------------------------------------------------------------
-// Main Application
-// ----------------------------------------------------------------------
-
 func main() {
+	isProd := os.Getenv("ENV") == "production"
+
+	tsURL, tsSDKURL := "/types.d.ts", "/sdk.ts"
+	if isProd {
+		tsURL, tsSDKURL = "-", "-"
+	}
+
 	app := gota.New(gota.Config{
-		Title:                 "Gota Minimal REPR Example",
+		Title:                 "Gota REPR API",
 		Version:               "1.0.0",
-		Description:           "Minimal Request-Endpoint-Response (REPR) example using gota.HandleEndpoint.",
+		Description:           "Minimal Request-Endpoint-Response (REPR) API with Scalar OpenAPI 3.1 and TypeScript SDK.",
+		TypeScriptURL:         tsURL,
+		TypeScriptSDKURL:      tsSDKURL,
 		DisallowUnknownFields: true,
 		DocsCSPEnforce:        true,
 	})
@@ -156,10 +159,24 @@ func main() {
 	app.Use(gota.Logger())
 	app.Use(gota.Recover())
 	app.Use(gota.SecureHeaders())
+	app.Use(gota.CORS())
+
+	docsPassword := os.Getenv("DOCS_PASSWORD")
+	if docsPassword == "" {
+		if isProd {
+			log.Fatal("DOCS_PASSWORD environment variable must be set in production")
+		}
+		docsPassword = "admin123"
+	}
+	app.UseDocs(gota.BasicAuth("admin", docsPassword, gota.BasicAuthOptions{
+		Realm:                "Gota API Documentation",
+		RateLimit:            &gota.RateLimiterOptions{Max: 10, Window: time.Minute},
+		AllowWeakCredentials: !isProd,
+		RequireTLS:           isProd,
+	}))
 
 	store := NewTodoStore()
 
-	// Register REPR Endpoints with gota.HandleEndpoint
 	gota.HandleEndpoint(app, http.MethodGet, "/todos/:id", &GetTodoEndpoint{Store: store}).
 		Summary("Get todo by ID").
 		Tags("Todos")
