@@ -704,6 +704,9 @@ func (g *TypeScriptGenerator) GenerateSDK(routes []*Node) string {
       if (ctype.includes("application/json")) {
         return res.json();
       }
+      if (ctype.includes("text/event-stream") && res.body) {
+        return (typeof TextDecoderStream !== "undefined" ? res.body.pipeThrough(new TextDecoderStream()) : res.body) as any;
+      }
       return res.text() as any;
     }
   };
