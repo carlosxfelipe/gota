@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -201,7 +202,7 @@ func TestTypeScriptGenerator_SDKImplementation(t *testing.T) {
 	if !strings.Contains(sdk, "path.replace(\":\" + k, encodeURIComponent(String(v)))") {
 		t.Errorf("expected path param substitution logic, got:\n%s", sdk)
 	}
-	if !strings.Contains(sdk, "const res = await fetchFn(url, {") {
+	if !strings.Contains(sdk, "const res = await fetchFn(url, fetchInit);") {
 		t.Errorf("expected fetchFn invocation, got:\n%s", sdk)
 	}
 }
@@ -423,5 +424,283 @@ func TestAuditModel_SecurityDetection(t *testing.T) {
 	pkWarnings := AuditModel(paymentAndKeys{})
 	if len(pkWarnings) != 2 {
 		t.Fatalf("expected 2 warnings for private_key and cvv, got %d: %v", len(pkWarnings), pkWarnings)
+	}
+}
+
+func TestTypeScript_URLNormalizationAndPathParams(t *testing.T) {
+	app := New(Config{
+		Title:   "URL Test",
+		Version: "1.0.0",
+	})
+
+	app.Get("/users/:id", func(ctx *Context) error {
+		return ctx.Send("ok")
+	}).Param("id", "", "User ID").Response(http.StatusOK, "ok", "Success")
+
+	app.Post("/reset", func(ctx *Context) error {
+		return ctx.Status(http.StatusResetContent).Send("")
+	}).Response(http.StatusResetContent, nil, "Reset Content")
+
+	dts := app.GenerateTypeScript()
+	sdk := app.GenerateTypeScriptSDK()
+
+	// 1. Verify 205 produces void response in TypeScript definitions
+	if !strings.Contains(dts, `"POST /reset": {`) {
+		t.Errorf("expected POST /reset endpoint in dts")
+	}
+	if !strings.Contains(dts, "response: void;") {
+		t.Errorf("expected response: void in dts for 205 endpoint")
+	}
+
+	// 2. Verify SDK contains missing path parameter validation
+	if !strings.Contains(sdk, "/[:*][a-zA-Z0-9_]+/.test(path)") {
+		t.Errorf("expected missing path param regex validation in SDK")
+	}
+	if !strings.Contains(sdk, "Missing required path parameter in endpoint URL") {
+		t.Errorf("expected path parameter error message in SDK")
+	}
+
+	// 3. Verify SDK contains cleanBase and cleanPath trailing/leading slash normalization
+	if !strings.Contains(sdk, `baseUrl ? baseUrl.replace(/\/+$/, "") : ""`) {
+		t.Errorf("expected cleanBase trailing slash normalization in SDK")
+	}
+	if !strings.Contains(sdk, `path.startsWith("/") ? path : "/" + path`) {
+		t.Errorf("expected cleanPath leading slash normalization in SDK")
+	}
+
+	// 4. Verify status 204 or 205 returns undefined
+	if !strings.Contains(sdk, "res.status === 204 || res.status === 205") {
+		t.Errorf("expected status 204 or 205 check in SDK")
+	}
+
+	// 5. Node runtime execution verification (if node is available)
+	if _, err := exec.LookPath("node"); err == nil {
+		testDir := t.TempDir()
+		sdkFile := filepath.Join(testDir, "sdk.ts")
+		runnerFile := filepath.Join(testDir, "run.ts")
+
+		if err := os.WriteFile(sdkFile, []byte(sdk), 0644); err != nil {
+			t.Fatalf("failed to write test sdk file: %v", err)
+		}
+
+		runnerScript := `
+import { createGotaClient } from "./sdk.ts";
+import assert from "node:assert";
+
+async function run() {
+  let requestedUrl = "";
+  const mockFetch = async (url: string) => {
+    requestedUrl = url;
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers({ "content-type": "application/json" }),
+      json: async () => ({ success: true })
+    };
+  };
+
+  // Test 1: Trailing slash in baseUrl is normalized
+  const client = createGotaClient("https://api.example.com///", { fetch: mockFetch as any });
+  await client.fetch("GET /users/:id", { params: { id: "123" } });
+  assert.strictEqual(requestedUrl, "https://api.example.com/users/123", "should remove trailing slashes from baseUrl");
+
+  // Test 2: Missing path parameter throws before fetch
+  let threw = false;
+  try {
+    await client.fetch("GET /users/:id", { params: {} as any });
+  } catch (err: any) {
+    threw = true;
+    assert.ok(err.message.includes("Missing required path parameter"), "should throw missing path param error");
+  }
+  assert.ok(threw, "expected error for missing path param");
+
+  // Test 3: Status 205 returns undefined
+  const client205 = createGotaClient("https://api.example.com", {
+    fetch: async () => ({ ok: true, status: 205, headers: new Headers() } as any)
+  });
+  const res205 = await client205.fetch("POST /reset");
+  assert.strictEqual(res205, undefined, "205 Reset Content should return undefined");
+
+  // Test 4: Status 204 returns undefined
+  const client204 = createGotaClient("https://api.example.com", {
+    fetch: async () => ({ ok: true, status: 204, headers: new Headers() } as any)
+  });
+  const res204 = await client204.fetch("POST /reset");
+  assert.strictEqual(res204, undefined, "204 No Content should return undefined");
+
+  console.log("ALL_NODE_TESTS_PASSED");
+}
+
+run().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+`
+		if err := os.WriteFile(runnerFile, []byte(runnerScript), 0644); err != nil {
+			t.Fatalf("failed to write runner ts script: %v", err)
+		}
+
+		cmd := exec.Command("node", "--experimental-strip-types", runnerFile)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("node test execution failed: %v, output:\n%s", err, string(out))
+		}
+		if !strings.Contains(string(out), "ALL_NODE_TESTS_PASSED") {
+			t.Fatalf("expected node tests to pass, got:\n%s", string(out))
+		}
+	}
+}
+
+func TestTypeScript_AdvancedClientCapabilities(t *testing.T) {
+	app := New(Config{
+		Title:   "Advanced API",
+		Version: "1.0.0",
+	})
+
+	imgRoute := app.Get("/image", func(ctx *Context) error {
+		return ctx.SendBytes([]byte("img"))
+	}).Response(http.StatusOK, []byte{}, "Image png")
+	imgRoute.Node.Doc.Responses[200].ContentType = "image/png"
+
+	uploadRoute := app.Post("/upload", func(ctx *Context) error {
+		return ctx.Send("uploaded")
+	}).Summary("Upload form")
+	uploadRoute.Node.Doc.RequestBody = &BodyDoc{
+		ContentType: "application/x-www-form-urlencoded",
+		Model:       map[string]string{},
+	}
+
+	dts := app.GenerateTypeScript()
+	sdk := app.GenerateTypeScriptSDK()
+
+	if !strings.Contains(dts, "response: Blob;") {
+		t.Errorf("expected response: Blob for image/png endpoint, got:\n%s", dts)
+	}
+	if !strings.Contains(dts, "body: URLSearchParams | Record<string, string | number | boolean>;") {
+		t.Errorf("expected body to support URLSearchParams, got:\n%s", dts)
+	}
+	if !strings.Contains(dts, "cache?: RequestCache;") {
+		t.Errorf("expected cache?: RequestCache in RequestOptions")
+	}
+	if !strings.Contains(dts, "export declare class GotaHttpError") {
+		t.Errorf("expected GotaHttpError declaration in dts")
+	}
+	if !strings.Contains(sdk, "export class GotaHttpError") {
+		t.Errorf("expected GotaHttpError class implementation in SDK")
+	}
+
+	if _, err := exec.LookPath("node"); err == nil {
+		testDir := t.TempDir()
+		sdkFile := filepath.Join(testDir, "sdk.ts")
+		runnerFile := filepath.Join(testDir, "run.ts")
+
+		if err := os.WriteFile(sdkFile, []byte(sdk), 0644); err != nil {
+			t.Fatalf("failed to write test sdk file: %v", err)
+		}
+
+		runnerScript := `
+import { createGotaClient, GotaHttpError } from "./sdk.ts";
+import assert from "node:assert";
+
+async function run() {
+  let lastInit: any = null;
+
+  const client = createGotaClient("https://api.example.com", {
+    fetch: async (url: string, init: any) => {
+      lastInit = init;
+      const path = url.replace("https://api.example.com", "");
+
+      if (path === "/image") {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ "content-type": "image/png" }),
+          blob: async () => new Blob(["fake-image"], { type: "image/png" })
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-type": "application/json" }),
+        json: async () => ({ ok: true })
+      };
+    }
+  });
+
+  // 1. Binary Response -> Blob
+  const blobRes: any = await client.fetch("GET /image");
+  assert.ok(blobRes instanceof Blob, "response should be a Blob for binary content type");
+  assert.strictEqual(await blobRes.text(), "fake-image");
+
+  // 2. URLSearchParams Body
+  const params = new URLSearchParams({ search: "golang", limit: "10" });
+  await client.fetch("POST /upload", { body: params });
+  assert.ok(lastInit.body instanceof URLSearchParams, "body should remain URLSearchParams");
+  assert.strictEqual(lastInit.headers.has("Content-Type"), false, "should not override Content-Type with application/json");
+
+  // 3. Blob Body
+  const blobBody = new Blob(["test"], { type: "text/plain" });
+  await client.fetch("POST /upload", { body: blobBody as any });
+  assert.ok(lastInit.body instanceof Blob, "body should remain Blob");
+
+  // 4. Uint8Array (ArrayBufferView) Body
+  const bytesBody = new Uint8Array([1, 2, 3]);
+  await client.fetch("POST /upload", { body: bytesBody as any });
+  assert.ok(lastInit.body instanceof Uint8Array, "body should remain Uint8Array");
+
+  // 5. ReadableStream Body (duplex: 'half')
+  const streamBody = new ReadableStream();
+  await client.fetch("POST /upload", { body: streamBody as any });
+  assert.strictEqual(lastInit.body, streamBody, "body should be ReadableStream");
+  assert.strictEqual(lastInit.duplex, "half", "duplex should be half for stream bodies");
+
+  // 6. Cache option
+  await client.fetch("GET /image", { cache: "no-store" as RequestCache });
+  assert.strictEqual(lastInit.cache, "no-store", "cache option should be passed to fetch");
+
+  // 7. Typed GotaHttpError
+  let caughtErr: any = null;
+  try {
+    const errorClient = createGotaClient("https://api.example.com", {
+      fetch: async () => ({
+        ok: false,
+        status: 422,
+        statusText: "Unprocessable Entity",
+        headers: new Headers({ "x-request-id": "req-999" }),
+        json: async () => ({ message: "Validation error" })
+      }) as any
+    });
+    await errorClient.fetch("GET /image");
+  } catch (err) {
+    caughtErr = err;
+  }
+  assert.ok(caughtErr instanceof GotaHttpError, "thrown error should be instance of GotaHttpError");
+  assert.strictEqual(caughtErr.name, "GotaHttpError");
+  assert.strictEqual(caughtErr.status, 422);
+  assert.strictEqual(caughtErr.statusText, "Unprocessable Entity");
+  assert.strictEqual(caughtErr.message, "Validation error");
+  assert.strictEqual(caughtErr.data.message, "Validation error");
+  assert.strictEqual(caughtErr.headers.get("x-request-id"), "req-999");
+
+  console.log("ADVANCED_CAPABILITIES_NODE_TESTS_PASSED");
+}
+
+run().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+`
+		if err := os.WriteFile(runnerFile, []byte(runnerScript), 0644); err != nil {
+			t.Fatalf("failed to write runner ts script: %v", err)
+		}
+
+		cmd := exec.Command("node", "--experimental-strip-types", runnerFile)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("node test execution failed: %v, output:\n%s", err, string(out))
+		}
+		if !strings.Contains(string(out), "ADVANCED_CAPABILITIES_NODE_TESTS_PASSED") {
+			t.Fatalf("expected node tests to pass, got:\n%s", string(out))
+		}
 	}
 }
