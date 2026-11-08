@@ -18,6 +18,12 @@ export interface CreateTodoRequest {
   priority?: "low" | "normal" | "high";
 }
 
+export interface ErrorResponse {
+  error: string;
+  status: number;
+  requestId?: string;
+}
+
 export interface TodoResponse {
   /**
    * Todo ID
@@ -41,6 +47,12 @@ export interface TodoResponse {
   done: boolean;
 }
 
+export interface ValidationError {
+  message: string;
+  errors: Record<string, string[]>;
+  status: number;
+}
+
 export interface GotaEndpoints {
   /**
    * List all todos
@@ -53,6 +65,7 @@ export interface GotaEndpoints {
     query: void;
     body: void;
     response: TodoResponse[];
+    error: ErrorResponse | ValidationError;
   };
   /**
    * Get todo by ID
@@ -65,6 +78,7 @@ export interface GotaEndpoints {
     query: void;
     body: void;
     response: TodoResponse;
+    error: ErrorResponse | ValidationError;
   };
   /**
    * Create a new todo
@@ -77,6 +91,7 @@ export interface GotaEndpoints {
     query: void;
     body: CreateTodoRequest;
     response: TodoResponse;
+    error: ErrorResponse | ValidationError;
   };
 }
 
@@ -86,6 +101,12 @@ export type RequestParams<K extends EndpointKey> = GotaEndpoints[K]["params"];
 export type RequestQuery<K extends EndpointKey> = GotaEndpoints[K]["query"];
 export type RequestBody<K extends EndpointKey> = GotaEndpoints[K]["body"];
 export type ResponseData<K extends EndpointKey> = GotaEndpoints[K]["response"];
+export type ResponseError<K extends EndpointKey> = GotaEndpoints[K]["error"];
+
+export interface NextFetchRequestConfig {
+  revalidate?: number | false;
+  tags?: string[];
+}
 
 export type RequestOptions<K extends EndpointKey> =
   (RequestParams<K> extends void ? { params?: never } : { params: RequestParams<K> }) &
@@ -94,11 +115,15 @@ export type RequestOptions<K extends EndpointKey> =
     headers?: Record<string, string>;
     credentials?: RequestCredentials;
     signal?: AbortSignal;
+    cache?: RequestCache;
+    next?: NextFetchRequestConfig;
   };
 
 export interface GotaClientOptions {
   headers?: Record<string, string> | (() => Record<string, string> | Promise<Record<string, string>>);
   credentials?: RequestCredentials;
+  cache?: RequestCache;
+  next?: NextFetchRequestConfig;
   fetch?: typeof fetch;
 }
 
@@ -112,6 +137,26 @@ export interface GotaClient {
   ): Promise<ResponseData<K>>;
 }
 
+export class GotaHttpError<T = unknown> extends Error {
+  readonly status: number;
+  readonly statusText: string;
+  readonly data: T;
+  readonly headers?: Headers;
+
+  constructor(status: number, statusText: string, data: T, headers?: Headers) {
+    const message = (data && typeof data === "object" && ("message" in data || "error" in data))
+      ? String((data as any).message || (data as any).error)
+      : statusText || ("HTTP Error " + status);
+    super(message);
+    this.name = "GotaHttpError";
+    this.status = status;
+    this.statusText = statusText;
+    this.data = data;
+    this.headers = headers;
+    Object.setPrototypeOf(this, GotaHttpError.prototype);
+  }
+}
+
 export function createGotaClient(baseUrl = "", clientOptions: GotaClientOptions = {}): GotaClient {
   return {
     baseUrl,
@@ -123,11 +168,18 @@ export function createGotaClient(baseUrl = "", clientOptions: GotaClientOptions 
         const keys = Object.keys(options.params).sort((a, b) => b.length - a.length);
         for (const k of keys) {
           const v = options.params[k];
-          path = path.replace(":" + k, encodeURIComponent(String(v)));
-          path = path.replace("*" + k, String(v));
+          if (v !== undefined && v !== null) {
+            path = path.replace(":" + k, encodeURIComponent(String(v)));
+            path = path.replace("*" + k, String(v));
+          }
         }
       }
-      let url = baseUrl + path;
+      if (/[:*][a-zA-Z0-9_]+/.test(path)) {
+        throw new Error("Missing required path parameter in endpoint URL: " + pathTemplate + " (resolved: " + path + ")");
+      }
+      const cleanBase = baseUrl ? baseUrl.replace(/\/+$/, "") : "";
+      const cleanPath = path.startsWith("/") ? path : "/" + path;
+      let url = cleanBase + cleanPath;
       if (options.query) {
         const q = new URLSearchParams();
         for (const [k, v] of Object.entries(options.query)) {
@@ -148,9 +200,19 @@ export function createGotaClient(baseUrl = "", clientOptions: GotaClientOptions 
         }
       }
       let body: any = undefined;
+      let duplex: string | undefined = undefined;
       if (options.body !== undefined) {
         if (typeof FormData !== "undefined" && options.body instanceof FormData) {
           body = options.body;
+        } else if (typeof URLSearchParams !== "undefined" && options.body instanceof URLSearchParams) {
+          body = options.body;
+        } else if (typeof Blob !== "undefined" && options.body instanceof Blob) {
+          body = options.body;
+        } else if (typeof ArrayBuffer !== "undefined" && (options.body instanceof ArrayBuffer || ArrayBuffer.isView(options.body))) {
+          body = options.body;
+        } else if (typeof ReadableStream !== "undefined" && options.body instanceof ReadableStream) {
+          body = options.body;
+          duplex = "half";
         } else {
           if (!headers.has("Content-Type")) {
             headers.set("Content-Type", "application/json");
@@ -159,24 +221,43 @@ export function createGotaClient(baseUrl = "", clientOptions: GotaClientOptions 
         }
       }
       const fetchFn = clientOptions.fetch || fetch;
-      const res = await fetchFn(url, {
+      const fetchInit: any = {
         method,
         headers,
         body,
         credentials: options.credentials ?? clientOptions.credentials,
         signal: options.signal,
-      });
+        cache: options.cache ?? clientOptions.cache,
+      };
+      const nextConfig = options.next ?? clientOptions.next;
+      if (nextConfig !== undefined) {
+        fetchInit.next = nextConfig;
+      }
+      if (duplex) {
+        fetchInit.duplex = duplex;
+      }
+      const res = await fetchFn(url, fetchInit);
       if (!res.ok) {
         const err = await res.json().catch(() => ({ message: res.statusText }));
-        throw Object.assign(new Error((err && (err.message || err.error)) || res.statusText), { status: res.status, data: err });
+        throw new GotaHttpError(res.status, res.statusText, err, res.headers);
       }
-      if (res.status === 204) return undefined as any;
+      if (res.status === 204 || res.status === 205) return undefined as any;
       const ctype = res.headers.get("content-type") || "";
-      if (ctype.includes("application/json")) {
+      if (ctype.includes("application/json") || ctype.includes("+json")) {
         return res.json();
       }
       if (ctype.includes("text/event-stream") && res.body) {
         return (typeof TextDecoderStream !== "undefined" ? res.body.pipeThrough(new TextDecoderStream()) : res.body) as any;
+      }
+      const isBinary = /^(image|audio|video)\/|application\/(octet-stream|pdf|zip|gzip|vnd\.|x-)/.test(ctype);
+      if (isBinary && typeof res.blob === "function") {
+        return res.blob() as any;
+      }
+      if (ctype.startsWith("text/") || ctype.includes("xml")) {
+        return res.text() as any;
+      }
+      if (typeof res.blob === "function") {
+        return res.blob() as any;
       }
       return res.text() as any;
     }

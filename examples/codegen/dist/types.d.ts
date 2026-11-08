@@ -18,6 +18,12 @@ export interface CreateTodoRequest {
   priority?: "low" | "normal" | "high";
 }
 
+export interface ErrorResponse {
+  error: string;
+  status: number;
+  requestId?: string;
+}
+
 export interface TodoResponse {
   /**
    * Todo ID
@@ -41,6 +47,12 @@ export interface TodoResponse {
   done: boolean;
 }
 
+export interface ValidationError {
+  message: string;
+  errors: Record<string, string[]>;
+  status: number;
+}
+
 export interface GotaEndpoints {
   /**
    * List all todos
@@ -53,6 +65,7 @@ export interface GotaEndpoints {
     query: void;
     body: void;
     response: TodoResponse[];
+    error: ErrorResponse | ValidationError;
   };
   /**
    * Get todo by ID
@@ -65,6 +78,7 @@ export interface GotaEndpoints {
     query: void;
     body: void;
     response: TodoResponse;
+    error: ErrorResponse | ValidationError;
   };
   /**
    * Create a new todo
@@ -77,6 +91,7 @@ export interface GotaEndpoints {
     query: void;
     body: CreateTodoRequest;
     response: TodoResponse;
+    error: ErrorResponse | ValidationError;
   };
 }
 
@@ -86,6 +101,12 @@ export type RequestParams<K extends EndpointKey> = GotaEndpoints[K]["params"];
 export type RequestQuery<K extends EndpointKey> = GotaEndpoints[K]["query"];
 export type RequestBody<K extends EndpointKey> = GotaEndpoints[K]["body"];
 export type ResponseData<K extends EndpointKey> = GotaEndpoints[K]["response"];
+export type ResponseError<K extends EndpointKey> = GotaEndpoints[K]["error"];
+
+export interface NextFetchRequestConfig {
+  revalidate?: number | false;
+  tags?: string[];
+}
 
 export type RequestOptions<K extends EndpointKey> =
   (RequestParams<K> extends void ? { params?: never } : { params: RequestParams<K> }) &
@@ -94,11 +115,15 @@ export type RequestOptions<K extends EndpointKey> =
     headers?: Record<string, string>;
     credentials?: RequestCredentials;
     signal?: AbortSignal;
+    cache?: RequestCache;
+    next?: NextFetchRequestConfig;
   };
 
 export interface GotaClientOptions {
   headers?: Record<string, string> | (() => Record<string, string> | Promise<Record<string, string>>);
   credentials?: RequestCredentials;
+  cache?: RequestCache;
+  next?: NextFetchRequestConfig;
   fetch?: typeof fetch;
 }
 
@@ -110,6 +135,14 @@ export interface GotaClient {
       ? [options?: RequestOptions<K>]
       : [options: RequestOptions<K>]
   ): Promise<ResponseData<K>>;
+}
+
+export declare class GotaHttpError<T = unknown> extends Error {
+  readonly status: number;
+  readonly statusText: string;
+  readonly data: T;
+  readonly headers?: Headers;
+  constructor(status: number, statusText: string, data: T, headers?: Headers);
 }
 
 export declare function createGotaClient(baseUrl?: string, clientOptions?: GotaClientOptions): GotaClient;

@@ -117,8 +117,14 @@ Gota generates zero-dependency TypeScript declarations (`.d.ts`) and a ready-to-
   - **Response structs**: Non-pointer fields without `json:",omitempty"` or `json:",omitzero"` are required (`field: T`); pointer fields (`*T`) or fields with `omitempty`/`omitzero` are optional (`field?: T`).
   - `validate:"oneof=..."` on string fields generates TypeScript string literal union types (e.g. `"admin" | "member"`).
 - **Generated `createGotaClient(baseUrl?, clientOptions?: GotaClientOptions)`**:
-  - `GotaClientOptions` supports `headers` (static `Record<string, string>` or sync/async callback `() => Record<string, string> | Promise<Record<string, string>>`), `credentials` (`RequestCredentials`), and custom `fetch`.
-  - `client.fetch("METHOD /path", options?)` infers `params`, `query`, `body`, and `response` types per endpoint, omits the 2nd argument when an endpoint requires no input, sorts `:param` keys longest-first to avoid prefix collisions, serializes JSON/FormData automatically, handles `204 No Content`, and throws typed errors with `status` and `data` on non-2xx responses.
+  - `GotaClientOptions` and `RequestOptions` support `headers` (static `Record<string, string>` or sync/async callback `() => Record<string, string> | Promise<Record<string, string>>`), `credentials` (`RequestCredentials`), `signal` (`AbortSignal`), `cache` (`RequestCache`), `next` (`NextFetchRequestConfig` for Next.js App Router revalidation/tags), and custom `fetch`.
+  - `client.fetch("METHOD /path", options?)` infers `params`, `query`, `body`, `response`, and `error` types per endpoint (`ResponseError<K>`):
+    - Sanitizes `baseUrl` trailing slashes and normalizes path leading slashes (no duplicate slashes `//`).
+    - Validates path parameters before dispatching fetch, throwing early runtime errors if `:param` or `*wildcard` are missing.
+    - Automatically handles payloads: JSON (sets `Content-Type: application/json`), `FormData`, `URLSearchParams`, `Blob`, `ArrayBuffer`/views, and `ReadableStream` (with `duplex: 'half'`).
+    - Handles `204 No Content` and `205 Reset Content` (returns `undefined` without attempting body read).
+    - Returns `res.blob()` for binary/media content types (`image/*`, `application/pdf`, `octet-stream`), SSE streams via `ReadableStream<string>`, and `res.json()` for JSON.
+    - Throws `GotaHttpError<T = unknown>` on non-2xx responses with `status`, `statusText`, `data` (typed via `ResponseError<K>`), and `headers`.
 - **Sensitive Field Auditing**: `gota.AuditModel(model)` (and `gota.IsSensitiveFieldName(fieldName)`) inspects structs recursively in unit tests and returns warnings if exported fields like `PasswordHash`, `Salt`, `ClientSecret`, `PrivateKey`, `ResetToken`, or `CVV` lack `json:"-"` (use `validate:"nowarn"` to silence intentional cases).
 
 ---

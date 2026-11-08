@@ -419,6 +419,7 @@ type routeTS struct {
 	queryTS     string
 	bodyTS      string
 	responseTS  string
+	errorTS     string
 }
 
 func (g *TypeScriptGenerator) inspectRoute(rt *Node) routeTS {
@@ -430,6 +431,7 @@ func (g *TypeScriptGenerator) inspectRoute(rt *Node) routeTS {
 		queryTS:    "void",
 		bodyTS:     "void",
 		responseTS: "void",
+		errorTS:    "unknown",
 	}
 
 	if rt.Doc == nil {
@@ -550,6 +552,44 @@ func (g *TypeScriptGenerator) inspectRoute(rt *Node) routeTS {
 		}
 	}
 
+	// 4. Error Responses (>= 400)
+	if rt.Doc != nil && len(rt.Doc.Responses) > 0 {
+		var errorStatuses []int
+		for code := range rt.Doc.Responses {
+			if code >= 400 {
+				errorStatuses = append(errorStatuses, code)
+			}
+		}
+		sort.Ints(errorStatuses)
+
+		var errorTypes []string
+		seenErrorTypes := make(map[string]bool)
+		for _, code := range errorStatuses {
+			resp := rt.Doc.Responses[code]
+			if resp == nil || resp.Model == nil {
+				continue
+			}
+			mType := reflect.TypeOf(resp.Model)
+			if mType != nil && mType.Kind() == reflect.Pointer {
+				mType = mType.Elem()
+			}
+			if mType != nil && mType.Kind() == reflect.Struct && mType.NumField() == 0 {
+				continue
+			}
+			if mType != nil {
+				tsType := g.typeToTS(mType, map[reflect.Type]bool{}, true)
+				if !seenErrorTypes[tsType] {
+					seenErrorTypes[tsType] = true
+					errorTypes = append(errorTypes, tsType)
+				}
+			}
+		}
+
+		if len(errorTypes) > 0 {
+			r.errorTS = strings.Join(errorTypes, " | ")
+		}
+	}
+
 	return r
 }
 
@@ -611,6 +651,7 @@ func (g *TypeScriptGenerator) Generate(routes []*Node) string {
 		sb.WriteString(fmt.Sprintf("    query: %s;\n", r.queryTS))
 		sb.WriteString(fmt.Sprintf("    body: %s;\n", r.bodyTS))
 		sb.WriteString(fmt.Sprintf("    response: %s;\n", r.responseTS))
+		sb.WriteString(fmt.Sprintf("    error: %s;\n", r.errorTS))
 		sb.WriteString("  };\n")
 	}
 	sb.WriteString("}\n\n")
@@ -622,6 +663,12 @@ export type RequestParams<K extends EndpointKey> = GotaEndpoints[K]["params"];
 export type RequestQuery<K extends EndpointKey> = GotaEndpoints[K]["query"];
 export type RequestBody<K extends EndpointKey> = GotaEndpoints[K]["body"];
 export type ResponseData<K extends EndpointKey> = GotaEndpoints[K]["response"];
+export type ResponseError<K extends EndpointKey> = GotaEndpoints[K]["error"];
+
+export interface NextFetchRequestConfig {
+  revalidate?: number | false;
+  tags?: string[];
+}
 
 export type RequestOptions<K extends EndpointKey> =
   (RequestParams<K> extends void ? { params?: never } : { params: RequestParams<K> }) &
@@ -631,12 +678,14 @@ export type RequestOptions<K extends EndpointKey> =
     credentials?: RequestCredentials;
     signal?: AbortSignal;
     cache?: RequestCache;
+    next?: NextFetchRequestConfig;
   };
 
 export interface GotaClientOptions {
   headers?: Record<string, string> | (() => Record<string, string> | Promise<Record<string, string>>);
   credentials?: RequestCredentials;
   cache?: RequestCache;
+  next?: NextFetchRequestConfig;
   fetch?: typeof fetch;
 }
 
@@ -771,6 +820,10 @@ export function createGotaClient(baseUrl = "", clientOptions: GotaClientOptions 
         signal: options.signal,
         cache: options.cache ?? clientOptions.cache,
       };
+      const nextConfig = options.next ?? clientOptions.next;
+      if (nextConfig !== undefined) {
+        fetchInit.next = nextConfig;
+      }
       if (duplex) {
         fetchInit.duplex = duplex;
       }

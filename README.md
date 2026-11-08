@@ -260,18 +260,31 @@ Or export offline during build/CI without starting an HTTP server:
 _ = app.ExportTypeScriptSDK("./frontend/src/api.ts")
 ```
 
-Then consume it in your frontend with full route and payload autocomplete:
+Then consume it in your frontend with full route, payload, and error autocomplete:
 
 ```typescript
-import { createGotaClient } from "./api";
+import { createGotaClient, GotaHttpError, type ResponseError } from "./api";
 
 const api = createGotaClient("http://localhost:3000");
 
-// Autocompletes "GET /todos/:id" and types the response
+// 1. Autocompletes "GET /todos/:id" and types the response
 const todo = await api.fetch("GET /todos/:id", {
   params: { id: "todo_1" },
+  next: { revalidate: 60 }, // Native Next.js App Router cache/revalidation support
 });
 console.log(todo.title);
+
+// 2. Strict typed error handling (derived from Go route annotations)
+try {
+  await api.fetch("POST /todos", {
+    body: { title: "New Task", priority: "high" },
+  });
+} catch (err) {
+  if (err instanceof GotaHttpError) {
+    const errorData = err.data as ResponseError<"POST /todos">;
+    console.error(err.status, errorData);
+  }
+}
 ```
 
 ---

@@ -704,3 +704,147 @@ run().catch((err) => {
 		}
 	}
 }
+
+type TestApiError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type TestValidationError struct {
+	Field   string `json:"field"`
+	Details string `json:"details"`
+}
+
+func TestTypeScript_TypedErrorsAndNextJSSupport(t *testing.T) {
+	app := New(Config{
+		Title:   "Typed Error API",
+		Version: "1.0.0",
+	})
+
+	app.Post("/items", func(ctx *Context) error {
+		return ctx.Send("ok")
+	}).
+		Response(http.StatusCreated, "ok", "Success").
+		Response(http.StatusBadRequest, TestApiError{}, "Bad Request").
+		Response(http.StatusUnprocessableEntity, TestValidationError{}, "Validation Failure")
+
+	app.Get("/health", func(ctx *Context) error {
+		return ctx.Send("healthy")
+	}).Response(http.StatusOK, "healthy")
+
+	dts := app.GenerateTypeScript()
+	sdk := app.GenerateTypeScriptSDK()
+
+	// 1. Verify Error Schemas generated
+	if !strings.Contains(dts, "export interface TestApiError {") {
+		t.Errorf("expected TestApiError interface in dts")
+	}
+	if !strings.Contains(dts, "export interface TestValidationError {") {
+		t.Errorf("expected TestValidationError interface in dts")
+	}
+
+	// 2. Verify GotaEndpoints error type union
+	if !strings.Contains(dts, "error: TestApiError | TestValidationError;") {
+		t.Errorf("expected error union in GotaEndpoints, got:\n%s", dts)
+	}
+
+	// 3. Verify Default error type for health
+	if !strings.Contains(dts, "error: unknown;") {
+		t.Errorf("expected error: unknown for health route, got:\n%s", dts)
+	}
+
+	// 4. Verify NextFetchRequestConfig and ResponseError
+	if !strings.Contains(dts, "export type ResponseError<K extends EndpointKey> = GotaEndpoints[K][\"error\"];") {
+		t.Errorf("expected ResponseError helper in dts")
+	}
+	if !strings.Contains(dts, "export interface NextFetchRequestConfig {") {
+		t.Errorf("expected NextFetchRequestConfig in dts")
+	}
+	if !strings.Contains(dts, "next?: NextFetchRequestConfig;") {
+		t.Errorf("expected next in RequestOptions")
+	}
+
+	// 5. Node runtime execution verification
+	if _, err := exec.LookPath("node"); err == nil {
+		testDir := t.TempDir()
+		sdkFile := filepath.Join(testDir, "sdk.ts")
+		runnerFile := filepath.Join(testDir, "run.ts")
+
+		if err := os.WriteFile(sdkFile, []byte(sdk), 0644); err != nil {
+			t.Fatalf("failed to write test sdk file: %v", err)
+		}
+
+		runnerScript := `
+import { createGotaClient, GotaHttpError, type ResponseError } from "./sdk.ts";
+import assert from "node:assert";
+
+async function run() {
+  let capturedInit: any = null;
+
+  const client = createGotaClient("https://api.example.com", {
+    fetch: async (url: string, init: any) => {
+      capturedInit = init;
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-type": "application/json" }),
+        json: async () => ({ ok: true })
+      };
+    }
+  });
+
+  // Test Next.js request config
+  await client.fetch("POST /items", {
+    next: { revalidate: 60, tags: ["items-tag"] }
+  });
+  assert.ok(capturedInit.next, "fetchInit should include next property");
+  assert.strictEqual(capturedInit.next.revalidate, 60);
+  assert.deepStrictEqual(capturedInit.next.tags, ["items-tag"]);
+
+  // Test typed error handling with ResponseError
+  const errorClient = createGotaClient("https://api.example.com", {
+    fetch: async () => ({
+      ok: false,
+      status: 400,
+      statusText: "Bad Request",
+      headers: new Headers(),
+      json: async () => ({ code: "INVALID_ARG", message: "item is required" })
+    }) as any
+  });
+
+  try {
+    await errorClient.fetch("POST /items");
+    assert.fail("should have thrown error");
+  } catch (err: any) {
+    assert.ok(err instanceof GotaHttpError);
+    const typedError = err.data as ResponseError<"POST /items">;
+    if ("code" in typedError) {
+      assert.strictEqual(typedError.code, "INVALID_ARG");
+      assert.strictEqual(typedError.message, "item is required");
+    } else {
+      assert.fail("expected TestApiError shape");
+    }
+  }
+
+  console.log("NEXTJS_AND_TYPED_ERRORS_PASSED");
+}
+
+run().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+`
+		if err := os.WriteFile(runnerFile, []byte(runnerScript), 0644); err != nil {
+			t.Fatalf("failed to write runner ts script: %v", err)
+		}
+
+		cmd := exec.Command("node", "--experimental-strip-types", runnerFile)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("node test execution failed: %v, output:\n%s", err, string(out))
+		}
+		if !strings.Contains(string(out), "NEXTJS_AND_TYPED_ERRORS_PASSED") {
+			t.Fatalf("expected node tests to pass, got:\n%s", string(out))
+		}
+	}
+}
