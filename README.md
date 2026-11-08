@@ -294,7 +294,7 @@ Then explore:
 - **OpenAPI 3.1**: [http://localhost:3000/openapi.json](http://localhost:3000/openapi.json)
 - **TypeScript SDK**: [http://localhost:3000/sdk.ts](http://localhost:3000/sdk.ts)
 
-> 💡 Looking for a full-featured real-world showcase with JWT auth, role-based access control, file uploads, SSE streaming, and Bruno collections? Check out [order-flow-gota](https://github.com/carlosxfelipe/order-flow-gota).
+> 💡 Looking for a full-featured real-world showcase with JWT auth, role-based access control, file uploads, SSE streaming, and Bruno collections? Check out [order-flow](https://github.com/carlosxfelipe/order-flow).
 
 ---
 
