@@ -1110,6 +1110,15 @@ func TestTypeScript_Block3InterceptorsAndRetry(t *testing.T) {
 	if !strings.Contains(dts, "retry?: number | GotaRetryConfig;") {
 		t.Errorf("expected retry in dts")
 	}
+	if !strings.Contains(sdk, "appendQueryParam") {
+		t.Errorf("expected appendQueryParam in sdk")
+	}
+	if !strings.Contains(sdk, "Math.random()") {
+		t.Errorf("expected jitter Math.random() in sdk retry")
+	}
+	if !strings.Contains(sdk, "Date.parse(retryAfter)") {
+		t.Errorf("expected Date.parse(retryAfter) in sdk retry")
+	}
 
 	// 2. Node runtime execution verification
 	if _, err := exec.LookPath("node"); err == nil {
