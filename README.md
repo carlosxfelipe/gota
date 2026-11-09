@@ -271,6 +271,8 @@ const api = createGotaClient("http://localhost:3000");
 const todo = await api.fetch("GET /todos/:id", {
   params: { id: "todo_1" },
   next: { revalidate: 60 }, // Native Next.js App Router cache/revalidation support
+  timeoutMs: 5000, // Native request timeout
+  retry: 2, // Auto-retry with exponential backoff on network/5xx
 });
 console.log(todo.title);
 

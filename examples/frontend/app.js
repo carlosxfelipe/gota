@@ -7,6 +7,11 @@
  * @typedef {import("../codegen/dist/sdk").ResponseError<"POST /todos">} PostTodoError
  */
 
+/** @type {Set<string>} */
+const MULTIPART_ROUTES = new Set();
+/** @type {Set<string>} */
+const FORM_ROUTES = new Set();
+
 class GotaHttpError extends Error {
   /**
    * @param {number} status
@@ -15,10 +20,23 @@ class GotaHttpError extends Error {
    * @param {Headers} [headers]
    */
   constructor(status, statusText, data, headers) {
-    const message =
-      data && typeof data === "object" && ("message" in data || "error" in data)
-        ? String(data.message || data.error)
-        : statusText || "HTTP Error " + status;
+    let message = statusText || "HTTP Error " + status;
+    if (data && typeof data === "object") {
+      if (typeof data.message === "string" && data.message)
+        message = data.message;
+      else if (typeof data.error === "string" && data.error)
+        message = data.error;
+      else if (typeof data.detail === "string" && data.detail)
+        message = data.detail;
+      else if (Array.isArray(data.detail) && data.detail.length > 0)
+        message = "Validation error: " + JSON.stringify(data.detail);
+      else if (Array.isArray(data.errors) && data.errors.length > 0)
+        message = "Validation error: " + JSON.stringify(data.errors);
+      else if (typeof data.title === "string" && data.title)
+        message = data.title;
+    } else if (typeof data === "string" && data.trim()) {
+      message = data.trim();
+    }
     super(message);
     this.name = "GotaHttpError";
     this.status = status;
@@ -50,7 +68,10 @@ function createGotaClient(baseUrl = "", clientOptions = {}) {
           const v = options.params[k];
           if (v !== undefined && v !== null) {
             path = path.replace(":" + k, encodeURIComponent(String(v)));
-            path = path.replace("*" + k, String(v));
+            path = path.replace(
+              "*" + k,
+              String(v).split("/").map(encodeURIComponent).join("/"),
+            );
           }
         }
       }
@@ -69,7 +90,14 @@ function createGotaClient(baseUrl = "", clientOptions = {}) {
       if (options.query) {
         const q = new URLSearchParams();
         for (const [k, v] of Object.entries(options.query)) {
-          if (v !== undefined && v !== null) {
+          if (v === undefined || v === null) continue;
+          if (Array.isArray(v)) {
+            for (const item of v) {
+              if (item !== undefined && item !== null) {
+                q.append(k, String(item));
+              }
+            }
+          } else {
             q.set(k, String(v));
           }
         }
@@ -116,11 +144,108 @@ function createGotaClient(baseUrl = "", clientOptions = {}) {
         ) {
           body = options.body;
           duplex = "half";
-        } else {
-          if (!headers.has("Content-Type")) {
-            headers.set("Content-Type", "application/json");
+        } else if (options.body !== null && typeof options.body === "object") {
+          const isPlain =
+            /** @type {any} */ (options.body).constructor === Object ||
+            !(/** @type {any} */ (options.body).constructor);
+          const hasBlob =
+            isPlain &&
+            Object.values(options.body).some(
+              (/** @type {any} */ val) =>
+                (typeof Blob !== "undefined" && val instanceof Blob) ||
+                (Array.isArray(val) &&
+                  val.some(
+                    (/** @type {any} */ item) =>
+                      typeof Blob !== "undefined" && item instanceof Blob,
+                  )),
+            );
+          const ctypeHeader = headers.get("Content-Type") || "";
+          const isMultipart =
+            MULTIPART_ROUTES.has(String(endpoint)) ||
+            hasBlob ||
+            ctypeHeader.includes("multipart/form-data");
+          const isFormUrl =
+            FORM_ROUTES.has(String(endpoint)) ||
+            ctypeHeader.includes("application/x-www-form-urlencoded");
+
+          if (isMultipart && typeof FormData !== "undefined") {
+            const form = new FormData();
+            for (const [k, v] of Object.entries(options.body)) {
+              if (v === undefined || v === null) continue;
+              if (Array.isArray(v)) {
+                for (const item of v) {
+                  if (item !== undefined && item !== null)
+                    form.append(k, /** @type {any} */ (item));
+                }
+              } else {
+                form.append(k, /** @type {any} */ (v));
+              }
+            }
+            body = form;
+            headers.delete("Content-Type");
+          } else if (isFormUrl && typeof URLSearchParams !== "undefined") {
+            const form = new URLSearchParams();
+            for (const [k, v] of Object.entries(options.body)) {
+              if (v === undefined || v === null) continue;
+              if (Array.isArray(v)) {
+                for (const item of v) {
+                  if (item !== undefined && item !== null)
+                    form.append(k, String(item));
+                }
+              } else {
+                form.set(k, String(v));
+              }
+            }
+            body = form;
+          } else {
+            if (!headers.has("Content-Type")) {
+              headers.set("Content-Type", "application/json");
+            }
+            body = JSON.stringify(options.body);
           }
-          body = JSON.stringify(options.body);
+        } else {
+          body = options.body;
+        }
+      }
+      const timeout = options.timeoutMs ?? clientOptions.timeoutMs;
+      /** @type {AbortSignal | undefined} */
+      let signal = options.signal;
+      if (timeout && typeof AbortSignal !== "undefined") {
+        const timeoutSignal =
+          typeof AbortSignal.timeout === "function"
+            ? AbortSignal.timeout(timeout)
+            : (() => {
+                const controller = new AbortController();
+                setTimeout(
+                  () =>
+                    controller.abort(
+                      new DOMException(
+                        "The operation timed out.",
+                        "TimeoutError",
+                      ),
+                    ),
+                  timeout,
+                );
+                return controller.signal;
+              })();
+        if (signal) {
+          if (typeof (/** @type {any} */ (AbortSignal).any) === "function") {
+            signal = /** @type {any} */ (AbortSignal).any([
+              signal,
+              timeoutSignal,
+            ]);
+          } else {
+            const controller = new AbortController();
+            signal.addEventListener("abort", () =>
+              controller.abort(signal?.reason),
+            );
+            timeoutSignal.addEventListener("abort", () =>
+              controller.abort(timeoutSignal.reason),
+            );
+            signal = controller.signal;
+          }
+        } else {
+          signal = timeoutSignal;
         }
       }
       const fetchFn = clientOptions.fetch || fetch;
@@ -130,7 +255,7 @@ function createGotaClient(baseUrl = "", clientOptions = {}) {
         headers,
         body,
         credentials: options.credentials ?? clientOptions.credentials,
-        signal: options.signal,
+        signal,
         cache: options.cache ?? clientOptions.cache,
       };
       const nextConfig = options.next ?? clientOptions.next;
@@ -140,15 +265,110 @@ function createGotaClient(baseUrl = "", clientOptions = {}) {
       if (duplex) {
         fetchInit.duplex = duplex;
       }
-      const res = await fetchFn(url, fetchInit);
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ message: res.statusText }));
-        throw new GotaHttpError(res.status, res.statusText, err, res.headers);
+
+      const reqConfig = { endpoint, url, init: fetchInit };
+      const onRequest = options.onRequest ?? clientOptions.onRequest;
+      if (onRequest) {
+        await onRequest(reqConfig);
       }
-      if (res.status === 204 || res.status === 205)
+
+      const retryOpt = options.retry ?? clientOptions.retry;
+      let maxAttempts = 1;
+      let baseDelay = 300;
+      let retryStatuses = [408, 429, 500, 502, 503, 504];
+      if (typeof retryOpt === "number" && retryOpt > 0) {
+        maxAttempts = 1 + retryOpt;
+      } else if (typeof retryOpt === "object" && retryOpt !== null) {
+        if (typeof retryOpt.attempts === "number" && retryOpt.attempts > 0) {
+          maxAttempts = 1 + retryOpt.attempts;
+        }
+        if (typeof retryOpt.delayMs === "number" && retryOpt.delayMs >= 0) {
+          baseDelay = retryOpt.delayMs;
+        }
+        if (Array.isArray(retryOpt.statusCodes)) {
+          retryStatuses = retryOpt.statusCodes;
+        }
+      }
+
+      let lastRes = undefined;
+      let attempt = 0;
+      while (true) {
+        try {
+          const res = await fetchFn(url, fetchInit);
+          lastRes = res;
+          if (
+            !res.ok &&
+            attempt < maxAttempts - 1 &&
+            retryStatuses.includes(res.status)
+          ) {
+            attempt++;
+            let delay = baseDelay * Math.pow(2, attempt - 1);
+            const retryAfter = res.headers
+              ? res.headers.get("Retry-After")
+              : null;
+            if (retryAfter) {
+              const seconds = parseInt(retryAfter, 10);
+              if (!isNaN(seconds)) delay = seconds * 1000;
+            }
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            continue;
+          }
+          break;
+        } catch (fetchErr) {
+          if (attempt < maxAttempts - 1 && (!signal || !signal.aborted)) {
+            attempt++;
+            const delay = baseDelay * Math.pow(2, attempt - 1);
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            continue;
+          }
+          throw fetchErr;
+        }
+      }
+      const res = lastRes;
+
+      const onResponse = options.onResponse ?? clientOptions.onResponse;
+      if (onResponse) {
+        await onResponse(res, { endpoint, url });
+      }
+
+      if (!res.ok) {
+        let err;
+        if (typeof res.text === "function") {
+          const text = await res.text().catch(() => "");
+          try {
+            err = text ? JSON.parse(text) : { message: res.statusText };
+          } catch {
+            err = text ? { message: text } : { message: res.statusText };
+          }
+        } else if (typeof res.json === "function") {
+          err = await res.json().catch(() => ({ message: res.statusText }));
+        } else {
+          err = { message: res.statusText };
+        }
+        const httpErr = new GotaHttpError(
+          res.status,
+          res.statusText,
+          err,
+          res.headers,
+        );
+        const onError = options.onError ?? clientOptions.onError;
+        if (onError) {
+          await onError(httpErr, { endpoint, url });
+        }
+        throw httpErr;
+      }
+      if (
+        res.status === 204 ||
+        res.status === 205 ||
+        res.headers.get("content-length") === "0"
+      )
         return /** @type {any} */ (undefined);
       const ctype = res.headers.get("content-type") || "";
       if (ctype.includes("application/json") || ctype.includes("+json")) {
+        if (typeof res.text === "function") {
+          const text = await res.text();
+          return text ? JSON.parse(text) : undefined;
+        }
         return res.json();
       }
       if (ctype.includes("text/event-stream") && res.body) {
@@ -220,7 +440,11 @@ createApp({
       priority: "normal",
     });
 
-    const client = () => createGotaClient(baseUrl.value);
+    const client = () =>
+      createGotaClient(baseUrl.value, {
+        timeoutMs: 8000,
+        retry: { attempts: 2, delayMs: 250 },
+      });
 
     async function loadTodos() {
       loading.value = true;

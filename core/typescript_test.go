@@ -848,3 +848,387 @@ run().catch((err) => {
 		}
 	}
 }
+
+func TestTypeScript_Block1RuntimeEnhancements(t *testing.T) {
+	app := New(Config{
+		Title:   "Block 1 Runtime Test",
+		Version: "1.0.0",
+	})
+
+	app.Get("/files/*filepath", func(ctx *Context) error {
+		return ctx.Send("file")
+	}).Param("filepath", "", "File path").Response(http.StatusOK, "file")
+
+	app.Get("/empty-json", func(ctx *Context) error {
+		return ctx.Send("")
+	}).Response(http.StatusOK, nil)
+
+	sdk := app.GenerateTypeScriptSDK()
+
+	// 1. Verify safe wildcard encoding
+	if !strings.Contains(sdk, `String(v).split("/").map(encodeURIComponent).join("/")`) {
+		t.Errorf("expected wildcard safe segment encoding in SDK")
+	}
+
+	// 2. Verify content-length: 0 check
+	if !strings.Contains(sdk, `res.headers.get("content-length") === "0"`) {
+		t.Errorf("expected content-length: 0 check in SDK")
+	}
+
+	// 3. Node runtime execution verification
+	if _, err := exec.LookPath("node"); err == nil {
+		testDir := t.TempDir()
+		sdkFile := filepath.Join(testDir, "sdk.ts")
+		runnerFile := filepath.Join(testDir, "run.ts")
+
+		if err := os.WriteFile(sdkFile, []byte(sdk), 0644); err != nil {
+			t.Fatalf("failed to write test sdk file: %v", err)
+		}
+
+		runnerScript := `
+import { createGotaClient, GotaHttpError } from "./sdk.ts";
+import assert from "node:assert";
+
+async function run() {
+  let requestedUrl = "";
+
+  const client = createGotaClient("https://api.example.com", {
+    fetch: async (url: string) => {
+      requestedUrl = url;
+      if (url.includes("/empty-json")) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ "content-type": "application/json" }),
+          text: async () => ""
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-type": "text/plain" }),
+        text: async () => "ok"
+      };
+    }
+  });
+
+  // Test 1: Wildcard preserves / but encodes spaces and special characters
+  await client.fetch("GET /files/*filepath", {
+    params: { filepath: "sub folder/meu arquivo #1.pdf" }
+  });
+  assert.strictEqual(
+    requestedUrl,
+    "https://api.example.com/files/sub%20folder/meu%20arquivo%20%231.pdf",
+    "should encode segments without escaping directory slashes"
+  );
+
+  // Test 2: Safe handling of 200 OK with empty body and application/json
+  const emptyRes = await client.fetch("GET /empty-json");
+  assert.strictEqual(emptyRes, undefined, "empty JSON body should return undefined without throwing SyntaxError");
+
+  // Test 3: GotaHttpError extracts detail string
+  const detailErr = new GotaHttpError(400, "Bad Request", { detail: "Custom detail message" });
+  assert.strictEqual(detailErr.message, "Custom detail message");
+
+  // Test 4: GotaHttpError extracts errors array
+  const validationErr = new GotaHttpError(422, "Unprocessable Entity", {
+    errors: [{ field: "email", message: "invalid email format" }]
+  });
+  assert.ok(validationErr.message.includes("Validation error:"), "should format errors array as validation error");
+  assert.ok(validationErr.message.includes("invalid email format"));
+
+  // Test 5: GotaHttpError extracts RFC 7807 title
+  const titleErr = new GotaHttpError(404, "Not Found", { title: "Item Not Found" });
+  assert.strictEqual(titleErr.message, "Item Not Found");
+
+  // Test 6: GotaHttpError handles string data
+  const stringErr = new GotaHttpError(500, "Internal Server Error", "Database connection failed");
+  assert.strictEqual(stringErr.message, "Database connection failed");
+
+  console.log("BLOCK1_ENHANCEMENTS_PASSED");
+}
+
+run().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+`
+		if err := os.WriteFile(runnerFile, []byte(runnerScript), 0644); err != nil {
+			t.Fatalf("failed to write runner ts script: %v", err)
+		}
+
+		cmd := exec.Command("node", "--experimental-strip-types", runnerFile)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("node test execution failed: %v, output:\n%s", err, string(out))
+		}
+		if !strings.Contains(string(out), "BLOCK1_ENHANCEMENTS_PASSED") {
+			t.Fatalf("expected node tests to pass, got:\n%s", string(out))
+		}
+	}
+}
+
+type TestUploadPayload struct {
+	Title string `json:"title"`
+	File  string `json:"file"`
+}
+
+func TestTypeScript_Block2DXAndCapabilities(t *testing.T) {
+	app := New(Config{
+		Title:   "Block 2 DX Test",
+		Version: "1.0.0",
+	})
+
+	uploadRoute := app.Post("/files/upload", func(ctx *Context) error {
+		return ctx.Send("ok")
+	}).Response(http.StatusOK, "ok")
+	uploadRoute.Node.Doc.RequestBody = &BodyDoc{
+		ContentType: "multipart/form-data",
+		Model:       TestUploadPayload{},
+	}
+
+	app.Get("/search", func(ctx *Context) error {
+		return ctx.Send("results")
+	}).Response(http.StatusOK, "results")
+
+	dts := app.GenerateTypeScript()
+	sdk := app.GenerateTypeScriptSDK()
+
+	// 1. Verify timeoutMs in TypeScript declarations
+	if !strings.Contains(dts, "timeoutMs?: number;") {
+		t.Errorf("expected timeoutMs in RequestOptions/GotaClientOptions in dts")
+	}
+
+	// 2. Verify MULTIPART_ROUTES set generated in SDK
+	if !strings.Contains(sdk, `const MULTIPART_ROUTES: Set<string> = new Set(["POST /files/upload"]);`) {
+		t.Errorf("expected MULTIPART_ROUTES to contain POST /files/upload in SDK, got:\n%s", sdk)
+	}
+
+	// 3. Node runtime execution verification
+	if _, err := exec.LookPath("node"); err == nil {
+		testDir := t.TempDir()
+		sdkFile := filepath.Join(testDir, "sdk.ts")
+		runnerFile := filepath.Join(testDir, "run.ts")
+
+		if err := os.WriteFile(sdkFile, []byte(sdk), 0644); err != nil {
+			t.Fatalf("failed to write test sdk file: %v", err)
+		}
+
+		runnerScript := `
+import { createGotaClient } from "./sdk.ts";
+import assert from "node:assert";
+
+async function run() {
+  let requestedUrl = "";
+  let lastInit: any = null;
+
+  const client = createGotaClient("https://api.example.com", {
+    fetch: async (url: string, init: any) => {
+      requestedUrl = url;
+      lastInit = init;
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-type": "application/json" }),
+        text: async () => JSON.stringify({ success: true })
+      };
+    }
+  });
+
+  // Test 1: Query array serialization (tags=go&tags=ts&page=1)
+  await client.fetch("GET /search", {
+    query: { tags: ["go", "ts"], page: 1 } as any
+  });
+  assert.strictEqual(
+    requestedUrl,
+    "https://api.example.com/search?tags=go&tags=ts&page=1",
+    "should serialize query array as repeated keys"
+  );
+
+  // Test 2: Auto-convert plain object to FormData on multipart endpoint
+  const fakeBlob = new Blob(["content"], { type: "text/plain" });
+  await client.fetch("POST /files/upload", {
+    body: { title: "Doc", file: fakeBlob, tags: ["report", "2026"] } as any
+  });
+  assert.ok(lastInit.body instanceof FormData, "body should be automatically converted to FormData");
+  assert.strictEqual(lastInit.body.get("title"), "Doc");
+  assert.strictEqual(lastInit.body.getAll("tags").length, 2);
+  assert.deepStrictEqual(lastInit.body.getAll("tags"), ["report", "2026"]);
+  assert.ok(lastInit.body.get("file") instanceof Blob);
+  assert.strictEqual(lastInit.headers.has("Content-Type"), false, "Content-Type must not be forced so fetch creates boundary");
+
+  // Test 3: timeoutMs signal passed to fetch
+  await client.fetch("GET /search", {
+    timeoutMs: 5000
+  });
+  assert.ok(lastInit.signal instanceof AbortSignal, "signal should be configured for timeout");
+
+  console.log("BLOCK2_DX_PASSED");
+}
+
+run().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+`
+		if err := os.WriteFile(runnerFile, []byte(runnerScript), 0644); err != nil {
+			t.Fatalf("failed to write runner ts script: %v", err)
+		}
+
+		cmd := exec.Command("node", "--experimental-strip-types", runnerFile)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("node test execution failed: %v, output:\n%s", err, string(out))
+		}
+		if !strings.Contains(string(out), "BLOCK2_DX_PASSED") {
+			t.Fatalf("expected node tests to pass, got:\n%s", string(out))
+		}
+	}
+}
+
+func TestTypeScript_Block3InterceptorsAndRetry(t *testing.T) {
+	app := New(Config{
+		Title:   "Block 3 API",
+		Version: "1.0.0",
+	})
+
+	app.Get("/data", func(ctx *Context) error {
+		return ctx.Send("data")
+	}).Response(http.StatusOK, "data")
+
+	app.Get("/fail", func(ctx *Context) error {
+		return ctx.Status(http.StatusInternalServerError).Send("server error")
+	}).Response(http.StatusInternalServerError, "server error")
+
+	dts := app.GenerateTypeScript()
+	sdk := app.GenerateTypeScriptSDK()
+
+	// 1. Verify types generated
+	if !strings.Contains(dts, "onRequest?: (config: GotaRequestConfig) => void | Promise<void>;") {
+		t.Errorf("expected onRequest in dts")
+	}
+	if !strings.Contains(dts, "retry?: number | GotaRetryConfig;") {
+		t.Errorf("expected retry in dts")
+	}
+
+	// 2. Node runtime execution verification
+	if _, err := exec.LookPath("node"); err == nil {
+		testDir := t.TempDir()
+		sdkFile := filepath.Join(testDir, "sdk.ts")
+		runnerFile := filepath.Join(testDir, "run.ts")
+
+		if err := os.WriteFile(sdkFile, []byte(sdk), 0644); err != nil {
+			t.Fatalf("failed to write test sdk file: %v", err)
+		}
+
+		runnerScript := `
+import { createGotaClient, GotaHttpError } from "./sdk.ts";
+import assert from "node:assert";
+
+async function run() {
+  let requestHookCalled = false;
+  let responseHookCalled = false;
+  let errorHookCalled = false;
+
+  let failAttempts = 0;
+  const client = createGotaClient("https://api.example.com", {
+    onRequest: (config) => {
+      requestHookCalled = true;
+      config.init.headers.set("Authorization", "Bearer test-jwt-token");
+    },
+    onResponse: (res, config) => {
+      responseHookCalled = true;
+      if (config.endpoint === "GET /data") {
+        assert.strictEqual(res.status, 200);
+      }
+    },
+    onError: (err, config) => {
+      errorHookCalled = true;
+      assert.strictEqual(err.status, 500);
+      assert.strictEqual(config.endpoint, "GET /fail");
+    },
+    fetch: async (url: string, init: any) => {
+      if (url.includes("/data")) {
+        assert.strictEqual(init.headers.get("Authorization"), "Bearer test-jwt-token");
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ "content-type": "text/plain" }),
+          text: async () => "ok"
+        };
+      }
+      if (url.includes("/retry-success")) {
+        failAttempts++;
+        if (failAttempts === 1) {
+          return {
+            ok: false,
+            status: 503,
+            statusText: "Service Unavailable",
+            headers: new Headers({ "content-type": "text/plain" }),
+            text: async () => "try again"
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ "content-type": "application/json" }),
+          text: async () => JSON.stringify({ retried: true })
+        };
+      }
+      return {
+        ok: false,
+        status: 500,
+        statusText: "Internal Server Error",
+        headers: new Headers({ "content-type": "text/plain" }),
+        text: async () => "boom"
+      };
+    }
+  });
+
+  // Test 1: onRequest and onResponse hooks
+  const data = await client.fetch("GET /data");
+  assert.strictEqual(data, "ok");
+  assert.strictEqual(requestHookCalled, true, "onRequest hook should have been called");
+  assert.strictEqual(responseHookCalled, true, "onResponse hook should have been called");
+
+  // Test 2: onError hook on failure
+  let caught = false;
+  try {
+    await client.fetch("GET /fail");
+  } catch (err: any) {
+    caught = true;
+    assert.ok(err instanceof GotaHttpError);
+  }
+  assert.strictEqual(caught, true);
+  assert.strictEqual(errorHookCalled, true, "onError hook should have been called");
+
+  // Test 3: Retry mechanism with exponential backoff
+  failAttempts = 0;
+  const retryRes: any = await (client as any).fetch("GET /retry-success", {
+    retry: { attempts: 2, delayMs: 10, statusCodes: [503] }
+  });
+  assert.strictEqual(retryRes.retried, true);
+  assert.strictEqual(failAttempts, 2, "should have retried after initial 503 failure");
+
+  console.log("BLOCK3_PASSED");
+}
+
+run().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+`
+		if err := os.WriteFile(runnerFile, []byte(runnerScript), 0644); err != nil {
+			t.Fatalf("failed to write runner ts script: %v", err)
+		}
+
+		cmd := exec.Command("node", "--experimental-strip-types", runnerFile)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("node test execution failed: %v, output:\n%s", err, string(out))
+		}
+		if !strings.Contains(string(out), "BLOCK3_PASSED") {
+			t.Fatalf("expected node tests to pass, got:\n%s", string(out))
+		}
+	}
+}

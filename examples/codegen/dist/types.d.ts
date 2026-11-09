@@ -108,6 +108,18 @@ export interface NextFetchRequestConfig {
   tags?: string[];
 }
 
+export interface GotaRetryConfig {
+  attempts?: number;
+  delayMs?: number;
+  statusCodes?: number[];
+}
+
+export interface GotaRequestConfig {
+  endpoint: string;
+  url: string;
+  init: any;
+}
+
 export type RequestOptions<K extends EndpointKey> =
   (RequestParams<K> extends void ? { params?: never } : { params: RequestParams<K> }) &
   (RequestQuery<K> extends void ? { query?: never } : { query?: RequestQuery<K> }) &
@@ -117,6 +129,11 @@ export type RequestOptions<K extends EndpointKey> =
     signal?: AbortSignal;
     cache?: RequestCache;
     next?: NextFetchRequestConfig;
+    timeoutMs?: number;
+    retry?: number | GotaRetryConfig;
+    onRequest?: (config: GotaRequestConfig) => void | Promise<void>;
+    onResponse?: (response: Response, config: { endpoint: string; url: string }) => void | Promise<void>;
+    onError?: (error: GotaHttpError, config: { endpoint: string; url: string }) => void | Promise<void>;
   };
 
 export interface GotaClientOptions {
@@ -124,6 +141,11 @@ export interface GotaClientOptions {
   credentials?: RequestCredentials;
   cache?: RequestCache;
   next?: NextFetchRequestConfig;
+  timeoutMs?: number;
+  retry?: number | GotaRetryConfig;
+  onRequest?: (config: GotaRequestConfig) => void | Promise<void>;
+  onResponse?: (response: Response, config: { endpoint: string; url: string }) => void | Promise<void>;
+  onError?: (error: GotaHttpError, config: { endpoint: string; url: string }) => void | Promise<void>;
   fetch?: typeof fetch;
 }
 

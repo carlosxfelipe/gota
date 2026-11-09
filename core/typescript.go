@@ -485,7 +485,16 @@ func (g *TypeScriptGenerator) inspectRoute(rt *Node) routeTS {
 	// 2. Request Body
 	if rt.Doc.RequestBody != nil && rt.Doc.RequestBody.Model != nil {
 		if rt.Doc.RequestBody.ContentType == "multipart/form-data" {
-			r.bodyTS = "FormData"
+			mType := reflect.TypeOf(rt.Doc.RequestBody.Model)
+			for mType != nil && mType.Kind() == reflect.Pointer {
+				mType = mType.Elem()
+			}
+			if mType != nil && mType.Kind() == reflect.Struct && mType.NumField() > 0 {
+				tsType := g.typeToTS(mType, map[reflect.Type]bool{}, false)
+				r.bodyTS = "FormData | " + tsType
+			} else {
+				r.bodyTS = "FormData | Record<string, unknown>"
+			}
 		} else if rt.Doc.RequestBody.ContentType == "application/x-www-form-urlencoded" {
 			r.bodyTS = "URLSearchParams | Record<string, string | number | boolean>"
 		} else if strings.HasPrefix(rt.Doc.RequestBody.ContentType, "image/") ||
@@ -670,6 +679,18 @@ export interface NextFetchRequestConfig {
   tags?: string[];
 }
 
+export interface GotaRetryConfig {
+  attempts?: number;
+  delayMs?: number;
+  statusCodes?: number[];
+}
+
+export interface GotaRequestConfig {
+  endpoint: string;
+  url: string;
+  init: any;
+}
+
 export type RequestOptions<K extends EndpointKey> =
   (RequestParams<K> extends void ? { params?: never } : { params: RequestParams<K> }) &
   (RequestQuery<K> extends void ? { query?: never } : { query?: RequestQuery<K> }) &
@@ -679,6 +700,11 @@ export type RequestOptions<K extends EndpointKey> =
     signal?: AbortSignal;
     cache?: RequestCache;
     next?: NextFetchRequestConfig;
+    timeoutMs?: number;
+    retry?: number | GotaRetryConfig;
+    onRequest?: (config: GotaRequestConfig) => void | Promise<void>;
+    onResponse?: (response: Response, config: { endpoint: string; url: string }) => void | Promise<void>;
+    onError?: (error: GotaHttpError, config: { endpoint: string; url: string }) => void | Promise<void>;
   };
 
 export interface GotaClientOptions {
@@ -686,6 +712,11 @@ export interface GotaClientOptions {
   credentials?: RequestCredentials;
   cache?: RequestCache;
   next?: NextFetchRequestConfig;
+  timeoutMs?: number;
+  retry?: number | GotaRetryConfig;
+  onRequest?: (config: GotaRequestConfig) => void | Promise<void>;
+  onResponse?: (response: Response, config: { endpoint: string; url: string }) => void | Promise<void>;
+  onError?: (error: GotaHttpError, config: { endpoint: string; url: string }) => void | Promise<void>;
   fetch?: typeof fetch;
 }
 
@@ -717,6 +748,24 @@ export declare function createGotaClient(baseUrl?: string, clientOptions?: GotaC
 func (g *TypeScriptGenerator) GenerateSDK(routes []*Node) string {
 	tsDefs := g.Generate(routes)
 
+	var multipartKeys []string
+	var formKeys []string
+	for _, rt := range routes {
+		if rt.Doc != nil && rt.Doc.RequestBody != nil {
+			key := fmt.Sprintf("%s %s", strings.ToUpper(rt.Method), rt.FullPath)
+			if rt.Doc.RequestBody.ContentType == "multipart/form-data" {
+				multipartKeys = append(multipartKeys, fmt.Sprintf("%q", key))
+			} else if rt.Doc.RequestBody.ContentType == "application/x-www-form-urlencoded" {
+				formKeys = append(formKeys, fmt.Sprintf("%q", key))
+			}
+		}
+	}
+	sort.Strings(multipartKeys)
+	sort.Strings(formKeys)
+
+	multipartInit := strings.Join(multipartKeys, ", ")
+	formInit := strings.Join(formKeys, ", ")
+
 	// Replace the declarations with the actual implementation
 	decl := `export declare class GotaHttpError<T = unknown> extends Error {
   readonly status: number;
@@ -728,16 +777,28 @@ func (g *TypeScriptGenerator) GenerateSDK(routes []*Node) string {
 
 export declare function createGotaClient(baseUrl?: string, clientOptions?: GotaClientOptions): GotaClient;
 `
-	impl := `export class GotaHttpError<T = unknown> extends Error {
+	impl := fmt.Sprintf(`const MULTIPART_ROUTES: Set<string> = new Set([%s]);
+const FORM_ROUTES: Set<string> = new Set([%s]);
+
+export class GotaHttpError<T = unknown> extends Error {
   readonly status: number;
   readonly statusText: string;
   readonly data: T;
   readonly headers?: Headers;
 
   constructor(status: number, statusText: string, data: T, headers?: Headers) {
-    const message = (data && typeof data === "object" && ("message" in data || "error" in data))
-      ? String((data as any).message || (data as any).error)
-      : statusText || ("HTTP Error " + status);
+    let message = statusText || ("HTTP Error " + status);
+    if (data && typeof data === "object") {
+      const d = data as Record<string, unknown>;
+      if (typeof d.message === "string" && d.message) message = d.message;
+      else if (typeof d.error === "string" && d.error) message = d.error;
+      else if (typeof d.detail === "string" && d.detail) message = d.detail;
+      else if (Array.isArray(d.detail) && d.detail.length > 0) message = "Validation error: " + JSON.stringify(d.detail);
+      else if (Array.isArray(d.errors) && d.errors.length > 0) message = "Validation error: " + JSON.stringify(d.errors);
+      else if (typeof d.title === "string" && d.title) message = d.title;
+    } else if (typeof data === "string" && data.trim()) {
+      message = data.trim();
+    }
     super(message);
     this.name = "GotaHttpError";
     this.status = status;
@@ -761,7 +822,7 @@ export function createGotaClient(baseUrl = "", clientOptions: GotaClientOptions 
           const v = options.params[k];
           if (v !== undefined && v !== null) {
             path = path.replace(":" + k, encodeURIComponent(String(v)));
-            path = path.replace("*" + k, String(v));
+            path = path.replace("*" + k, String(v).split("/").map(encodeURIComponent).join("/"));
           }
         }
       }
@@ -774,7 +835,14 @@ export function createGotaClient(baseUrl = "", clientOptions: GotaClientOptions 
       if (options.query) {
         const q = new URLSearchParams();
         for (const [k, v] of Object.entries(options.query)) {
-          if (v !== undefined && v !== null) {
+          if (v === undefined || v === null) continue;
+          if (Array.isArray(v)) {
+            for (const item of v) {
+              if (item !== undefined && item !== null) {
+                q.append(k, String(item));
+              }
+            }
+          } else {
             q.set(k, String(v));
           }
         }
@@ -804,11 +872,74 @@ export function createGotaClient(baseUrl = "", clientOptions: GotaClientOptions 
         } else if (typeof ReadableStream !== "undefined" && options.body instanceof ReadableStream) {
           body = options.body;
           duplex = "half";
-        } else {
-          if (!headers.has("Content-Type")) {
-            headers.set("Content-Type", "application/json");
+        } else if (options.body !== null && typeof options.body === "object") {
+          const isPlain = (options.body as any).constructor === Object || !(options.body as any).constructor;
+          const hasBlob = isPlain && Object.values(options.body).some((val: any) =>
+            (typeof Blob !== "undefined" && val instanceof Blob) ||
+            (Array.isArray(val) && val.some((item: any) => typeof Blob !== "undefined" && item instanceof Blob))
+          );
+          const ctypeHeader = headers.get("Content-Type") || "";
+          const isMultipart = MULTIPART_ROUTES.has(endpoint) || hasBlob || ctypeHeader.includes("multipart/form-data");
+          const isFormUrl = FORM_ROUTES.has(endpoint) || ctypeHeader.includes("application/x-www-form-urlencoded");
+
+          if (isMultipart && typeof FormData !== "undefined") {
+            const form = new FormData();
+            for (const [k, v] of Object.entries(options.body)) {
+              if (v === undefined || v === null) continue;
+              if (Array.isArray(v)) {
+                for (const item of v) {
+                  if (item !== undefined && item !== null) form.append(k, item as any);
+                }
+              } else {
+                form.append(k, v as any);
+              }
+            }
+            body = form;
+            headers.delete("Content-Type");
+          } else if (isFormUrl && typeof URLSearchParams !== "undefined") {
+            const form = new URLSearchParams();
+            for (const [k, v] of Object.entries(options.body)) {
+              if (v === undefined || v === null) continue;
+              if (Array.isArray(v)) {
+                for (const item of v) {
+                  if (item !== undefined && item !== null) form.append(k, String(item));
+                }
+              } else {
+                form.set(k, String(v));
+              }
+            }
+            body = form;
+          } else {
+            if (!headers.has("Content-Type")) {
+              headers.set("Content-Type", "application/json");
+            }
+            body = JSON.stringify(options.body);
           }
-          body = JSON.stringify(options.body);
+        } else {
+          body = options.body;
+        }
+      }
+      const timeout = options.timeoutMs ?? clientOptions.timeoutMs;
+      let signal: AbortSignal | undefined = options.signal;
+      if (timeout && typeof AbortSignal !== "undefined") {
+        const timeoutSignal = typeof AbortSignal.timeout === "function"
+          ? AbortSignal.timeout(timeout)
+          : (() => {
+              const controller = new AbortController();
+              setTimeout(() => controller.abort(new DOMException("The operation timed out.", "TimeoutError")), timeout);
+              return controller.signal;
+            })();
+        if (signal) {
+          if (typeof (AbortSignal as any).any === "function") {
+            signal = (AbortSignal as any).any([signal, timeoutSignal]);
+          } else {
+            const controller = new AbortController();
+            signal.addEventListener("abort", () => controller.abort(signal?.reason));
+            timeoutSignal.addEventListener("abort", () => controller.abort(timeoutSignal.reason));
+            signal = controller.signal;
+          }
+        } else {
+          signal = timeoutSignal;
         }
       }
       const fetchFn = clientOptions.fetch || fetch;
@@ -817,7 +948,7 @@ export function createGotaClient(baseUrl = "", clientOptions: GotaClientOptions 
         headers,
         body,
         credentials: options.credentials ?? clientOptions.credentials,
-        signal: options.signal,
+        signal,
         cache: options.cache ?? clientOptions.cache,
       };
       const nextConfig = options.next ?? clientOptions.next;
@@ -827,14 +958,94 @@ export function createGotaClient(baseUrl = "", clientOptions: GotaClientOptions 
       if (duplex) {
         fetchInit.duplex = duplex;
       }
-      const res = await fetchFn(url, fetchInit);
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ message: res.statusText }));
-        throw new GotaHttpError(res.status, res.statusText, err, res.headers);
+
+      const reqConfig = { endpoint, url, init: fetchInit };
+      const onRequest = options.onRequest ?? clientOptions.onRequest;
+      if (onRequest) {
+        await onRequest(reqConfig);
       }
-      if (res.status === 204 || res.status === 205) return undefined as any;
+
+      const retryOpt = options.retry ?? clientOptions.retry;
+      let maxAttempts = 1;
+      let baseDelay = 300;
+      let retryStatuses = [408, 429, 500, 502, 503, 504];
+      if (typeof retryOpt === "number" && retryOpt > 0) {
+        maxAttempts = 1 + retryOpt;
+      } else if (typeof retryOpt === "object" && retryOpt !== null) {
+        if (typeof retryOpt.attempts === "number" && retryOpt.attempts > 0) {
+          maxAttempts = 1 + retryOpt.attempts;
+        }
+        if (typeof retryOpt.delayMs === "number" && retryOpt.delayMs >= 0) {
+          baseDelay = retryOpt.delayMs;
+        }
+        if (Array.isArray(retryOpt.statusCodes)) {
+          retryStatuses = retryOpt.statusCodes;
+        }
+      }
+
+      let lastRes: Response | undefined = undefined;
+      let attempt = 0;
+      while (true) {
+        try {
+          const res = await fetchFn(url, fetchInit);
+          lastRes = res;
+          if (!res.ok && attempt < maxAttempts - 1 && retryStatuses.includes(res.status)) {
+            attempt++;
+            let delay = baseDelay * Math.pow(2, attempt - 1);
+            const retryAfter = res.headers ? res.headers.get("Retry-After") : null;
+            if (retryAfter) {
+              const seconds = parseInt(retryAfter, 10);
+              if (!isNaN(seconds)) delay = seconds * 1000;
+            }
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            continue;
+          }
+          break;
+        } catch (fetchErr: any) {
+          if (attempt < maxAttempts - 1 && (!signal || !signal.aborted)) {
+            attempt++;
+            const delay = baseDelay * Math.pow(2, attempt - 1);
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            continue;
+          }
+          throw fetchErr;
+        }
+      }
+      const res = lastRes!;
+
+      const onResponse = options.onResponse ?? clientOptions.onResponse;
+      if (onResponse) {
+        await onResponse(res, { endpoint, url });
+      }
+
+      if (!res.ok) {
+        let err: any;
+        if (typeof res.text === "function") {
+          const text = await res.text().catch(() => "");
+          try {
+            err = text ? JSON.parse(text) : { message: res.statusText };
+          } catch {
+            err = text ? { message: text } : { message: res.statusText };
+          }
+        } else if (typeof res.json === "function") {
+          err = await res.json().catch(() => ({ message: res.statusText }));
+        } else {
+          err = { message: res.statusText };
+        }
+        const httpErr = new GotaHttpError(res.status, res.statusText, err, res.headers);
+        const onError = options.onError ?? clientOptions.onError;
+        if (onError) {
+          await onError(httpErr, { endpoint, url });
+        }
+        throw httpErr;
+      }
+      if (res.status === 204 || res.status === 205 || res.headers.get("content-length") === "0") return undefined as any;
       const ctype = res.headers.get("content-type") || "";
       if (ctype.includes("application/json") || ctype.includes("+json")) {
+        if (typeof res.text === "function") {
+          const text = await res.text();
+          return (text ? JSON.parse(text) : undefined) as any;
+        }
         return res.json();
       }
       if (ctype.includes("text/event-stream") && res.body) {
@@ -854,7 +1065,7 @@ export function createGotaClient(baseUrl = "", clientOptions: GotaClientOptions 
     }
   };
 }
-`
+`, multipartInit, formInit)
 
 	return strings.Replace(tsDefs, decl, impl, 1)
 }
