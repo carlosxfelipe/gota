@@ -700,6 +700,71 @@ func (a *App) ExportTypeScriptSDK(filepath string) error {
 	return os.WriteFile(filepath, []byte(a.GenerateTypeScriptSDK()), 0644)
 }
 
+// RunCodegen processes CLI arguments (e.g. from os.Args[1:]) to export TypeScript SDK and type definitions.
+// Flags supported:
+//
+//	--ts-sdk=<path>   writes full client SDK (.ts) to path
+//	--ts-types=<path> writes TypeScript definitions (.d.ts) to path
+//	--stdout          writes full SDK (.ts) or definitions (--types-only) to standard output
+//	--types-only      when combined with --stdout, writes definitions instead of full SDK
+//
+// Returns true if any codegen flag was matched and processed.
+func (a *App) RunCodegen(args []string) (bool, error) {
+	sdkPath := ""
+	typesPath := ""
+	stdout := false
+	typesOnly := false
+	matched := false
+
+	for _, arg := range args {
+		switch {
+		case strings.HasPrefix(arg, "--ts-sdk="):
+			sdkPath = strings.TrimPrefix(arg, "--ts-sdk=")
+			matched = true
+		case arg == "--ts-sdk":
+			sdkPath = "./dist/sdk.ts"
+			matched = true
+		case strings.HasPrefix(arg, "--ts-types="):
+			typesPath = strings.TrimPrefix(arg, "--ts-types=")
+			matched = true
+		case arg == "--ts-types":
+			typesPath = "./dist/types.d.ts"
+			matched = true
+		case arg == "--stdout":
+			stdout = true
+			matched = true
+		case arg == "--types-only":
+			typesOnly = true
+		}
+	}
+
+	if !matched {
+		return false, nil
+	}
+
+	if stdout {
+		content := a.GenerateTypeScriptSDK()
+		if typesOnly {
+			content = a.GenerateTypeScript()
+		}
+		os.Stdout.WriteString(content)
+		return true, nil
+	}
+
+	if sdkPath != "" {
+		if err := a.ExportTypeScriptSDK(sdkPath); err != nil {
+			return true, fmt.Errorf("failed to export TypeScript SDK: %w", err)
+		}
+	}
+	if typesPath != "" {
+		if err := a.ExportTypeScript(typesPath); err != nil {
+			return true, fmt.Errorf("failed to export TypeScript definitions: %w", err)
+		}
+	}
+
+	return true, nil
+}
+
 // UseDocs appends middlewares executed specifically for documentation routes (DocsURL and OpenAPIURL).
 // Middlewares are executed after global middlewares (app.Use).
 // Use it to restrict access to documentation with BasicAuth, JWT, IP filtering, etc.

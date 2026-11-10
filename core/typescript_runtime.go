@@ -1,0 +1,491 @@
+package core
+
+// TypeScript runtime templates emitted into the generated declarations (.d.ts) and SDK (.ts).
+//
+// Constraints for the TypeScript below, so the output works everywhere:
+//   - zero dependencies: only fetch, Headers, URLSearchParams, FormData, AbortController;
+//   - "erasable" syntax only (no enums, namespaces or parameter properties), so the SDK runs
+//     directly with `node sdk.ts` (type stripping), Deno, Bun and any bundler;
+//   - compiles under `strict`, `exactOptionalPropertyTypes` and `noUncheckedIndexedAccess`;
+//   - no template literals (backticks), since the templates live in Go raw strings.
+//
+// The rendered file is: header + schemas + GotaEndpoints + tsRuntimeTypes, followed by either
+// tsRuntimeDeclarations (.d.ts) or the BODY_ENCODINGS table + tsRuntimeImplementation (.ts).
+
+// tsRuntimeExportedNames lists every name exported (or declared at top level) by the runtime.
+// Generated schema types must never shadow them.
+var tsRuntimeExportedNames = []string{
+	"GotaEndpoints",
+	"EndpointKey",
+	"RequestParams",
+	"RequestQuery",
+	"RequestBody",
+	"ResponseData",
+	"ResponseError",
+	"NextFetchRequestConfig",
+	"GotaRetryConfig",
+	"GotaRequestInit",
+	"GotaRequestConfig",
+	"GotaResponseContext",
+	"BaseRequestOptions",
+	"RequestOptions",
+	"BodyEncoding",
+	"GotaClientOptions",
+	"GotaClient",
+	"GotaHttpError",
+	"createGotaClient",
+	// Internal (non-exported) runtime identifiers.
+	"RawRequestOptions",
+	"FormEntry",
+	"BODY_ENCODINGS",
+}
+
+const tsRuntimeTypes = `export type EndpointKey = keyof GotaEndpoints;
+
+export type RequestParams<K extends EndpointKey> = GotaEndpoints[K]["params"];
+export type RequestQuery<K extends EndpointKey> = GotaEndpoints[K]["query"];
+export type RequestBody<K extends EndpointKey> = GotaEndpoints[K]["body"];
+export type ResponseData<K extends EndpointKey> = GotaEndpoints[K]["response"];
+export type ResponseError<K extends EndpointKey> = GotaEndpoints[K]["error"];
+
+export interface NextFetchRequestConfig {
+  revalidate?: number | false;
+  tags?: string[];
+}
+
+export interface GotaRetryConfig {
+  /** Maximum number of retry attempts (in addition to the initial request). */
+  attempts?: number;
+  /** Base delay in milliseconds for the exponential backoff (default: 300). */
+  delayMs?: number;
+  /** HTTP status codes that trigger a retry (default: [408, 429, 500, 502, 503, 504]). */
+  statusCodes?: number[];
+  /** HTTP methods eligible for retries (default: idempotent methods GET, HEAD, OPTIONS, PUT, DELETE). */
+  methods?: string[];
+}
+
+/** The RequestInit handed to fetch (headers are always a Headers instance). */
+export interface GotaRequestInit extends RequestInit {
+  headers: Headers;
+  next?: NextFetchRequestConfig;
+  duplex?: "half";
+}
+
+export interface GotaRequestConfig {
+  endpoint: string;
+  url: string;
+  init: GotaRequestInit;
+}
+
+export interface GotaResponseContext {
+  endpoint: string;
+  url: string;
+}
+
+export interface BaseRequestOptions {
+  headers?: Record<string, string>;
+  credentials?: RequestCredentials;
+  signal?: AbortSignal;
+  cache?: RequestCache;
+  next?: NextFetchRequestConfig;
+  duplex?: "half";
+  timeoutMs?: number;
+  retry?: number | GotaRetryConfig;
+  onRequest?: (config: GotaRequestConfig) => void | Promise<void>;
+  onResponse?: (response: Response, config: GotaResponseContext) => void | Promise<void>;
+  onError?: (error: GotaHttpError | Error, config: GotaResponseContext) => void | Promise<void>;
+}
+
+export type RequestOptions<K extends EndpointKey> = GotaEndpoints[K]["request"] & BaseRequestOptions;
+
+export type BodyEncoding = "json" | "form" | "multipart" | "raw";
+
+export interface GotaClientOptions {
+  /** Static headers, or a (sync/async) callback evaluated on every request (e.g. JWT). */
+  headers?: Record<string, string> | (() => Record<string, string> | Promise<Record<string, string>>);
+  credentials?: RequestCredentials;
+  cache?: RequestCache;
+  /** Default Next.js App Router cache configuration (revalidate / tags). */
+  next?: NextFetchRequestConfig;
+  /** Default request timeout in milliseconds. */
+  timeoutMs?: number;
+  /** Default retry policy (network errors or retryable status codes on idempotent methods). */
+  retry?: number | GotaRetryConfig;
+  onRequest?: (config: GotaRequestConfig) => void | Promise<void>;
+  onResponse?: (response: Response, config: GotaResponseContext) => void | Promise<void>;
+  onError?: (error: GotaHttpError | Error, config: GotaResponseContext) => void | Promise<void>;
+  /** Custom fetch implementation (defaults to the global fetch). */
+  fetch?: typeof fetch;
+}
+
+export interface GotaClient {
+  readonly baseUrl: string;
+  fetch<K extends EndpointKey>(
+    endpoint: K,
+    ...args: {} extends GotaEndpoints[K]["request"]
+      ? [options?: RequestOptions<K>]
+      : [options: RequestOptions<K>]
+  ): Promise<ResponseData<K>>;
+}
+`
+
+const tsRuntimeDeclarations = `
+export declare class GotaHttpError<T = unknown> extends Error {
+  readonly status: number;
+  readonly statusText: string;
+  readonly data: T;
+  readonly headers: Headers;
+  readonly response: Response | undefined;
+  constructor(status: number, statusText: string, data: T, headers?: Headers, response?: Response);
+}
+
+export declare function createGotaClient(baseUrl?: string, clientOptions?: GotaClientOptions): GotaClient;
+`
+
+const tsRuntimeImplementation = `
+const DEFAULT_RETRY_STATUSES = [408, 429, 500, 502, 503, 504];
+const DEFAULT_RETRY_METHODS = ["GET", "HEAD", "OPTIONS", "PUT", "DELETE"];
+
+export class GotaHttpError<T = unknown> extends Error {
+  readonly status: number;
+  readonly statusText: string;
+  readonly data: T;
+  readonly headers: Headers;
+  readonly response: Response | undefined;
+
+  constructor(status: number, statusText: string, data: T, headers?: Headers, response?: Response) {
+    super(errorMessage(data, statusText || "HTTP Error " + status));
+    this.name = "GotaHttpError";
+    this.status = status;
+    this.statusText = statusText;
+    this.data = data;
+    this.headers = headers ?? new Headers();
+    this.response = response;
+    Object.setPrototypeOf(this, GotaHttpError.prototype);
+  }
+}
+
+type FormEntry = [string, string | Blob];
+
+interface RawRequestOptions extends BaseRequestOptions {
+  params?: Record<string, unknown>;
+  query?: Record<string, unknown>;
+  body?: unknown;
+}
+
+function errorMessage(data: unknown, fallback: string): string {
+  if (typeof data === "string" && data.trim()) return data.trim();
+  if (data && typeof data === "object") {
+    const d = data as Record<string, unknown>;
+    if (typeof d["message"] === "string" && d["message"]) return d["message"];
+    if (typeof d["error"] === "string" && d["error"]) return d["error"];
+    if (typeof d["detail"] === "string" && d["detail"]) return d["detail"];
+    if (Array.isArray(d["detail"]) && d["detail"].length > 0) return "Validation error: " + JSON.stringify(d["detail"]);
+    if (Array.isArray(d["errors"]) && d["errors"].length > 0) return "Validation error: " + JSON.stringify(d["errors"]);
+    if (typeof d["title"] === "string" && d["title"]) return d["title"];
+  }
+  return fallback;
+}
+
+function isBlob(value: unknown): value is Blob {
+  return typeof Blob !== "undefined" && value instanceof Blob;
+}
+
+function isReadableStream(value: unknown): value is ReadableStream {
+  return typeof ReadableStream !== "undefined" && value instanceof ReadableStream;
+}
+
+function isBodyInit(body: unknown): body is BodyInit {
+  return (
+    (typeof FormData !== "undefined" && body instanceof FormData) ||
+    (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams) ||
+    isBlob(body) ||
+    isReadableStream(body) ||
+    (typeof ArrayBuffer !== "undefined" && (body instanceof ArrayBuffer || ArrayBuffer.isView(body)))
+  );
+}
+
+function appendQueryParam(search: URLSearchParams, key: string, value: unknown): void {
+  if (value === undefined || value === null) return;
+  if (Array.isArray(value)) {
+    for (const item of value) appendQueryParam(search, key, item);
+  } else if (value instanceof Date) {
+    search.append(key, value.toISOString());
+  } else if (typeof value === "object") {
+    search.append(key, JSON.stringify(value));
+  } else {
+    search.append(key, String(value));
+  }
+}
+
+function collectEntries(key: string, value: unknown, out: FormEntry[]): void {
+  if (value === undefined || value === null) return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectEntries(key, item, out);
+  } else if (isBlob(value)) {
+    out.push([key, value]);
+  } else if (value instanceof Date) {
+    out.push([key, value.toISOString()]);
+  } else if (typeof value === "object") {
+    out.push([key, JSON.stringify(value)]);
+  } else {
+    out.push([key, String(value)]);
+  }
+}
+
+function toEntries(source: object): FormEntry[] {
+  const out: FormEntry[] = [];
+  for (const [key, value] of Object.entries(source)) collectEntries(key, value, out);
+  return out;
+}
+
+function hasBlobValue(source: object): boolean {
+  return Object.values(source).some((value) => isBlob(value) || (Array.isArray(value) && value.some(isBlob)));
+}
+
+function resolvePath(endpoint: string, template: string, params: Record<string, unknown>): string {
+  return template
+    .split("/")
+    .map((segment) => {
+      const kind = segment.charAt(0);
+      if (kind !== ":" && kind !== "*") return segment;
+      const name = segment.slice(1) || "wildcard";
+      const value = params[name];
+      if (value === undefined || value === null) {
+        throw new Error("Missing required path parameter \"" + name + "\" for " + endpoint);
+      }
+      if (kind === "*") {
+        const parts = Array.isArray(value) ? value.map(String) : String(value).replace(/^\/+/, "").split("/");
+        return parts.map(encodeURIComponent).join("/");
+      }
+      return encodeURIComponent(String(value));
+    })
+    .join("/");
+}
+
+function encodeBody(endpoint: string, body: unknown, headers: Headers): BodyInit {
+  if (isBodyInit(body)) return body;
+  const encoding = BODY_ENCODINGS[endpoint] ?? "json";
+  const contentType = headers.get("Content-Type") ?? "";
+  if (body !== null && typeof body === "object") {
+    if (encoding === "multipart" || contentType.includes("multipart/form-data") || hasBlobValue(body)) {
+      const form = new FormData();
+      for (const [key, value] of toEntries(body)) form.append(key, value);
+      headers.delete("Content-Type"); // let fetch set the multipart boundary
+      return form;
+    }
+    if (encoding === "form" || contentType.includes("application/x-www-form-urlencoded")) {
+      const form = new URLSearchParams();
+      for (const [key, value] of toEntries(body)) {
+        if (typeof value === "string") form.append(key, value);
+      }
+      return form;
+    }
+  }
+  if (typeof body === "string" && (encoding === "raw" || (contentType !== "" && !contentType.includes("json")))) {
+    return body;
+  }
+  if (!contentType) headers.set("Content-Type", "application/json");
+  return JSON.stringify(body);
+}
+
+function createTimeoutSignal(timeoutMs: number | undefined): AbortSignal | undefined {
+  if (timeoutMs === undefined || timeoutMs <= 0 || typeof AbortController === "undefined") return undefined;
+  if (typeof AbortSignal.timeout === "function") return AbortSignal.timeout(timeoutMs);
+  const controller = new AbortController();
+  const timer: unknown = setTimeout(
+    () => controller.abort(new DOMException("The operation timed out.", "TimeoutError")),
+    timeoutMs
+  );
+  // Do not keep Node.js processes alive just because of a pending timeout.
+  if (timer && typeof timer === "object" && "unref" in timer && typeof timer.unref === "function") timer.unref();
+  return controller.signal;
+}
+
+function combineSignals(a: AbortSignal | undefined, b: AbortSignal | undefined): AbortSignal | undefined {
+  if (!a) return b;
+  if (!b) return a;
+  const any = (AbortSignal as { any?: (signals: AbortSignal[]) => AbortSignal }).any;
+  if (typeof any === "function") return any.call(AbortSignal, [a, b]);
+  const controller = new AbortController();
+  const cleanup = () => {
+    a.removeEventListener("abort", onAbortA);
+    b.removeEventListener("abort", onAbortB);
+  };
+  const onAbortA = () => {
+    cleanup();
+    controller.abort(a.reason);
+  };
+  const onAbortB = () => {
+    cleanup();
+    controller.abort(b.reason);
+  };
+  if (a.aborted) controller.abort(a.reason);
+  else if (b.aborted) controller.abort(b.reason);
+  else {
+    a.addEventListener("abort", onAbortA, { once: true });
+    b.addEventListener("abort", onAbortB, { once: true });
+  }
+  return controller.signal;
+}
+
+function retryDelay(baseDelay: number, attempt: number, response?: Response): number {
+  let delay = baseDelay * Math.pow(2, attempt - 1) * (0.5 + Math.random() * 0.5);
+  const retryAfter = response?.headers?.get("Retry-After");
+  if (retryAfter) {
+    const seconds = parseInt(retryAfter, 10);
+    if (!isNaN(seconds)) {
+      delay = seconds * 1000;
+    } else {
+      const dateMs = Date.parse(retryAfter);
+      if (!isNaN(dateMs)) delay = Math.max(0, dateMs - Date.now());
+    }
+  }
+  return delay;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function readErrorBody(res: Response): Promise<unknown> {
+  if (typeof res.text === "function") {
+    const text = await res.text().catch(() => "");
+    try {
+      return text ? JSON.parse(text) : { message: res.statusText };
+    } catch {
+      return { message: text || res.statusText };
+    }
+  }
+  if (typeof res.json === "function") {
+    return res.json().catch(() => ({ message: res.statusText }));
+  }
+  return { message: res.statusText };
+}
+
+async function readBody(res: Response): Promise<unknown> {
+  if (res.status === 204 || res.status === 205 || res.headers.get("content-length") === "0") return undefined;
+  const contentType = res.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json") || contentType.includes("+json")) {
+    if (typeof res.text === "function") {
+      const text = await res.text();
+      return text ? JSON.parse(text) : undefined;
+    }
+    return res.json();
+  }
+  if (contentType.includes("text/event-stream") && res.body) {
+    return typeof TextDecoderStream !== "undefined" ? res.body.pipeThrough(new TextDecoderStream()) : res.body;
+  }
+  const isBinary = /^(image|audio|video)\/|application\/(octet-stream|pdf|zip|gzip|vnd\.|x-)/.test(contentType);
+  if (isBinary && typeof res.blob === "function") return res.blob();
+  if (contentType.startsWith("text/") || contentType.includes("xml")) return res.text();
+  if (typeof res.blob === "function") return res.blob();
+  return res.text();
+}
+
+export function createGotaClient(baseUrl = "", clientOptions: GotaClientOptions = {}): GotaClient {
+  const root = baseUrl.replace(/\/+$/, "");
+
+  async function request(endpoint: string, options: RawRequestOptions): Promise<unknown> {
+    const separator = endpoint.indexOf(" ");
+    const method = endpoint.slice(0, separator);
+    const template = endpoint.slice(separator + 1);
+    const path = resolvePath(endpoint, template, options.params ?? {});
+
+    let url = root + (path.startsWith("/") ? path : "/" + path);
+    if (options.query) {
+      const search = new URLSearchParams();
+      for (const [key, value] of Object.entries(options.query)) appendQueryParam(search, key, value);
+      const qs = search.toString();
+      if (qs) url += (url.includes("?") ? "&" : "?") + qs;
+    }
+
+    const baseHeaders = typeof clientOptions.headers === "function" ? await clientOptions.headers() : clientOptions.headers;
+    const headers = new Headers(baseHeaders);
+    if (options.headers) {
+      for (const [key, value] of Object.entries(options.headers)) headers.set(key, String(value));
+    }
+
+    const init: GotaRequestInit = { method, headers };
+    if (options.body !== undefined) {
+      init.body = encodeBody(endpoint, options.body, headers);
+    }
+    const credentials = options.credentials ?? clientOptions.credentials;
+    if (credentials) init.credentials = credentials;
+    const cache = options.cache ?? clientOptions.cache;
+    if (cache) init.cache = cache;
+    const next = options.next ?? clientOptions.next;
+    if (next) init.next = next;
+    const duplex = options.duplex ?? (isReadableStream(init.body) ? "half" : undefined);
+    if (duplex) init.duplex = duplex;
+
+    const signal = combineSignals(options.signal, createTimeoutSignal(options.timeoutMs ?? clientOptions.timeoutMs));
+    if (signal) init.signal = signal;
+
+    const onRequest = options.onRequest ?? clientOptions.onRequest;
+    if (onRequest) await onRequest({ endpoint, url, init });
+
+    const retryOpt = options.retry ?? clientOptions.retry;
+    let maxAttempts = 1;
+    let baseDelay = 300;
+    let retryStatuses = DEFAULT_RETRY_STATUSES;
+    let retryMethods = DEFAULT_RETRY_METHODS;
+    if (typeof retryOpt === "number" && retryOpt > 0) {
+      maxAttempts = 1 + retryOpt;
+    } else if (typeof retryOpt === "object" && retryOpt !== null) {
+      if (typeof retryOpt.attempts === "number" && retryOpt.attempts > 0) maxAttempts = 1 + retryOpt.attempts;
+      if (typeof retryOpt.delayMs === "number" && retryOpt.delayMs >= 0) baseDelay = retryOpt.delayMs;
+      if (Array.isArray(retryOpt.statusCodes)) retryStatuses = retryOpt.statusCodes;
+      if (Array.isArray(retryOpt.methods)) retryMethods = retryOpt.methods.map((m) => m.toUpperCase());
+    }
+    if (!retryMethods.includes(method.toUpperCase())) maxAttempts = 1;
+
+    const fetchFn = clientOptions.fetch ?? globalThis.fetch.bind(globalThis);
+    let res: Response;
+    let attempt = 0;
+    while (true) {
+      try {
+        res = await fetchFn(url, init);
+      } catch (fetchErr) {
+        if (attempt < maxAttempts - 1 && !init.signal?.aborted) {
+          attempt++;
+          await sleep(retryDelay(baseDelay, attempt));
+          continue;
+        }
+        const errObj = fetchErr instanceof Error ? fetchErr : new Error(String(fetchErr));
+        const onError = options.onError ?? clientOptions.onError;
+        if (onError) await onError(errObj, { endpoint, url });
+        throw fetchErr;
+      }
+      if (!res.ok && attempt < maxAttempts - 1 && retryStatuses.includes(res.status) && !init.signal?.aborted) {
+        attempt++;
+        await sleep(retryDelay(baseDelay, attempt, res));
+        continue;
+      }
+      break;
+    }
+
+    const context: GotaResponseContext = { endpoint, url };
+    const onResponse = options.onResponse ?? clientOptions.onResponse;
+    if (onResponse) await onResponse(res, context);
+
+    if (!res.ok) {
+      const data = await readErrorBody(res);
+      const httpErr = new GotaHttpError(res.status, res.statusText, data, res.headers, res);
+      const onError = options.onError ?? clientOptions.onError;
+      if (onError) await onError(httpErr, context);
+      throw httpErr;
+    }
+    return readBody(res);
+  }
+
+  const client: GotaClient = {
+    baseUrl: root,
+    fetch(endpoint, ...args) {
+      const [options] = args as unknown as [RawRequestOptions?];
+      return request(String(endpoint), options ?? {}) as Promise<never>;
+    },
+  };
+  return client;
+}
+`

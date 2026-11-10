@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -32,6 +33,8 @@ var loggedSensitiveWarnings sync.Map
 func IsSensitiveFieldName(name string) (bool, string) {
 	lower := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(name, "_", ""), "-", ""))
 	switch {
+	case lower == "password" || lower == "passwd":
+		return true, "plaintext password"
 	case strings.Contains(lower, "passwordhash") || strings.Contains(lower, "passwdhash") || strings.Contains(lower, "pwdhash") || strings.Contains(lower, "passhash"):
 		return true, "password hash"
 	case strings.Contains(lower, "passwordsalt") || lower == "salt":
@@ -40,9 +43,9 @@ func IsSensitiveFieldName(name string) (bool, string) {
 		return true, "secret key"
 	case strings.Contains(lower, "privatekey") || strings.Contains(lower, "signingkey") || strings.Contains(lower, "encryptionkey") || strings.Contains(lower, "masterkey"):
 		return true, "private/cryptographic key"
-	case strings.Contains(lower, "resettoken") || strings.Contains(lower, "refreshtoken") || strings.Contains(lower, "authtoken") || strings.Contains(lower, "sessiontoken"):
+	case strings.Contains(lower, "resettoken") || strings.Contains(lower, "refreshtoken") || strings.Contains(lower, "authtoken") || strings.Contains(lower, "sessiontoken") || strings.Contains(lower, "bearertoken"):
 		return true, "authentication/session token"
-	case lower == "cvv" || lower == "cvc" || lower == "cardcvv" || lower == "cardpin":
+	case lower == "cvv" || lower == "cvc" || lower == "cardcvv" || lower == "cardpin" || lower == "securitycode" || lower == "cardsecuritycode":
 		return true, "payment security code"
 	default:
 		return false, ""
@@ -110,39 +113,191 @@ func auditModelRecursive(t reflect.Type, seen map[reflect.Type]bool, warnings *[
 	}
 }
 
+// AuditRoutes scans all documented responses of registered routes for sensitive fields
+// inadvertently exposed in API response contracts without `json:"-"` or `form:"-"`.
+// Useful in test suites (e.g. CI) to prevent data leaks.
+func (a *App) AuditRoutes() []string {
+	var warnings []string
+	seenModels := make(map[reflect.Type]bool)
+	for _, rt := range a.router.Routes() {
+		if rt.auto || (rt.Doc != nil && rt.Doc.Hidden) || rt.Doc == nil {
+			continue
+		}
+		for status, resp := range rt.Doc.Responses {
+			if resp == nil || resp.Model == nil {
+				continue
+			}
+			t := reflect.TypeOf(resp.Model)
+			for t != nil && (t.Kind() == reflect.Pointer || t.Kind() == reflect.Slice) {
+				t = t.Elem()
+			}
+			if t == nil || t.Kind() != reflect.Struct || seenModels[t] {
+				continue
+			}
+			seenModels[t] = true
+			structWarnings := AuditModel(resp.Model)
+			for _, w := range structWarnings {
+				warnings = append(warnings, fmt.Sprintf("%s %s (status %d): %s", strings.ToUpper(rt.Method), rt.FullPath, status, w))
+			}
+		}
+	}
+	return warnings
+}
+
 // TypeScriptGenerator inspects registered Gota routes and types to produce TypeScript declarations and SDKs.
 type TypeScriptGenerator struct {
-	config      Config
-	schemas     map[string]string
-	schemaTypes map[string]reflect.Type
+	config       Config
+	schemas      map[string]string
+	schemaTypes  map[string]reflect.Type
+	typeNames    map[reflect.Type]string
+	responseOnly map[reflect.Type]bool
 }
 
 // NewTypeScriptGenerator initializes a new TypeScriptGenerator.
 func NewTypeScriptGenerator(cfg Config) *TypeScriptGenerator {
-	return &TypeScriptGenerator{
-		config:      cfg,
-		schemas:     make(map[string]string),
-		schemaTypes: make(map[string]reflect.Type),
+	g := &TypeScriptGenerator{config: cfg}
+	g.reset()
+	return g
+}
+
+func (g *TypeScriptGenerator) reset() {
+	g.schemas = make(map[string]string)
+	g.schemaTypes = make(map[string]reflect.Type)
+	g.typeNames = make(map[reflect.Type]string)
+	g.responseOnly = make(map[reflect.Type]bool)
+}
+
+var (
+	tsIdentifier     = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*$`)
+	tsReservedNames  = buildTSReservedNames()
+	tsRawBodyPrefix  = []string{"image/", "audio/", "video/"}
+	tsRawBodyExact   = []string{"application/octet-stream", "application/pdf", "application/zip"}
+	tsRequiredRule   = "required"
+	tsDateTimeFormat = "date-time"
+)
+
+// buildTSReservedNames returns the identifiers generated schema types must never shadow:
+// TypeScript keywords and built-ins, DOM/fetch globals used by the runtime and every runtime export.
+func buildTSReservedNames() map[string]bool {
+	names := []string{
+		// Keywords and primitive type names.
+		"any", "unknown", "never", "void", "null", "undefined", "object", "string", "number",
+		"boolean", "symbol", "bigint", "true", "false", "this", "type", "interface", "class",
+		"enum", "function", "const", "let", "var", "new", "delete", "default", "export",
+		"import", "extends", "implements", "package", "private", "protected", "public",
+		"static", "yield", "in", "instanceof", "typeof", "return", "super", "switch", "case",
+		"break", "continue", "do", "else", "for", "if", "while", "with", "try", "catch",
+		"finally", "throw", "debugger",
+		// Built-ins and globals referenced by the generated code.
+		"Array", "Record", "Partial", "Required", "Readonly", "Pick", "Omit", "Promise", "Date",
+		"Error", "Map", "Set", "Object", "String", "Number", "Boolean", "Symbol", "JSON", "Math",
+		"ArrayBuffer", "Blob", "File", "FormData", "Headers", "Response", "Request", "RequestInit",
+		"RequestCache", "RequestCredentials", "BodyInit", "URLSearchParams", "ReadableStream",
+		"AbortSignal", "AbortController", "TextDecoderStream", "DOMException",
 	}
+	reserved := make(map[string]bool, len(names)+len(tsRuntimeExportedNames))
+	for _, n := range names {
+		reserved[n] = true
+	}
+	for _, n := range tsRuntimeExportedNames {
+		reserved[n] = true
+	}
+	return reserved
+}
+
+// tsPropName quotes property names that are not valid TypeScript identifiers (e.g. "first-name").
+func tsPropName(name string) string {
+	if tsIdentifier.MatchString(name) {
+		return name
+	}
+	return strconv.Quote(name)
+}
+
+// tsNeedsParens reports whether a type expression has a top-level union/intersection and must be
+// parenthesized when composed (e.g. as an array element).
+func tsNeedsParens(ts string) bool {
+	depth := 0
+	inString := false
+	for i := 0; i < len(ts); i++ {
+		c := ts[i]
+		switch {
+		case inString:
+			if c == '\\' {
+				i++
+			} else if c == '"' {
+				inString = false
+			}
+		case c == '"':
+			inString = true
+		case c == '<' || c == '(' || c == '{' || c == '[':
+			depth++
+		case c == '>' || c == ')' || c == '}' || c == ']':
+			depth--
+		case depth == 0 && (c == '|' || c == '&'):
+			return true
+		}
+	}
+	return false
+}
+
+func tsWrap(ts string) string {
+	if tsNeedsParens(ts) {
+		return "(" + ts + ")"
+	}
+	return ts
+}
+
+// tsDocLines splits free text into JSDoc-safe lines (a "*/" would otherwise close the comment).
+func tsDocLines(text string) []string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	for i, line := range lines {
+		lines[i] = strings.ReplaceAll(strings.TrimRight(line, " \t\r"), "*/", "*\\/")
+	}
+	return lines
+}
+
+func writeTSDoc(sb *strings.Builder, lines []string, indent string) {
+	if len(lines) == 0 {
+		return
+	}
+	sb.WriteString(indent + "/**\n")
+	for _, line := range lines {
+		sb.WriteString(strings.TrimRight(indent+" * "+line, " ") + "\n")
+	}
+	sb.WriteString(indent + " */\n")
 }
 
 func (g *TypeScriptGenerator) schemaName(t reflect.Type) string {
-	name := sanitizeTSTypeName(t.Name())
-	if name == "" {
-		name = "AnonymousModel"
+	if name, ok := g.typeNames[t]; ok {
+		return name
 	}
-	if prev, taken := g.schemaTypes[name]; taken && prev != t {
-		name = sanitizeTSTypeName(path.Base(t.PkgPath()) + "_" + t.Name())
+	taken := func(n string) bool {
+		_, used := g.schemaTypes[n]
+		return used || tsReservedNames[n]
+	}
+	base := sanitizeTSTypeName(t.Name())
+	if base == "" {
+		base = "AnonymousModel"
+	}
+	if base[0] >= '0' && base[0] <= '9' {
+		base = "_" + base
+	}
+	name := base
+	if taken(name) {
+		if qualified := sanitizeTSTypeName(path.Base(t.PkgPath()) + "_" + t.Name()); qualified != "" && qualified != base {
+			name = qualified
+		}
 	}
 	candidate := name
-	for i := 2; ; i++ {
-		prev, taken := g.schemaTypes[name]
-		if !taken || prev == t {
-			break
-		}
+	for i := 2; taken(name); i++ {
 		name = fmt.Sprintf("%s_%d", candidate, i)
 	}
 	g.schemaTypes[name] = t
+	g.typeNames[t] = name
 	return name
 }
 
@@ -170,6 +325,33 @@ func parseOneOfChoices(validateTag string) []string {
 	return nil
 }
 
+func oneOfUnion(validateTag string, t reflect.Type) string {
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == nil || t.Kind() != reflect.String {
+		return ""
+	}
+	choices := parseOneOfChoices(validateTag)
+	if len(choices) == 0 {
+		return ""
+	}
+	formatted := make([]string, len(choices))
+	for i, c := range choices {
+		formatted[i] = strconv.Quote(c)
+	}
+	return strings.Join(formatted, " | ")
+}
+
+func hasRequiredValidation(validateTag string) bool {
+	for _, rule := range splitOpenAPIRules(validateTag) {
+		if strings.TrimSpace(rule) == tsRequiredRule {
+			return true
+		}
+	}
+	return false
+}
+
 // hasJSONOmitOption reports whether a json struct tag contains omitempty or omitzero.
 func hasJSONOmitOption(jsonTag string) bool {
 	if jsonTag == "" {
@@ -185,7 +367,100 @@ func hasJSONOmitOption(jsonTag string) bool {
 	return false
 }
 
-func (g *TypeScriptGenerator) typeToTS(t reflect.Type, seen map[reflect.Type]bool, isResponse bool) string {
+func isRawContentType(ct string) bool {
+	for _, p := range tsRawBodyPrefix {
+		if strings.HasPrefix(ct, p) {
+			return true
+		}
+	}
+	for _, e := range tsRawBodyExact {
+		if ct == e {
+			return true
+		}
+	}
+	return false
+}
+
+// modelType returns the dereferenced reflect.Type of a documented model (nil if none).
+func modelType(model any) reflect.Type {
+	t := reflect.TypeOf(model)
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	return t
+}
+
+func isEmptyStruct(t reflect.Type) bool {
+	return t != nil && t.Kind() == reflect.Struct && t.NumField() == 0
+}
+
+// ------------------------------------------------------------------ request/response analysis
+
+// analyzeRoutes computes which struct types are reachable only from responses. Only those get
+// "serialization" semantics (non-pointer fields without omitempty are always present, nil
+// pointers are null); types also used as input keep validation semantics. Doing this up front
+// makes the output independent of route registration order.
+func (g *TypeScriptGenerator) analyzeRoutes(routes []*Node) {
+	requestTypes := make(map[reflect.Type]bool)
+	responseTypes := make(map[reflect.Type]bool)
+	for _, rt := range routes {
+		if !tsVisibleRoute(rt) || rt.Doc == nil {
+			continue
+		}
+		for _, p := range rt.Doc.Parameters {
+			walkTSTypes(reflect.TypeOf(p.Model), requestTypes)
+		}
+		if rt.Doc.RequestBody != nil {
+			walkTSTypes(reflect.TypeOf(rt.Doc.RequestBody.Model), requestTypes)
+		}
+		for _, resp := range rt.Doc.Responses {
+			if resp != nil {
+				walkTSTypes(reflect.TypeOf(resp.Model), responseTypes)
+			}
+		}
+	}
+	for t := range responseTypes {
+		if !requestTypes[t] {
+			g.responseOnly[t] = true
+		}
+	}
+}
+
+func walkTSTypes(t reflect.Type, seen map[reflect.Type]bool) {
+	for t != nil {
+		switch t.Kind() {
+		case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Map:
+			t = t.Elem()
+			continue
+		}
+		break
+	}
+	if t == nil || t.Kind() != reflect.Struct || t == timeType || t == fileHeaderType || seen[t] {
+		return
+	}
+	seen[t] = true
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if field.Tag.Get("json") == "-" || field.Tag.Get("form") == "-" {
+			continue
+		}
+		if ft, ok := EmbeddedStructType(field); ok {
+			walkTSTypes(ft, seen)
+			continue
+		}
+		if field.IsExported() {
+			walkTSTypes(field.Type, seen)
+		}
+	}
+}
+
+func tsVisibleRoute(rt *Node) bool {
+	return !rt.auto && (rt.Doc == nil || !rt.Doc.Hidden)
+}
+
+// ------------------------------------------------------------------ Go type -> TS
+
+func (g *TypeScriptGenerator) typeToTS(t reflect.Type, seen map[reflect.Type]bool) string {
 	if t == nil {
 		return "void"
 	}
@@ -210,39 +485,33 @@ func (g *TypeScriptGenerator) typeToTS(t reflect.Type, seen map[reflect.Type]boo
 		reflect.Float32, reflect.Float64:
 		return "number"
 	case reflect.Slice, reflect.Array:
-		if t.Elem().Kind() == reflect.Uint8 {
+		elem := t.Elem()
+		if elem.Kind() == reflect.Uint8 {
 			return "string"
 		}
-		if t.Elem() == fileHeaderType || reflect.PointerTo(t.Elem()) == reflect.PointerTo(fileHeaderType) {
+		for elem.Kind() == reflect.Pointer {
+			elem = elem.Elem()
+		}
+		if elem == fileHeaderType {
 			return "File[] | Blob[]"
 		}
-		elemTS := g.typeToTS(t.Elem(), seen, isResponse)
-		if strings.Contains(elemTS, " ") && !strings.HasPrefix(elemTS, "{") && !strings.HasPrefix(elemTS, "Record<") {
-			return "(" + elemTS + ")[]"
-		}
-		return elemTS + "[]"
+		return tsWrap(g.typeToTS(t.Elem(), seen)) + "[]"
 	case reflect.Map:
-		valTS := g.typeToTS(t.Elem(), seen, isResponse)
-		return fmt.Sprintf("Record<string, %s>", valTS)
+		return fmt.Sprintf("Record<string, %s>", g.typeToTS(t.Elem(), seen))
 	case reflect.Interface:
 		return "any"
 	case reflect.Struct:
-		if t == timeType {
-			return "string"
-		}
 		if t.NumField() == 0 {
 			return "Record<string, never>"
 		}
-
 		name := t.Name()
 		if name == "" || strings.HasPrefix(name, "struct {") {
-			return g.inlineStructTS(t, seen, isResponse)
+			return g.inlineStructTS(t, seen)
 		}
-
 		sName := g.schemaName(t)
 		if _, exists := g.schemas[sName]; !exists {
 			g.schemas[sName] = "" // placeholder for recursive types
-			g.generateInterface(sName, t, seen, isResponse)
+			g.generateInterface(sName, t, seen)
 		}
 		return sName
 	default:
@@ -251,11 +520,10 @@ func (g *TypeScriptGenerator) typeToTS(t reflect.Type, seen map[reflect.Type]boo
 }
 
 type structFieldDoc struct {
-	name        string
-	tsType      string
-	required    bool
-	description string
-	example     string
+	name     string
+	tsType   string
+	required bool
+	doc      []string
 }
 
 func (g *TypeScriptGenerator) collectStructFields(t reflect.Type, fields *[]structFieldDoc, seen map[reflect.Type]bool, embedding map[reflect.Type]bool, isResponse bool) {
@@ -312,41 +580,30 @@ func (g *TypeScriptGenerator) collectStructFields(t reflect.Type, fields *[]stru
 		}
 
 		valTag := field.Tag.Get("validate")
-		isRequired := false
-		for _, rule := range splitOpenAPIRules(valTag) {
-			if strings.TrimSpace(rule) == "required" {
-				isRequired = true
-				break
-			}
-		}
-		if !isRequired && isResponse && field.Type.Kind() != reflect.Pointer && !hasJSONOmitOption(jsonTag) {
+		isPointer := field.Type.Kind() == reflect.Pointer
+		omits := hasJSONOmitOption(jsonTag)
+		isRequired := hasRequiredValidation(valTag)
+		nullable := false
+		if isResponse && !omits {
+			// encoding/json always serializes these fields; nil pointers become null.
 			isRequired = true
+			nullable = isPointer
 		}
 
-		underlyingType := field.Type
-		for underlyingType.Kind() == reflect.Pointer {
-			underlyingType = underlyingType.Elem()
+		tsType := oneOfUnion(valTag, field.Type)
+		if tsType == "" {
+			tsType = g.typeToTS(field.Type, seen)
 		}
-
-		// TypeScript type resolution
-		tsType := ""
-		if choices := parseOneOfChoices(valTag); len(choices) > 0 && underlyingType.Kind() == reflect.String {
-			var formatted []string
-			for _, c := range choices {
-				formatted = append(formatted, fmt.Sprintf("%q", c))
-			}
-			tsType = strings.Join(formatted, " | ")
-		} else {
-			tsType = g.typeToTS(field.Type, seen, isResponse)
+		if nullable {
+			tsType += " | null"
 		}
 
 		own[name] = true
 		ownFields = append(ownFields, structFieldDoc{
-			name:        name,
-			tsType:      tsType,
-			required:    isRequired,
-			description: field.Tag.Get("doc"),
-			example:     field.Tag.Get("example"),
+			name:     name,
+			tsType:   tsType,
+			required: isRequired,
+			doc:      fieldDocLines(field),
 		})
 	}
 
@@ -358,7 +615,35 @@ func (g *TypeScriptGenerator) collectStructFields(t reflect.Type, fields *[]stru
 	}
 }
 
-func (g *TypeScriptGenerator) inlineStructTS(t reflect.Type, seen map[reflect.Type]bool, isResponse bool) string {
+// fieldDocLines builds the JSDoc of a struct field from its doc/example/default/format tags.
+func fieldDocLines(field reflect.StructField) []string {
+	lines := tsDocLines(field.Tag.Get("doc"))
+	if ex := field.Tag.Get("example"); ex != "" {
+		lines = append(lines, tsDocLines("@example "+ex)...)
+	}
+	if def := field.Tag.Get("default"); def != "" {
+		lines = append(lines, tsDocLines("@default "+def)...)
+	}
+	format := field.Tag.Get("format")
+	if format == "" {
+		ft := field.Type
+		for ft.Kind() == reflect.Pointer {
+			ft = ft.Elem()
+		}
+		if ft == timeType {
+			format = tsDateTimeFormat
+		}
+	}
+	if format != "" && format != "binary" {
+		lines = append(lines, tsDocLines("@format "+format)...)
+	}
+	if field.Tag.Get("deprecated") == "true" {
+		lines = append(lines, "@deprecated")
+	}
+	return lines
+}
+
+func (g *TypeScriptGenerator) inlineStructTS(t reflect.Type, seen map[reflect.Type]bool) string {
 	if seen[t] {
 		return "Record<string, any>"
 	}
@@ -366,293 +651,377 @@ func (g *TypeScriptGenerator) inlineStructTS(t reflect.Type, seen map[reflect.Ty
 	defer delete(seen, t)
 
 	var fields []structFieldDoc
-	g.collectStructFields(t, &fields, seen, map[reflect.Type]bool{}, isResponse)
+	g.collectStructFields(t, &fields, seen, map[reflect.Type]bool{}, g.responseOnly[t])
 	if len(fields) == 0 {
 		return "Record<string, never>"
 	}
 
-	var parts []string
+	parts := make([]string, 0, len(fields))
 	for _, f := range fields {
 		opt := "?"
 		if f.required {
 			opt = ""
 		}
-		parts = append(parts, fmt.Sprintf("%s%s: %s", f.name, opt, f.tsType))
+		parts = append(parts, fmt.Sprintf("%s%s: %s", tsPropName(f.name), opt, f.tsType))
 	}
 	return "{ " + strings.Join(parts, "; ") + " }"
 }
 
-func (g *TypeScriptGenerator) generateInterface(name string, t reflect.Type, seen map[reflect.Type]bool, isResponse bool) {
+// structDocLines extracts top-level struct documentation if available.
+// It checks whether the struct has a special unexported field `_ struct{}` with a `doc` tag,
+// or implements a `Doc() string` / `Description() string` method.
+func structDocLines(t reflect.Type) []string {
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return nil
+	}
+	// 1. Check method Doc() string or Description() string on value or pointer receiver
+	if m, ok := t.MethodByName("Doc"); ok && m.Type.NumIn() == 1 && m.Type.NumOut() == 1 && m.Type.Out(0).Kind() == reflect.String {
+		val := reflect.New(t).Elem()
+		res := m.Func.Call([]reflect.Value{val})
+		if str := res[0].String(); str != "" {
+			return tsDocLines(str)
+		}
+	}
+	if m, ok := reflect.PointerTo(t).MethodByName("Doc"); ok && m.Type.NumIn() == 1 && m.Type.NumOut() == 1 && m.Type.Out(0).Kind() == reflect.String {
+		val := reflect.New(t)
+		res := m.Func.Call([]reflect.Value{val})
+		if str := res[0].String(); str != "" {
+			return tsDocLines(str)
+		}
+	}
+	if m, ok := t.MethodByName("Description"); ok && m.Type.NumIn() == 1 && m.Type.NumOut() == 1 && m.Type.Out(0).Kind() == reflect.String {
+		val := reflect.New(t).Elem()
+		res := m.Func.Call([]reflect.Value{val})
+		if str := res[0].String(); str != "" {
+			return tsDocLines(str)
+		}
+	}
+	// 2. Check for `_ struct{} `doc:"..."`` tag on blank field
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.Name == "_" && f.Tag.Get("doc") != "" {
+			return tsDocLines(f.Tag.Get("doc"))
+		}
+	}
+	return nil
+}
+
+func (g *TypeScriptGenerator) generateInterface(name string, t reflect.Type, seen map[reflect.Type]bool) {
 	var fields []structFieldDoc
-	g.collectStructFields(t, &fields, seen, map[reflect.Type]bool{}, isResponse)
+	g.collectStructFields(t, &fields, seen, map[reflect.Type]bool{}, g.responseOnly[t])
 
 	var sb strings.Builder
+	writeTSDoc(&sb, structDocLines(t), "")
 	sb.WriteString(fmt.Sprintf("export interface %s {\n", name))
 	for _, f := range fields {
-		if f.description != "" || f.example != "" {
-			sb.WriteString("  /**\n")
-			if f.description != "" {
-				sb.WriteString(fmt.Sprintf("   * %s\n", f.description))
-			}
-			if f.example != "" {
-				sb.WriteString(fmt.Sprintf("   * @example %s\n", f.example))
-			}
-			sb.WriteString("   */\n")
-		}
+		writeTSDoc(&sb, f.doc, "  ")
 		opt := "?"
 		if f.required {
 			opt = ""
 		}
-		sb.WriteString(fmt.Sprintf("  %s%s: %s;\n", f.name, opt, f.tsType))
+		sb.WriteString(fmt.Sprintf("  %s%s: %s;\n", tsPropName(f.name), opt, f.tsType))
 	}
 	sb.WriteString("}\n")
 	g.schemas[name] = sb.String()
 }
 
+// ------------------------------------------------------------------ endpoints
+
 type routeTS struct {
-	method      string
-	path        string
-	key         string
-	summary     string
-	description string
-	paramsTS    string
-	queryTS     string
-	bodyTS      string
-	responseTS  string
-	errorTS     string
+	method       string
+	path         string
+	key          string
+	summary      string
+	description  string
+	deprecated   bool
+	paramsTS     string
+	queryTS      string
+	bodyTS       string
+	responseTS   string
+	errorTS      string
+	requestTS    string
+	bodyEncoding string
+}
+
+type tsParamField struct {
+	name     string
+	tsType   string
+	required bool
+}
+
+func joinTSFields(fields []tsParamField) string {
+	sort.Slice(fields, func(i, j int) bool { return fields[i].name < fields[j].name })
+	parts := make([]string, len(fields))
+	for i, f := range fields {
+		opt := "?"
+		if f.required {
+			opt = ""
+		}
+		parts[i] = fmt.Sprintf("%s%s: %s", tsPropName(f.name), opt, f.tsType)
+	}
+	return "{ " + strings.Join(parts, "; ") + " }"
+}
+
+func anyRequired(fields []tsParamField) bool {
+	for _, f := range fields {
+		if f.required {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *TypeScriptGenerator) inspectRoute(rt *Node) routeTS {
 	r := routeTS{
-		method:     strings.ToUpper(rt.Method),
-		path:       rt.FullPath,
-		key:        fmt.Sprintf("%s %s", strings.ToUpper(rt.Method), rt.FullPath),
-		paramsTS:   "void",
-		queryTS:    "void",
-		bodyTS:     "void",
-		responseTS: "void",
-		errorTS:    "unknown",
+		method:       strings.ToUpper(rt.Method),
+		path:         rt.FullPath,
+		key:          fmt.Sprintf("%s %s", strings.ToUpper(rt.Method), rt.FullPath),
+		paramsTS:     "void",
+		queryTS:      "void",
+		bodyTS:       "void",
+		responseTS:   "unknown",
+		errorTS:      "unknown",
+		bodyEncoding: "json",
 	}
-
-	if rt.Doc == nil {
-		return r
+	doc := rt.Doc
+	if doc == nil {
+		doc = &RouteDoc{}
 	}
+	r.summary = doc.Summary
+	r.description = doc.Description
+	r.deprecated = doc.Deprecated
 
-	r.summary = rt.Doc.Summary
-	r.description = rt.Doc.Description
-
-	// 1. Path & Query Parameters
-	documentedParams := make(map[string]bool)
-	var pathFields []string
-	var queryFields []string
-	if rt.Doc != nil {
-		for _, p := range rt.Doc.Parameters {
-			documentedParams[p.Name] = true
-			mType := reflect.TypeOf(p.Model)
-			pType := "string"
-			if mType != nil {
-				pType = g.typeToTS(mType, map[reflect.Type]bool{}, false)
-			}
-			opt := "?"
-			if p.Required || p.In == "path" {
-				opt = ""
-			}
-			fieldStr := fmt.Sprintf("%s%s: %s", p.Name, opt, pType)
-			switch p.In {
-			case "path":
-				pathFields = append(pathFields, fieldStr)
-			case "query":
-				queryFields = append(queryFields, fieldStr)
-			}
+	// 1. Path, query & header parameters
+	wildcards := make(map[string]bool)
+	for _, seg := range strings.Split(rt.FullPath, "/") {
+		if name, ok := pathParamName(seg); ok && strings.HasPrefix(seg, "*") {
+			wildcards[name] = true
 		}
 	}
-
-	for _, pName := range extractPathParams(rt.FullPath) {
-		if !documentedParams[pName] {
-			pathFields = append(pathFields, fmt.Sprintf("%s: string", pName))
+	pathTypes := make(map[string]string)
+	var queryFields, headerFields []tsParamField
+	for _, p := range doc.Parameters {
+		pType := "string"
+		if p.Model != nil {
+			pType = oneOfUnion(p.Validate, reflect.TypeOf(p.Model))
+			if pType == "" {
+				pType = g.typeToTS(reflect.TypeOf(p.Model), map[reflect.Type]bool{})
+			}
+		}
+		switch p.In {
+		case "path":
+			pathTypes[p.Name] = pType
+		case "query":
+			queryFields = append(queryFields, tsParamField{p.Name, pType, p.Required})
+		case "header":
+			// Header values travel as strings; keep them compatible with Record<string, string>.
+			headerFields = append(headerFields, tsParamField{p.Name, "string", p.Required})
 		}
 	}
-
+	for _, name := range extractPathParams(rt.FullPath) {
+		if _, ok := pathTypes[name]; !ok {
+			pathTypes[name] = "string"
+		}
+	}
+	var pathFields []tsParamField
+	for name, ts := range pathTypes {
+		if wildcards[name] && ts == "string" {
+			ts = "string | string[]"
+		}
+		pathFields = append(pathFields, tsParamField{name, ts, true})
+	}
 	if len(pathFields) > 0 {
-		sort.Strings(pathFields)
-		r.paramsTS = "{ " + strings.Join(pathFields, "; ") + " }"
+		r.paramsTS = joinTSFields(pathFields)
 	}
 	if len(queryFields) > 0 {
-		sort.Strings(queryFields)
-		r.queryTS = "{ " + strings.Join(queryFields, "; ") + " }"
+		r.queryTS = joinTSFields(queryFields)
 	}
 
-	// 2. Request Body
-	if rt.Doc.RequestBody != nil && rt.Doc.RequestBody.Model != nil {
-		if rt.Doc.RequestBody.ContentType == "multipart/form-data" {
-			mType := reflect.TypeOf(rt.Doc.RequestBody.Model)
-			for mType != nil && mType.Kind() == reflect.Pointer {
-				mType = mType.Elem()
-			}
-			if mType != nil && mType.Kind() == reflect.Struct && mType.NumField() > 0 {
-				tsType := g.typeToTS(mType, map[reflect.Type]bool{}, false)
-				r.bodyTS = "FormData | " + tsType
+	// 2. Request body
+	bodyRequired := false
+	if body := doc.RequestBody; body != nil && body.Model != nil {
+		bodyRequired = body.Required
+		mType := modelType(body.Model)
+		hasFields := mType != nil && mType.Kind() == reflect.Struct && mType.NumField() > 0
+		switch ct := body.ContentType; {
+		case ct == "multipart/form-data":
+			r.bodyEncoding = "multipart"
+			if hasFields {
+				r.bodyTS = "FormData | " + g.typeToTS(mType, map[reflect.Type]bool{})
 			} else {
 				r.bodyTS = "FormData | Record<string, unknown>"
 			}
-		} else if rt.Doc.RequestBody.ContentType == "application/x-www-form-urlencoded" {
-			r.bodyTS = "URLSearchParams | Record<string, string | number | boolean>"
-		} else if strings.HasPrefix(rt.Doc.RequestBody.ContentType, "image/") ||
-			strings.HasPrefix(rt.Doc.RequestBody.ContentType, "audio/") ||
-			strings.HasPrefix(rt.Doc.RequestBody.ContentType, "video/") ||
-			rt.Doc.RequestBody.ContentType == "application/octet-stream" ||
-			rt.Doc.RequestBody.ContentType == "application/pdf" {
-			r.bodyTS = "Blob | ArrayBuffer | ReadableStream"
-		} else {
-			mType := reflect.TypeOf(rt.Doc.RequestBody.Model)
-			if mType != nil && mType.Kind() == reflect.Pointer {
-				mType = mType.Elem()
-			}
-			if mType != nil && mType.Kind() == reflect.Struct && mType.NumField() == 0 {
-				r.bodyTS = "void"
-			} else if mType != nil {
-				r.bodyTS = g.typeToTS(mType, map[reflect.Type]bool{}, false)
-			}
-		}
-	}
-
-	// 3. Response
-	if len(rt.Doc.Responses) > 0 {
-		// Prefer 200, 201, 204 or lowest 2xx status
-		var successStatuses []int
-		for code := range rt.Doc.Responses {
-			if code >= 200 && code < 300 {
-				successStatuses = append(successStatuses, code)
-			}
-		}
-		sort.Ints(successStatuses)
-
-		chosenCode := 0
-		if len(successStatuses) > 0 {
-			chosenCode = successStatuses[0]
-		}
-
-		if chosenCode > 0 {
-			resp := rt.Doc.Responses[chosenCode]
-			if chosenCode == 204 || chosenCode == 205 {
-				r.responseTS = "void"
-			} else if resp.ContentType == "text/event-stream" {
-				r.responseTS = "ReadableStream<string>"
-			} else if strings.HasPrefix(resp.ContentType, "image/") ||
-				strings.HasPrefix(resp.ContentType, "audio/") ||
-				strings.HasPrefix(resp.ContentType, "video/") ||
-				resp.ContentType == "application/octet-stream" ||
-				resp.ContentType == "application/pdf" ||
-				resp.ContentType == "application/zip" {
-				r.responseTS = "Blob"
-			} else if resp.Model == nil {
-				r.responseTS = "void"
+		case ct == "application/x-www-form-urlencoded":
+			r.bodyEncoding = "form"
+			if hasFields {
+				r.bodyTS = "URLSearchParams | " + g.typeToTS(mType, map[reflect.Type]bool{})
 			} else {
-				mType := reflect.TypeOf(resp.Model)
-				if mType != nil && mType.Kind() == reflect.Pointer {
-					mType = mType.Elem()
-				}
-				if mType != nil && mType.Kind() == reflect.Struct && mType.NumField() == 0 {
-					r.responseTS = "void"
-				} else if mType != nil {
-					r.responseTS = g.typeToTS(mType, map[reflect.Type]bool{}, true)
-				}
+				r.bodyTS = "URLSearchParams | Record<string, string | number | boolean>"
+			}
+		case isRawContentType(ct):
+			r.bodyEncoding = "raw"
+			r.bodyTS = "Blob | ArrayBuffer | ArrayBufferView | ReadableStream | string"
+		default:
+			if mType != nil && !isEmptyStruct(mType) {
+				r.bodyTS = g.typeToTS(mType, map[reflect.Type]bool{})
 			}
 		}
 	}
 
-	// 4. Error Responses (>= 400)
-	if rt.Doc != nil && len(rt.Doc.Responses) > 0 {
-		var errorStatuses []int
-		for code := range rt.Doc.Responses {
-			if code >= 400 {
-				errorStatuses = append(errorStatuses, code)
-			}
-		}
-		sort.Ints(errorStatuses)
-
-		var errorTypes []string
-		seenErrorTypes := make(map[string]bool)
-		for _, code := range errorStatuses {
-			resp := rt.Doc.Responses[code]
-			if resp == nil || resp.Model == nil {
-				continue
-			}
-			mType := reflect.TypeOf(resp.Model)
-			if mType != nil && mType.Kind() == reflect.Pointer {
-				mType = mType.Elem()
-			}
-			if mType != nil && mType.Kind() == reflect.Struct && mType.NumField() == 0 {
-				continue
-			}
-			if mType != nil {
-				tsType := g.typeToTS(mType, map[reflect.Type]bool{}, true)
-				if !seenErrorTypes[tsType] {
-					seenErrorTypes[tsType] = true
-					errorTypes = append(errorTypes, tsType)
-				}
-			}
-		}
-
-		if len(errorTypes) > 0 {
-			r.errorTS = strings.Join(errorTypes, " | ")
+	// 3. Success response (lowest documented 2xx)
+	var successStatuses, errorStatuses []int
+	for code := range doc.Responses {
+		switch {
+		case code >= 200 && code < 300:
+			successStatuses = append(successStatuses, code)
+		case code >= 400:
+			errorStatuses = append(errorStatuses, code)
 		}
 	}
+	sort.Ints(successStatuses)
+	sort.Ints(errorStatuses)
+
+	if len(successStatuses) > 0 {
+		code := successStatuses[0]
+		resp := doc.Responses[code]
+		mType := modelType(resp.Model)
+		switch {
+		case code == 204 || code == 205:
+			r.responseTS = "void"
+		case resp.ContentType == "text/event-stream":
+			r.responseTS = "ReadableStream<string>"
+		case isRawContentType(resp.ContentType):
+			r.responseTS = "Blob"
+		case mType == nil || isEmptyStruct(mType):
+			r.responseTS = "void"
+		default:
+			r.responseTS = g.typeToTS(mType, map[reflect.Type]bool{})
+		}
+	}
+
+	// 4. Error responses (>= 400)
+	var errorTypes []string
+	seenErrorTypes := make(map[string]bool)
+	for _, code := range errorStatuses {
+		resp := doc.Responses[code]
+		if resp == nil {
+			continue
+		}
+		mType := modelType(resp.Model)
+		if mType == nil || isEmptyStruct(mType) {
+			continue
+		}
+		tsType := g.typeToTS(mType, map[reflect.Type]bool{})
+		if !seenErrorTypes[tsType] {
+			seenErrorTypes[tsType] = true
+			errorTypes = append(errorTypes, tsType)
+		}
+	}
+	if len(errorTypes) > 0 {
+		r.errorTS = strings.Join(errorTypes, " | ")
+	}
+
+	// 5. Pre-computed request options: drives which fetch() arguments are required.
+	request := make([]string, 0, 4)
+	if len(pathFields) > 0 {
+		request = append(request, "params: "+r.paramsTS)
+	} else {
+		request = append(request, "params?: never")
+	}
+	switch {
+	case len(queryFields) == 0:
+		request = append(request, "query?: never")
+	case anyRequired(queryFields):
+		request = append(request, "query: "+r.queryTS)
+	default:
+		request = append(request, "query?: "+r.queryTS)
+	}
+	if len(headerFields) > 0 {
+		opt := "?"
+		if anyRequired(headerFields) {
+			opt = ""
+		}
+		request = append(request, "headers"+opt+": "+joinTSFields(headerFields))
+	}
+	switch {
+	case r.bodyTS == "void":
+		request = append(request, "body?: never")
+	case bodyRequired:
+		request = append(request, "body: "+r.bodyTS)
+	default:
+		request = append(request, "body?: "+r.bodyTS)
+	}
+	r.requestTS = "{ " + strings.Join(request, "; ") + " }"
 
 	return r
 }
 
+// ------------------------------------------------------------------ rendering
+
 // Generate produces full TypeScript type definitions (.d.ts) for all registered routes.
 func (g *TypeScriptGenerator) Generate(routes []*Node) string {
+	return g.render(routes, true)
+}
+
+// GenerateSDK produces a full standalone TypeScript client SDK, including the createGotaClient implementation.
+func (g *TypeScriptGenerator) GenerateSDK(routes []*Node) string {
+	return g.render(routes, false)
+}
+
+func (g *TypeScriptGenerator) render(routes []*Node, declarationsOnly bool) string {
+	g.reset()
+	g.analyzeRoutes(routes)
+
 	var routeItems []routeTS
 	for _, rt := range routes {
-		if rt.auto || (rt.Doc != nil && rt.Doc.Hidden) {
-			continue
+		if tsVisibleRoute(rt) {
+			routeItems = append(routeItems, g.inspectRoute(rt))
 		}
-		routeItems = append(routeItems, g.inspectRoute(rt))
 	}
-
 	sort.Slice(routeItems, func(i, j int) bool {
 		return routeItems[i].key < routeItems[j].key
 	})
 
 	var sb strings.Builder
-	sb.WriteString("/**\n")
-	sb.WriteString(" * Auto-generated by Gota Framework \U0001F4A7\n")
-	sb.WriteString(fmt.Sprintf(" * Application: %s (%s)\n", g.config.Title, g.config.Version))
-	if g.config.Description != "" {
-		sb.WriteString(fmt.Sprintf(" * Description: %s\n", g.config.Description))
+	header := []string{"Auto-generated by Gota Framework \U0001F4A7. Do not edit by hand."}
+	if g.config.Title != "" {
+		api := "API: " + g.config.Title
+		if g.config.Version != "" {
+			api += " (" + g.config.Version + ")"
+		}
+		header = append(header, tsDocLines(api)...)
 	}
-	sb.WriteString(" * Generated at runtime.\n")
-	sb.WriteString(" */\n\n")
+	header = append(header, tsDocLines(g.config.Description)...)
+	writeTSDoc(&sb, header, "")
+	sb.WriteString("\n")
 
 	// 1. Schemas/Models
-	var schemaNames []string
+	schemaNames := make([]string, 0, len(g.schemas))
 	for name := range g.schemas {
 		schemaNames = append(schemaNames, name)
 	}
 	sort.Strings(schemaNames)
 	for _, name := range schemaNames {
-		content := g.schemas[name]
-		if content != "" {
+		if content := g.schemas[name]; content != "" {
 			sb.WriteString(content)
 			sb.WriteString("\n")
 		}
 	}
 
-	// 2. Endpoint Map
+	// 2. Endpoint catalog
 	sb.WriteString("export interface GotaEndpoints {\n")
 	for _, r := range routeItems {
-		if r.summary != "" || r.description != "" {
-			sb.WriteString("  /**\n")
-			if r.summary != "" {
-				sb.WriteString(fmt.Sprintf("   * %s\n", r.summary))
-			}
-			if r.description != "" {
-				sb.WriteString(fmt.Sprintf("   * %s\n", r.description))
-			}
-			sb.WriteString("   */\n")
+		doc := tsDocLines(r.summary)
+		if r.description != "" && r.description != r.summary {
+			doc = append(doc, tsDocLines(r.description)...)
 		}
+		if r.deprecated {
+			doc = append(doc, "@deprecated")
+		}
+		writeTSDoc(&sb, doc, "  ")
 		sb.WriteString(fmt.Sprintf("  %q: {\n", r.key))
 		sb.WriteString(fmt.Sprintf("    method: %q;\n", r.method))
 		sb.WriteString(fmt.Sprintf("    path: %q;\n", r.path))
@@ -661,420 +1030,31 @@ func (g *TypeScriptGenerator) Generate(routes []*Node) string {
 		sb.WriteString(fmt.Sprintf("    body: %s;\n", r.bodyTS))
 		sb.WriteString(fmt.Sprintf("    response: %s;\n", r.responseTS))
 		sb.WriteString(fmt.Sprintf("    error: %s;\n", r.errorTS))
+		sb.WriteString(fmt.Sprintf("    request: %s;\n", r.requestTS))
 		sb.WriteString("  };\n")
 	}
 	sb.WriteString("}\n\n")
 
-	// 3. Client and Helper Type Declarations
-	sb.WriteString(`export type EndpointKey = keyof GotaEndpoints;
-
-export type RequestParams<K extends EndpointKey> = GotaEndpoints[K]["params"];
-export type RequestQuery<K extends EndpointKey> = GotaEndpoints[K]["query"];
-export type RequestBody<K extends EndpointKey> = GotaEndpoints[K]["body"];
-export type ResponseData<K extends EndpointKey> = GotaEndpoints[K]["response"];
-export type ResponseError<K extends EndpointKey> = GotaEndpoints[K]["error"];
-
-export interface NextFetchRequestConfig {
-  revalidate?: number | false;
-  tags?: string[];
-}
-
-export interface GotaRetryConfig {
-  attempts?: number;
-  delayMs?: number;
-  statusCodes?: number[];
-}
-
-export interface GotaRequestConfig {
-  endpoint: string;
-  url: string;
-  init: any;
-}
-
-export type RequestOptions<K extends EndpointKey> =
-  (RequestParams<K> extends void ? { params?: never } : { params: RequestParams<K> }) &
-  (RequestQuery<K> extends void ? { query?: never } : { query?: RequestQuery<K> }) &
-  (RequestBody<K> extends void ? { body?: never } : { body: RequestBody<K> }) & {
-    headers?: Record<string, string>;
-    credentials?: RequestCredentials;
-    signal?: AbortSignal;
-    cache?: RequestCache;
-    next?: NextFetchRequestConfig;
-    timeoutMs?: number;
-    retry?: number | GotaRetryConfig;
-    onRequest?: (config: GotaRequestConfig) => void | Promise<void>;
-    onResponse?: (response: Response, config: { endpoint: string; url: string }) => void | Promise<void>;
-    onError?: (error: GotaHttpError, config: { endpoint: string; url: string }) => void | Promise<void>;
-  };
-
-export interface GotaClientOptions {
-  headers?: Record<string, string> | (() => Record<string, string> | Promise<Record<string, string>>);
-  credentials?: RequestCredentials;
-  cache?: RequestCache;
-  next?: NextFetchRequestConfig;
-  timeoutMs?: number;
-  retry?: number | GotaRetryConfig;
-  onRequest?: (config: GotaRequestConfig) => void | Promise<void>;
-  onResponse?: (response: Response, config: { endpoint: string; url: string }) => void | Promise<void>;
-  onError?: (error: GotaHttpError, config: { endpoint: string; url: string }) => void | Promise<void>;
-  fetch?: typeof fetch;
-}
-
-export interface GotaClient {
-  readonly baseUrl: string;
-  fetch<K extends EndpointKey>(
-    endpoint: K,
-    ...args: RequestOptions<K> extends { params?: never; query?: never; body?: never }
-      ? [options?: RequestOptions<K>]
-      : [options: RequestOptions<K>]
-  ): Promise<ResponseData<K>>;
-}
-
-export declare class GotaHttpError<T = unknown> extends Error {
-  readonly status: number;
-  readonly statusText: string;
-  readonly data: T;
-  readonly headers?: Headers;
-  constructor(status: number, statusText: string, data: T, headers?: Headers);
-}
-
-export declare function createGotaClient(baseUrl?: string, clientOptions?: GotaClientOptions): GotaClient;
-`)
-
-	return sb.String()
-}
-
-// GenerateSDK produces a full standalone TypeScript client SDK, including the createGotaClient implementation.
-func (g *TypeScriptGenerator) GenerateSDK(routes []*Node) string {
-	tsDefs := g.Generate(routes)
-
-	var multipartKeys []string
-	var formKeys []string
-	for _, rt := range routes {
-		if rt.Doc != nil && rt.Doc.RequestBody != nil {
-			key := fmt.Sprintf("%s %s", strings.ToUpper(rt.Method), rt.FullPath)
-			if rt.Doc.RequestBody.ContentType == "multipart/form-data" {
-				multipartKeys = append(multipartKeys, fmt.Sprintf("%q", key))
-			} else if rt.Doc.RequestBody.ContentType == "application/x-www-form-urlencoded" {
-				formKeys = append(formKeys, fmt.Sprintf("%q", key))
-			}
-		}
+	// 3. Runtime types, then declarations (.d.ts) or implementation (.ts)
+	sb.WriteString(tsRuntimeTypes)
+	if declarationsOnly {
+		sb.WriteString(tsRuntimeDeclarations)
+		return sb.String()
 	}
-	sort.Strings(multipartKeys)
-	sort.Strings(formKeys)
 
-	multipartInit := strings.Join(multipartKeys, ", ")
-	formInit := strings.Join(formKeys, ", ")
-
-	// Replace the declarations with the actual implementation
-	decl := `export declare class GotaHttpError<T = unknown> extends Error {
-  readonly status: number;
-  readonly statusText: string;
-  readonly data: T;
-  readonly headers?: Headers;
-  constructor(status: number, statusText: string, data: T, headers?: Headers);
-}
-
-export declare function createGotaClient(baseUrl?: string, clientOptions?: GotaClientOptions): GotaClient;
-`
-	impl := fmt.Sprintf(`const MULTIPART_ROUTES: Set<string> = new Set([%s]);
-const FORM_ROUTES: Set<string> = new Set([%s]);
-
-export class GotaHttpError<T = unknown> extends Error {
-  readonly status: number;
-  readonly statusText: string;
-  readonly data: T;
-  readonly headers?: Headers;
-
-  constructor(status: number, statusText: string, data: T, headers?: Headers) {
-    let message = statusText || ("HTTP Error " + status);
-    if (data && typeof data === "object") {
-      const d = data as Record<string, unknown>;
-      if (typeof d.message === "string" && d.message) message = d.message;
-      else if (typeof d.error === "string" && d.error) message = d.error;
-      else if (typeof d.detail === "string" && d.detail) message = d.detail;
-      else if (Array.isArray(d.detail) && d.detail.length > 0) message = "Validation error: " + JSON.stringify(d.detail);
-      else if (Array.isArray(d.errors) && d.errors.length > 0) message = "Validation error: " + JSON.stringify(d.errors);
-      else if (typeof d.title === "string" && d.title) message = d.title;
-    } else if (typeof data === "string" && data.trim()) {
-      message = data.trim();
-    }
-    super(message);
-    this.name = "GotaHttpError";
-    this.status = status;
-    this.statusText = statusText;
-    this.data = data;
-    this.headers = headers;
-    Object.setPrototypeOf(this, GotaHttpError.prototype);
-  }
-}
-
-function appendQueryParam(search: URLSearchParams, key: string, value: unknown): void {
-  if (value === undefined || value === null) return;
-  if (Array.isArray(value)) {
-    for (const item of value) appendQueryParam(search, key, item);
-  } else if (value instanceof Date) {
-    search.append(key, value.toISOString());
-  } else if (typeof value === "object") {
-    search.append(key, JSON.stringify(value));
-  } else {
-    search.append(key, String(value));
-  }
-}
-
-export function createGotaClient(baseUrl = "", clientOptions: GotaClientOptions = {}): GotaClient {
-  return {
-    baseUrl,
-    async fetch(endpoint, ...args) {
-      const options = (args[0] || {}) as any;
-      const [method, pathTemplate] = endpoint.split(" ");
-      let path = pathTemplate;
-      if (options.params) {
-        const keys = Object.keys(options.params).sort((a, b) => b.length - a.length);
-        for (const k of keys) {
-          const v = options.params[k];
-          if (v !== undefined && v !== null) {
-            path = path.replace(":" + k, encodeURIComponent(String(v)));
-            path = path.replace("*" + k, String(v).split("/").map(encodeURIComponent).join("/"));
-          }
-        }
-      }
-      if (/[:*][a-zA-Z0-9_]+/.test(path)) {
-        throw new Error("Missing required path parameter in endpoint URL: " + pathTemplate + " (resolved: " + path + ")");
-      }
-      const cleanBase = baseUrl ? baseUrl.replace(/\/+$/, "") : "";
-      const cleanPath = path.startsWith("/") ? path : "/" + path;
-      let url = cleanBase + cleanPath;
-      if (options.query) {
-        const q = new URLSearchParams();
-        for (const [k, v] of Object.entries(options.query)) {
-          appendQueryParam(q, k, v);
-        }
-        const qs = q.toString();
-        if (qs) url += (url.includes("?") ? "&" : "?") + qs;
-      }
-      const baseHeaders = typeof clientOptions.headers === "function"
-        ? await clientOptions.headers()
-        : clientOptions.headers;
-      const headers = new Headers(baseHeaders);
-      if (options.headers) {
-        for (const [k, v] of Object.entries(options.headers)) {
-          headers.set(k, String(v));
-        }
-      }
-      let body: any = undefined;
-      let duplex: string | undefined = undefined;
-      if (options.body !== undefined) {
-        if (typeof FormData !== "undefined" && options.body instanceof FormData) {
-          body = options.body;
-        } else if (typeof URLSearchParams !== "undefined" && options.body instanceof URLSearchParams) {
-          body = options.body;
-        } else if (typeof Blob !== "undefined" && options.body instanceof Blob) {
-          body = options.body;
-        } else if (typeof ArrayBuffer !== "undefined" && (options.body instanceof ArrayBuffer || ArrayBuffer.isView(options.body))) {
-          body = options.body;
-        } else if (typeof ReadableStream !== "undefined" && options.body instanceof ReadableStream) {
-          body = options.body;
-          duplex = "half";
-        } else if (options.body !== null && typeof options.body === "object") {
-          const isPlain = (options.body as any).constructor === Object || !(options.body as any).constructor;
-          const hasBlob = isPlain && Object.values(options.body).some((val: any) =>
-            (typeof Blob !== "undefined" && val instanceof Blob) ||
-            (Array.isArray(val) && val.some((item: any) => typeof Blob !== "undefined" && item instanceof Blob))
-          );
-          const ctypeHeader = headers.get("Content-Type") || "";
-          const isMultipart = MULTIPART_ROUTES.has(endpoint) || hasBlob || ctypeHeader.includes("multipart/form-data");
-          const isFormUrl = FORM_ROUTES.has(endpoint) || ctypeHeader.includes("application/x-www-form-urlencoded");
-
-          if (isMultipart && typeof FormData !== "undefined") {
-            const form = new FormData();
-            for (const [k, v] of Object.entries(options.body)) {
-              if (v === undefined || v === null) continue;
-              if (Array.isArray(v)) {
-                for (const item of v) {
-                  if (item !== undefined && item !== null) form.append(k, item as any);
-                }
-              } else {
-                form.append(k, v as any);
-              }
-            }
-            body = form;
-            headers.delete("Content-Type");
-          } else if (isFormUrl && typeof URLSearchParams !== "undefined") {
-            const form = new URLSearchParams();
-            for (const [k, v] of Object.entries(options.body)) {
-              if (v === undefined || v === null) continue;
-              if (Array.isArray(v)) {
-                for (const item of v) {
-                  if (item !== undefined && item !== null) form.append(k, String(item));
-                }
-              } else {
-                form.set(k, String(v));
-              }
-            }
-            body = form;
-          } else {
-            if (!headers.has("Content-Type")) {
-              headers.set("Content-Type", "application/json");
-            }
-            body = JSON.stringify(options.body);
-          }
-        } else {
-          body = options.body;
-        }
-      }
-      const timeout = options.timeoutMs ?? clientOptions.timeoutMs;
-      let signal: AbortSignal | undefined = options.signal;
-      if (timeout && typeof AbortSignal !== "undefined") {
-        const timeoutSignal = typeof AbortSignal.timeout === "function"
-          ? AbortSignal.timeout(timeout)
-          : (() => {
-              const controller = new AbortController();
-              setTimeout(() => controller.abort(new DOMException("The operation timed out.", "TimeoutError")), timeout);
-              return controller.signal;
-            })();
-        if (signal) {
-          if (typeof (AbortSignal as any).any === "function") {
-            signal = (AbortSignal as any).any([signal, timeoutSignal]);
-          } else {
-            const controller = new AbortController();
-            signal.addEventListener("abort", () => controller.abort(signal?.reason));
-            timeoutSignal.addEventListener("abort", () => controller.abort(timeoutSignal.reason));
-            signal = controller.signal;
-          }
-        } else {
-          signal = timeoutSignal;
-        }
-      }
-      const fetchFn = clientOptions.fetch || fetch;
-      const fetchInit: any = {
-        method,
-        headers,
-        body,
-        credentials: options.credentials ?? clientOptions.credentials,
-        signal,
-        cache: options.cache ?? clientOptions.cache,
-      };
-      const nextConfig = options.next ?? clientOptions.next;
-      if (nextConfig !== undefined) {
-        fetchInit.next = nextConfig;
-      }
-      if (duplex) {
-        fetchInit.duplex = duplex;
-      }
-
-      const reqConfig = { endpoint, url, init: fetchInit };
-      const onRequest = options.onRequest ?? clientOptions.onRequest;
-      if (onRequest) {
-        await onRequest(reqConfig);
-      }
-
-      const retryOpt = options.retry ?? clientOptions.retry;
-      let maxAttempts = 1;
-      let baseDelay = 300;
-      let retryStatuses = [408, 429, 500, 502, 503, 504];
-      if (typeof retryOpt === "number" && retryOpt > 0) {
-        maxAttempts = 1 + retryOpt;
-      } else if (typeof retryOpt === "object" && retryOpt !== null) {
-        if (typeof retryOpt.attempts === "number" && retryOpt.attempts > 0) {
-          maxAttempts = 1 + retryOpt.attempts;
-        }
-        if (typeof retryOpt.delayMs === "number" && retryOpt.delayMs >= 0) {
-          baseDelay = retryOpt.delayMs;
-        }
-        if (Array.isArray(retryOpt.statusCodes)) {
-          retryStatuses = retryOpt.statusCodes;
-        }
-      }
-
-      let lastRes: Response | undefined = undefined;
-      let attempt = 0;
-      while (true) {
-        try {
-          const res = await fetchFn(url, fetchInit);
-          lastRes = res;
-          if (!res.ok && attempt < maxAttempts - 1 && retryStatuses.includes(res.status)) {
-            attempt++;
-            let delay = baseDelay * Math.pow(2, attempt - 1) * (0.5 + Math.random() * 0.5);
-            const retryAfter = res.headers ? res.headers.get("Retry-After") : null;
-            if (retryAfter) {
-              const seconds = parseInt(retryAfter, 10);
-              if (!isNaN(seconds)) {
-                delay = seconds * 1000;
-              } else {
-                const dateMs = Date.parse(retryAfter);
-                if (!isNaN(dateMs)) delay = Math.max(0, dateMs - Date.now());
-              }
-            }
-            await new Promise((resolve) => setTimeout(resolve, delay));
-            continue;
-          }
-          break;
-        } catch (fetchErr: any) {
-          if (attempt < maxAttempts - 1 && (!signal || !signal.aborted)) {
-            attempt++;
-            const delay = baseDelay * Math.pow(2, attempt - 1) * (0.5 + Math.random() * 0.5);
-            await new Promise((resolve) => setTimeout(resolve, delay));
-            continue;
-          }
-          throw fetchErr;
-        }
-      }
-      const res = lastRes!;
-
-      const onResponse = options.onResponse ?? clientOptions.onResponse;
-      if (onResponse) {
-        await onResponse(res, { endpoint, url });
-      }
-
-      if (!res.ok) {
-        let err: any;
-        if (typeof res.text === "function") {
-          const text = await res.text().catch(() => "");
-          try {
-            err = text ? JSON.parse(text) : { message: res.statusText };
-          } catch {
-            err = text ? { message: text } : { message: res.statusText };
-          }
-        } else if (typeof res.json === "function") {
-          err = await res.json().catch(() => ({ message: res.statusText }));
-        } else {
-          err = { message: res.statusText };
-        }
-        const httpErr = new GotaHttpError(res.status, res.statusText, err, res.headers);
-        const onError = options.onError ?? clientOptions.onError;
-        if (onError) {
-          await onError(httpErr, { endpoint, url });
-        }
-        throw httpErr;
-      }
-      if (res.status === 204 || res.status === 205 || res.headers.get("content-length") === "0") return undefined as any;
-      const ctype = res.headers.get("content-type") || "";
-      if (ctype.includes("application/json") || ctype.includes("+json")) {
-        if (typeof res.text === "function") {
-          const text = await res.text();
-          return (text ? JSON.parse(text) : undefined) as any;
-        }
-        return res.json();
-      }
-      if (ctype.includes("text/event-stream") && res.body) {
-        return (typeof TextDecoderStream !== "undefined" ? res.body.pipeThrough(new TextDecoderStream()) : res.body) as any;
-      }
-      const isBinary = /^(image|audio|video)\/|application\/(octet-stream|pdf|zip|gzip|vnd\.|x-)/.test(ctype);
-      if (isBinary && typeof res.blob === "function") {
-        return res.blob() as any;
-      }
-      if (ctype.startsWith("text/") || ctype.includes("xml")) {
-        return res.text() as any;
-      }
-      if (typeof res.blob === "function") {
-        return res.blob() as any;
-      }
-      return res.text() as any;
-    }
-  };
-}
-`, multipartInit, formInit)
-
-	return strings.Replace(tsDefs, decl, impl, 1)
+	sb.WriteString("\nconst BODY_ENCODINGS: Record<string, BodyEncoding | undefined> = {")
+	first := true
+	for _, r := range routeItems {
+		if r.bodyEncoding == "json" {
+			continue
+		}
+		if first {
+			sb.WriteString("\n")
+			first = false
+		}
+		sb.WriteString(fmt.Sprintf("  %q: %q,\n", r.key, r.bodyEncoding))
+	}
+	sb.WriteString("};\n")
+	sb.WriteString(tsRuntimeImplementation)
+	return sb.String()
 }

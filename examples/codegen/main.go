@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"os"
 
 	"github.com/carlosxfelipe/gota"
 	"github.com/carlosxfelipe/gota/examples/todos"
@@ -15,6 +16,8 @@ import (
 // Usage:
 //
 //	go run ./examples/codegen/main.go
+//	go run ./examples/codegen/main.go --ts-sdk=./dist/sdk.ts --ts-types=./dist/types.d.ts
+//	go run ./examples/codegen/main.go --stdout
 func main() {
 	// 1. Initialize your app (or import your app router configuration)
 	app := gota.New(gota.Config{
@@ -30,7 +33,15 @@ func main() {
 	store := todos.NewTodoStore()
 	todos.RegisterRoutes(app, store)
 
-	// 3. Export TypeScript SDK and Definitions directly to disk
+	// 3. Process CLI flags if passed (e.g. for go generate or CI)
+	if handled, err := app.RunCodegen(os.Args[1:]); handled {
+		if err != nil {
+			log.Fatalf("Codegen failed: %v", err)
+		}
+		return
+	}
+
+	// 4. Default behavior: export to dist/
 	sdkTarget := "./dist/sdk.ts"
 	if err := app.ExportTypeScriptSDK(sdkTarget); err != nil {
 		log.Fatalf("Failed to export TypeScript SDK: %v", err)

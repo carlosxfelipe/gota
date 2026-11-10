@@ -167,8 +167,8 @@ func TestTypeScriptGenerator_BasicAndModels(t *testing.T) {
 	if !strings.Contains(ts, "  nickname?: string;\n") {
 		t.Errorf("expected optional nickname?: string (omitempty) in TestUserRes, got:\n%s", ts)
 	}
-	if !strings.Contains(ts, "  avatar?: string;\n") {
-		t.Errorf("expected optional avatar?: string (pointer) in TestUserRes, got:\n%s", ts)
+	if !strings.Contains(ts, "  avatar: string | null;\n") {
+		t.Errorf("expected avatar: string | null (pointer) in TestUserRes, got:\n%s", ts)
 	}
 
 	// Verify declare function createGotaClient in .d.ts (C: with GotaClientOptions)
@@ -196,13 +196,10 @@ func TestTypeScriptGenerator_SDKImplementation(t *testing.T) {
 	if !strings.Contains(sdk, "export function createGotaClient(baseUrl = \"\", clientOptions: GotaClientOptions = {}): GotaClient {") {
 		t.Errorf("expected implementation of createGotaClient, got:\n%s", sdk)
 	}
-	if !strings.Contains(sdk, "const keys = Object.keys(options.params).sort((a, b) => b.length - a.length);") {
-		t.Errorf("expected sorted path param keys to avoid prefix collision, got:\n%s", sdk)
+	if !strings.Contains(sdk, "resolvePath(endpoint, template, options.params ?? {})") {
+		t.Errorf("expected path param resolution logic, got:\n%s", sdk)
 	}
-	if !strings.Contains(sdk, "path.replace(\":\" + k, encodeURIComponent(String(v)))") {
-		t.Errorf("expected path param substitution logic, got:\n%s", sdk)
-	}
-	if !strings.Contains(sdk, "const res = await fetchFn(url, fetchInit);") {
+	if !strings.Contains(sdk, "res = await fetchFn(url, init);") {
 		t.Errorf("expected fetchFn invocation, got:\n%s", sdk)
 	}
 }
@@ -425,6 +422,21 @@ func TestAuditModel_SecurityDetection(t *testing.T) {
 	if len(pkWarnings) != 2 {
 		t.Fatalf("expected 2 warnings for private_key and cvv, got %d: %v", len(pkWarnings), pkWarnings)
 	}
+
+	// 6. Test App.AuditRoutes
+	app := New(Config{})
+	app.Get("/users", func(ctx *Context) error {
+		return ctx.Json(testVulnerableEntity{})
+	}).Response(200, testVulnerableEntity{})
+
+	app.Get("/safe", func(ctx *Context) error {
+		return ctx.Json(testSafeEntity{})
+	}).Response(200, testSafeEntity{})
+
+	routeWarnings := app.AuditRoutes()
+	if len(routeWarnings) != 4 {
+		t.Fatalf("expected 4 route warnings for vulnerable entity, got %d: %v", len(routeWarnings), routeWarnings)
+	}
 }
 
 func TestTypeScript_URLNormalizationAndPathParams(t *testing.T) {
@@ -453,16 +465,13 @@ func TestTypeScript_URLNormalizationAndPathParams(t *testing.T) {
 	}
 
 	// 2. Verify SDK contains missing path parameter validation
-	if !strings.Contains(sdk, "/[:*][a-zA-Z0-9_]+/.test(path)") {
-		t.Errorf("expected missing path param regex validation in SDK")
-	}
-	if !strings.Contains(sdk, "Missing required path parameter in endpoint URL") {
-		t.Errorf("expected path parameter error message in SDK")
+	if !strings.Contains(sdk, "Missing required path parameter") {
+		t.Errorf("expected missing path param validation in SDK")
 	}
 
-	// 3. Verify SDK contains cleanBase and cleanPath trailing/leading slash normalization
-	if !strings.Contains(sdk, `baseUrl ? baseUrl.replace(/\/+$/, "") : ""`) {
-		t.Errorf("expected cleanBase trailing slash normalization in SDK")
+	// 3. Verify SDK contains trailing/leading slash normalization
+	if !strings.Contains(sdk, `baseUrl.replace(/\/+$/, "")`) {
+		t.Errorf("expected baseUrl trailing slash normalization in SDK")
 	}
 	if !strings.Contains(sdk, `path.startsWith("/") ? path : "/" + path`) {
 		t.Errorf("expected cleanPath leading slash normalization in SDK")
@@ -866,7 +875,7 @@ func TestTypeScript_Block1RuntimeEnhancements(t *testing.T) {
 	sdk := app.GenerateTypeScriptSDK()
 
 	// 1. Verify safe wildcard encoding
-	if !strings.Contains(sdk, `String(v).split("/").map(encodeURIComponent).join("/")`) {
+	if !strings.Contains(sdk, `parts.map(encodeURIComponent).join("/")`) {
 		t.Errorf("expected wildcard safe segment encoding in SDK")
 	}
 
@@ -999,9 +1008,9 @@ func TestTypeScript_Block2DXAndCapabilities(t *testing.T) {
 		t.Errorf("expected timeoutMs in RequestOptions/GotaClientOptions in dts")
 	}
 
-	// 2. Verify MULTIPART_ROUTES set generated in SDK
-	if !strings.Contains(sdk, `const MULTIPART_ROUTES: Set<string> = new Set(["POST /files/upload"]);`) {
-		t.Errorf("expected MULTIPART_ROUTES to contain POST /files/upload in SDK, got:\n%s", sdk)
+	// 2. Verify BODY_ENCODINGS generated in SDK
+	if !strings.Contains(sdk, `"POST /files/upload": "multipart"`) {
+		t.Errorf("expected BODY_ENCODINGS to contain POST /files/upload multipart in SDK, got:\n%s", sdk)
 	}
 
 	// 3. Node runtime execution verification

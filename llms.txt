@@ -84,6 +84,8 @@ func main() {
 - `app.ServeHTTP(w http.ResponseWriter, r *http.Request)`: Dispatches a request directly (ideal for `httptest`).
 - `app.GenerateTypeScript() string`, `app.GenerateTypeScriptSDK() string`: Generates TypeScript declarations or client SDK code as string.
 - `app.ExportTypeScript(filepath string) error`, `app.ExportTypeScriptSDK(filepath string) error`: Exports definitions or SDK directly to disk (creates directories automatically, ideal for CI/CD).
+- `app.RunCodegen(args []string) (bool, error)`: Parses CLI args (`--ts-sdk=<path>`, `--ts-types=<path>`, `--stdout`, `--types-only`) to run offline SDK generation.
+- `app.AuditRoutes() []string`: Scans all documented route response models and returns security warnings if sensitive fields are exposed without `json:"-"`.
 - `app.Server() *http.Server`, `app.Config() gota.Config`, `app.Router() *core.Router`.
 
 ### Available `ScalarTheme` Constants
@@ -111,23 +113,28 @@ To self-host or use a custom CDN:
 
 Gota generates zero-dependency TypeScript declarations (`.d.ts`) and a ready-to-run client SDK (`sdk.ts`) directly from registered routes and REPR structs:
 - **HTTP Routes (opt-in)**: Set `TypeScriptURL: "/types.d.ts"` and/or `TypeScriptSDKURL: "/sdk.ts"` in `gota.Config` (or `"-"` to explicitly disable in production). Protected by `app.UseDocs(...)` middlewares and isolated from global CORS.
-- **Offline / CI-CD Export**: Use `app.ExportTypeScript(path)` / `app.ExportTypeScriptSDK(path)` (or `app.GenerateTypeScript()` / `app.GenerateTypeScriptSDK()`) to write the client SDK directly to the frontend repository without starting an HTTP server.
+- **Offline / CI-CD Export**: Use `app.ExportTypeScript(path)` / `app.ExportTypeScriptSDK(path)` (or `app.GenerateTypeScript()` / `app.GenerateTypeScriptSDK()`) to write the client SDK directly to the frontend repository without starting an HTTP server. Or call `app.RunCodegen(os.Args[1:])` in build scripts/CLIs (supports `--ts-sdk=<path>`, `--ts-types=<path>`, `--stdout`, `--types-only`).
 - **Request vs. Response Field Optionality**:
   - **Request structs**: Fields are required (`field: T`) only when tagged with `validate:"required"`; otherwise optional (`field?: T`).
-  - **Response structs**: Non-pointer fields without `json:",omitempty"` or `json:",omitzero"` are required (`field: T`); pointer fields (`*T`) or fields with `omitempty`/`omitzero` are optional (`field?: T`).
+  - **Response structs**: Non-pointer fields without `json:",omitempty"` or `json:",omitzero"` are required (`field: T`); pointer fields (`*T`) become `T | null` when present without `omitempty`, or optional (`field?: T`) with `omitempty`/`omitzero`.
   - `validate:"oneof=..."` on string fields generates TypeScript string literal union types (e.g. `"admin" | "member"`).
+  - Model and field documentation: top-level JSDoc is generated from struct methods `Doc() string` / `Description() string` or blank tag `_ struct{} `doc:"..."``; field JSDoc includes `@example`, `@default`, `@format`, and `@deprecated` (via `deprecated:"true"`).
+- **Endpoint Catalog & Request Typing (`GotaEndpoints`)**:
+  - Each route pre-calculates strict `request: { params: ...; query: ...; body: ... }`.
+  - Calling endpoints with only optional query params or no inputs (`{} extends GotaEndpoints[K]["request"]`) allows omitting options: `api.fetch("GET /todos")`.
+  - Missing required path parameters, query parameters, or request bodies are caught at TypeScript compile time.
 - **Generated `createGotaClient(baseUrl?, clientOptions?: GotaClientOptions)`**:
-  - `GotaClientOptions` and `RequestOptions` support `headers` (static `Record<string, string>` or sync/async callback `() => Record<string, string> | Promise<Record<string, string>>`), `credentials` (`RequestCredentials`), `signal` (`AbortSignal`), `cache` (`RequestCache`), `next` (`NextFetchRequestConfig` for Next.js App Router revalidation/tags), `timeoutMs` (request timeout via `AbortSignal.timeout`), `retry` (retry count or `GotaRetryConfig` with full-jitter exponential backoff & `Retry-After` seconds/HTTP-date support), lifecycle hooks (`onRequest`, `onResponse`, `onError`), and custom `fetch`.
+  - `GotaClientOptions` and `RequestOptions` support `headers` (static `Record<string, string>` or sync/async callback `() => Record<string, string> | Promise<Record<string, string>>`), `credentials` (`RequestCredentials`), `signal` (`AbortSignal`), `cache` (`RequestCache`), `next` (`NextFetchRequestConfig` for Next.js App Router revalidation/tags), `timeoutMs` (request timeout via `AbortSignal.timeout` with timer unref fallback), `retry` (retry count or `GotaRetryConfig` with idempotent method defaults, full-jitter exponential backoff & `Retry-After` seconds/HTTP-date support), lifecycle hooks (`onRequest`, `onResponse`, `onError` for HTTP and network errors), and custom `fetch`.
   - `client.fetch("METHOD /path", options?)` infers `params`, `query`, `body`, `response`, and `error` types per endpoint (`ResponseError<K>`):
     - Sanitizes `baseUrl` trailing slashes and normalizes path leading slashes (no duplicate slashes `//`).
     - Validates path parameters before dispatching fetch, throwing early runtime errors if `:param` or `*wildcard` are missing.
-    - Encodes wildcard (`*param`) subsegments safely while preserving directory slashes `/`.
+    - Encodes wildcard (`*param`) subsegments safely while preserving directory slashes `/`. Wildcard path parameters accept `string | string[]`.
     - Automatically serializes query parameters: repeated keys for arrays (`tags=a&tags=b`) matching Go slice binders, ISO strings for `Date` instances, and JSON strings for plain objects.
     - Automatically handles payloads: JSON (sets `Content-Type: application/json`), plain objects on multipart endpoints or containing `Blob`/`File` are auto-converted to `FormData` (with boundary header preserved), `URLSearchParams`, `Blob`, `ArrayBuffer`/views, and `ReadableStream` (with `duplex: 'half'`).
     - Handles `204 No Content`, `205 Reset Content`, or `Content-Length: 0` (returns `undefined` safely without attempting body read or JSON parse errors).
     - Returns `res.blob()` for binary/media content types (`image/*`, `application/pdf`, `octet-stream`), SSE streams via `ReadableStream<string>`, and `res.json()` for JSON (with safe empty-body fallback).
-    - Throws `GotaHttpError<T = unknown>` on non-2xx responses with `status`, `statusText`, `data` (typed via `ResponseError<K>`), and `headers`. Extracts error messages automatically from `detail`, validation `errors[]`, RFC 7807 `title`, `message`, or `error`.
-- **Sensitive Field Auditing**: `gota.AuditModel(model)` (and `gota.IsSensitiveFieldName(fieldName)`) inspects structs recursively in unit tests and returns warnings if exported fields like `PasswordHash`, `Salt`, `ClientSecret`, `PrivateKey`, `ResetToken`, or `CVV` lack `json:"-"` (use `validate:"nowarn"` to silence intentional cases).
+    - Throws `GotaHttpError<T = unknown>` on non-2xx responses with `status`, `statusText`, `data` (typed via `ResponseError<K>`), `headers`, and `response`. Extracts error messages automatically from `detail`, validation `errors[]`, RFC 7807 `title`, `message`, or `error`.
+- **Sensitive Field Auditing**: `app.AuditRoutes()` (as well as `gota.AuditModel(model)` and `gota.IsSensitiveFieldName(fieldName)`) inspects response models recursively in test suites and returns warnings if exported fields like `Password`, `PasswordHash`, `Salt`, `ClientSecret`, `PrivateKey`, `ResetToken`, `BearerToken`, or `CVV` lack `json:"-"` (use `validate:"nowarn"` to silence intentional cases).
 
 ---
 
