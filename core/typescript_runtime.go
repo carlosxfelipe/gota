@@ -297,8 +297,14 @@ function createTimeoutSignal(timeoutMs: number | undefined): AbortSignal | undef
     () => controller.abort(new DOMException("The operation timed out.", "TimeoutError")),
     timeoutMs
   );
-  // Do not keep Node.js processes alive just because of a pending timeout.
-  if (timer && typeof timer === "object" && "unref" in timer && typeof timer.unref === "function") timer.unref();
+  if (
+    timer &&
+    typeof timer === "object" &&
+    "unref" in timer &&
+    typeof (timer as { unref?: unknown }).unref === "function"
+  ) {
+    (timer as { unref: () => void }).unref();
+  }
   return controller.signal;
 }
 
