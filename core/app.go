@@ -171,9 +171,10 @@ type App struct {
 	mu     sync.Mutex
 	server *http.Server
 
-	// routeCount counts user-registered routes (docs routes excluded) and docsRoutes
-	// holds the built-in documentation routes, which must follow global middlewares.
-	routeCount        int
+	// docsRoutes holds the built-in documentation routes, which must follow global middlewares.
+	userRoutes        []*Route
+	autoOptions       []*Route
+	groups            []*RouteGroup
 	docsRoutes        []*Route
 	docsOptionsRoutes []*Route
 	docsMiddlewares   []MiddlewareFunc
@@ -246,7 +247,8 @@ func New(cfg Config) *App {
 
 	if !cfg.DisableDocs {
 		app.registerDocs()
-		app.routeCount = 0
+		app.userRoutes = nil
+		app.autoOptions = nil
 	}
 
 	return app
@@ -315,15 +317,14 @@ func defaultErrorHandler(ctx *Context, err error) {
 	})
 }
 
-// Use appends a global middleware executed across all requests.
-// It must be called before registering routes or groups: middlewares are bound to a route
-// when it is registered, so a late Use would silently leave existing routes unprotected.
-// Use panics in that case.
-func (a *App) Use(mw MiddlewareFunc) {
-	if a.routeCount > 0 {
-		panic("gota: App.Use must be called before registering routes; middleware would not apply to existing routes")
+// Use appends one or more global middlewares executed across all requests.
+// Can be called before or after registering routes and groups; existing routes
+// and groups are automatically updated (docs routes remain isolated from CORS).
+func (a *App) Use(mws ...MiddlewareFunc) {
+	if len(mws) == 0 {
+		return
 	}
-	a.middlewares = append(a.middlewares, mw)
+	a.middlewares = append(a.middlewares, mws...)
 
 	// Built-in docs routes are registered in New, so refresh their chain.
 	// Docs routes are isolated from global CORS middleware.
@@ -340,6 +341,28 @@ func (a *App) Use(mw MiddlewareFunc) {
 	for _, rt := range a.docsOptionsRoutes {
 		rt.base = append([]MiddlewareFunc(nil), docsBase...)
 		rt.rebuild()
+	}
+
+	newSchemes := securityFromMiddlewares(mws)
+	for _, rt := range a.userRoutes {
+		if rt.group != nil {
+			continue
+		}
+		rt.base = append([]MiddlewareFunc(nil), a.middlewares...)
+		rt.rebuild()
+		if len(newSchemes) > 0 {
+			rt.Security(newSchemes...)
+		}
+	}
+	for _, rt := range a.autoOptions {
+		if rt.group != nil {
+			continue
+		}
+		rt.base = append([]MiddlewareFunc(nil), a.middlewares...)
+		rt.rebuild()
+	}
+	for _, g := range a.groups {
+		g.refreshMiddlewares(mws)
 	}
 }
 
@@ -380,11 +403,10 @@ func (a *App) Patch(path string, h HandlerFunc) *Route {
 
 // RegisterRoute internally binds an HTTP method and path with the global middleware chain.
 func (a *App) RegisterRoute(method, path string, h HandlerFunc) *Route {
-	return a.registerRouteWithBase(method, path, h, a.middlewares)
+	return a.registerRouteWithBase(method, path, h, a.middlewares, nil)
 }
 
-func (a *App) registerRouteWithBase(method, path string, h HandlerFunc, middlewares []MiddlewareFunc) *Route {
-	a.routeCount++
+func (a *App) registerRouteWithBase(method, path string, h HandlerFunc, middlewares []MiddlewareFunc, group *RouteGroup) *Route {
 	a.docVersion.Add(1)
 	base := make([]MiddlewareFunc, len(middlewares))
 	copy(base, middlewares)
@@ -392,11 +414,18 @@ func (a *App) registerRouteWithBase(method, path string, h HandlerFunc, middlewa
 	n := a.router.Add(method, path, Chain(h, base))
 	n.RawHandler = h
 
-	registerAutoOptions(a.router, method, path, base)
-	rt := &Route{Node: n, router: a.router, app: a, base: base}
+	if optRt := registerAutoOptions(a, method, path, base, group); optRt != nil {
+		if group != nil {
+			group.autoOptions = append(group.autoOptions, optRt)
+		} else {
+			a.autoOptions = append(a.autoOptions, optRt)
+		}
+	}
+	rt := &Route{Node: n, router: a.router, app: a, group: group, base: base}
 	if schemes := securityFromMiddlewares(base); len(schemes) > 0 {
 		rt.Security(schemes...)
 	}
+	a.userRoutes = append(a.userRoutes, rt)
 	return rt
 }
 
@@ -404,11 +433,15 @@ func optionsNoContentHandler(ctx *Context) error {
 	return ctx.NoContent()
 }
 
-func registerAutoOptions(router *Router, method, path string, base []MiddlewareFunc) {
+func registerAutoOptions(app *App, method, path string, base []MiddlewareFunc, group *RouteGroup) *Route {
 	if method == http.MethodOptions {
-		return
+		return nil
 	}
-	router.addAuto(http.MethodOptions, path, Chain(optionsNoContentHandler, base))
+	n, created := app.router.addAuto(http.MethodOptions, path, Chain(optionsNoContentHandler, base))
+	if !created {
+		return nil
+	}
+	return &Route{Node: n, router: app.router, app: app, group: group, base: append([]MiddlewareFunc(nil), base...)}
 }
 
 // URLFor generates a URL for a previously named route.
@@ -420,7 +453,9 @@ func (a *App) URLFor(name string, params map[string]string) (string, error) {
 func (a *App) Group(prefix string) *RouteGroup {
 	inherited := make([]MiddlewareFunc, len(a.middlewares))
 	copy(inherited, a.middlewares)
-	return &RouteGroup{app: a, prefix: prefix, middlewares: inherited}
+	g := &RouteGroup{app: a, prefix: prefix, middlewares: inherited}
+	a.groups = append(a.groups, g)
+	return g
 }
 
 func (a *App) openAPISpec() *OpenAPISpec {
@@ -966,6 +1001,7 @@ type Route struct {
 	Node   *Node
 	router *Router
 	app    *App
+	group  *RouteGroup
 	base   []MiddlewareFunc
 }
 
@@ -1151,14 +1187,46 @@ func (rt *Route) Doc(doc RouteDoc) *Route {
 
 // RouteGroup allows grouping routes under a common path prefix and middleware chain.
 type RouteGroup struct {
-	app         *App
-	prefix      string
-	middlewares []MiddlewareFunc
-	security    []string
-	hidden      bool
-	routes      []*Route
-	children    []*RouteGroup
-	registered  bool
+	app            *App
+	parent         *RouteGroup
+	prefix         string
+	ownMiddlewares []MiddlewareFunc
+	middlewares    []MiddlewareFunc
+	security       []string
+	hidden         bool
+	routes         []*Route
+	autoOptions    []*Route
+	children       []*RouteGroup
+}
+
+func (g *RouteGroup) effectiveMiddlewares() []MiddlewareFunc {
+	var chain []MiddlewareFunc
+	if g.parent != nil {
+		chain = append(chain, g.parent.effectiveMiddlewares()...)
+	} else if g.app != nil {
+		chain = append(chain, g.app.middlewares...)
+	}
+	chain = append(chain, g.ownMiddlewares...)
+	return chain
+}
+
+func (g *RouteGroup) refreshMiddlewares(added []MiddlewareFunc) {
+	g.middlewares = g.effectiveMiddlewares()
+	newSchemes := securityFromMiddlewares(added)
+	for _, rt := range g.routes {
+		rt.base = append([]MiddlewareFunc(nil), g.middlewares...)
+		rt.rebuild()
+		if len(newSchemes) > 0 {
+			rt.Security(newSchemes...)
+		}
+	}
+	for _, rt := range g.autoOptions {
+		rt.base = append([]MiddlewareFunc(nil), g.middlewares...)
+		rt.rebuild()
+	}
+	for _, child := range g.children {
+		child.refreshMiddlewares(added)
+	}
 }
 
 // Hidden marks all routes registered in this group (and nested groups) as hidden
@@ -1188,14 +1256,15 @@ func (g *RouteGroup) BearerAuth() *RouteGroup {
 	return g.Security("BearerAuth")
 }
 
-// Use appends a middleware to this route group.
-// It must be called before registering routes on the group; otherwise it panics, because
-// already registered routes would silently not receive the middleware.
-func (g *RouteGroup) Use(mw MiddlewareFunc) {
-	if g.registered {
-		panic("gota: RouteGroup.Use must be called before registering routes on the group; middleware would not apply to existing routes")
+// Use appends one or more middlewares to this route group.
+// Can be called before or after registering routes or nested groups; existing routes
+// and child groups are automatically updated.
+func (g *RouteGroup) Use(mws ...MiddlewareFunc) {
+	if len(mws) == 0 {
+		return
 	}
-	g.middlewares = append(g.middlewares, mw)
+	g.ownMiddlewares = append(g.ownMiddlewares, mws...)
+	g.refreshMiddlewares(mws)
 }
 
 // Get registers a scoped HTTP GET route.
@@ -1225,8 +1294,7 @@ func (g *RouteGroup) Patch(path string, h HandlerFunc) *Route {
 
 // RegisterRoute registers a scoped route under this group prefix.
 func (g *RouteGroup) RegisterRoute(method, path string, h HandlerFunc) *Route {
-	g.registered = true
-	rt := g.app.registerRouteWithBase(method, joinPrefix(g.prefix, path), h, g.middlewares)
+	rt := g.app.registerRouteWithBase(method, joinPrefix(g.prefix, path), h, g.middlewares, g)
 	if g.hidden {
 		rt.Hidden()
 	}
@@ -1246,6 +1314,7 @@ func (g *RouteGroup) Group(prefix string) *RouteGroup {
 	copy(sec, g.security)
 	child := &RouteGroup{
 		app:         g.app,
+		parent:      g,
 		prefix:      fullPrefix,
 		middlewares: inherited,
 		security:    sec,

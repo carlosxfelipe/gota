@@ -225,6 +225,11 @@ type ListUsersRequest struct {
 - `email`: Valid email address (`net/mail.ParseAddress`, containing `@` and `.`).
 - `url`: Valid absolute URL with scheme and host (`net/url.ParseRequestURI`).
 - `uuid`: Valid 36-char UUID (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`).
+- `alpha`: ASCII letters only (`a-zA-Z`).
+- `alphanum`: ASCII letters and digits only (`a-zA-Z0-9`).
+- `numeric`: ASCII digits only (`0-9`).
+- `pattern=<regex>`: Matches a Go regular expression (compiled and validated at startup).
+- Custom rules: Register global rules via `gota.RegisterValidationRule(name, fn)` before registering routes.
 - `nowarn`: Suppresses startup warnings for this field.
 
 #### Optional Fields, Zero Values & Pointers (CRITICAL)
@@ -236,7 +241,7 @@ Understand how Gota evaluates optional fields (fields **without** `required`):
   - When non-nil (even `&0`, `&false`, or `&""`), `required` passes and all other rules validate the dereferenced value.
 - **Non-pointer fields (`string`, `int`, `bool`, `AddressDTO`)**:
   - Default to Go's zero value (`""`, `0`, `false`) when omitted.
-  - `email`, `url`, `uuid`, and string `oneof` skip empty strings `""`.
+  - `email`, `url`, `uuid`, `alpha`, `alphanum`, `numeric`, `pattern=...`, and string `oneof` skip empty strings `""`.
   - **`min=N`, `len=N`, and numeric `oneof` DO NOT skip zero values on non-pointer fields!** For example, an omitted ``Code string `json:"code" validate:"len=6"` `` has value `""` (length 0) and **will fail `len=6`**. Use ``Code *string `json:"code" validate:"len=6"` `` whenever the field is optional!
   - **Non-pointer nested structs** (`Address AddressDTO`) are **always** recursed into. If `Address` itself is optional but its inner fields have `validate:"required"`, make it a pointer: ``Address *AddressDTO `json:"address,omitempty"` ``.
   - **Primitives with `required`**: Because `0` and `false` are Go zero values, `validate:"required"` on `int` or `bool` rejects `0` and `false`. Use `*int` or `*bool` with `validate:"required"` when `0` or `false` are valid inputs.
@@ -442,7 +447,7 @@ func RegisterOrderRoutes(target gota.RouterTarget, store *Store) {
 
 // Prefix group:
 v1 := app.Group("/api/v1")
-v1.Use(gota.JWT(secret)) // Group middlewares MUST be added before registering routes on the group!
+v1.Use(gota.JWT(secret)) // Can be called before or after registering routes on the group; also supports net/http middlewares via gota.WrapMiddleware(mw).
 RegisterOrderRoutes(v1, store)
 
 // Empty-prefix group (applies middleware to a subset of routes without adding a URL prefix):
@@ -838,7 +843,7 @@ func TestCreateUser(t *testing.T) {
 7. ❌ **Do NOT mix different path param names at the same URL position for the same HTTP method**: Registering `GET /orders/:id` and `GET /orders/:orderId/items` **panics** at startup. Use `:orderId` consistently across all routes.
 8. ❌ **Do NOT return a non-pointer from `JWTOptions.ClaimsFactory`**: Always write `ClaimsFactory: func() any { return &CustomClaims{} }`. Returning a value (`CustomClaims{}`) makes `json.Unmarshal` fail and rejects all tokens with `401`.
 9. ❌ **Do NOT invent non-existent Gota methods or helpers**:
-   - There is **no** `ctx.Next()` — custom middlewares use `func(next gota.HandlerFunc) gota.HandlerFunc`.
+   - There is **no** `ctx.Next()` — custom middlewares use `func(next gota.HandlerFunc) gota.HandlerFunc` (or adapt standard `net/http` middlewares/handlers with `gota.WrapMiddleware` / `gota.WrapHandler`).
    - Use `ctx.Json(...)` and `ctx.BindJson(...)`, **not** `ctx.JSON(...)`.
    - Only 7 status-specific error constructors exist (`BadRequest`, `Unauthorized`, `Forbidden`, `NotFound`, `Conflict`, `UnprocessableEntity`, `InternalServerError`), plus `gota.NewHTTPError(status, message)`. For other statuses (429, 503, etc.), use `gota.NewHTTPError(code, msg)` or `&gota.HTTPError{Status: code, Message: msg}`.
    - Do **not** use `go-playground/validator` rules (`gte`, `lte`, `gt`, `lt`, `dive`, `omitempty`); Gota panics on unknown rules (use `min`/`max`, automatic recursion, and pointer types instead).

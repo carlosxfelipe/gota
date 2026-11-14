@@ -778,3 +778,64 @@ func evictRateBuckets(buckets map[string]*rateBucket, now time.Time, window time
 		delete(buckets, oldestKey)
 	}
 }
+
+// statusSyncWriter mirrors status codes and write state back to Context so
+// net/http handlers and middlewares integrate with Gota's Logger and Written() checks.
+type statusSyncWriter struct {
+	http.ResponseWriter
+	ctx *Context
+}
+
+func (w *statusSyncWriter) WriteHeader(code int) {
+	w.ctx.Status(code)
+	w.ctx.written = true
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusSyncWriter) Write(p []byte) (int, error) {
+	w.ctx.written = true
+	return w.ResponseWriter.Write(p)
+}
+
+func (w *statusSyncWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+// WrapHandler adapts a standard net/http http.Handler to a Gota HandlerFunc.
+func WrapHandler(h http.Handler) HandlerFunc {
+	return func(ctx *Context) error {
+		if h == nil {
+			return nil
+		}
+		sw := &statusSyncWriter{ResponseWriter: ctx.ResponseWriter, ctx: ctx}
+		h.ServeHTTP(sw, ctx.Request)
+		ctx.written = true
+		return nil
+	}
+}
+
+// WrapMiddleware adapts a standard net/http middleware (func(http.Handler) http.Handler)
+// to a Gota MiddlewareFunc.
+func WrapMiddleware(mw func(http.Handler) http.Handler) MiddlewareFunc {
+	if mw == nil {
+		return func(next HandlerFunc) HandlerFunc { return next }
+	}
+	return func(next HandlerFunc) HandlerFunc {
+		return func(ctx *Context) error {
+			var nextErr error
+			nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				origW, origR := ctx.ResponseWriter, ctx.Request
+				ctx.ResponseWriter = w
+				ctx.Request = r
+				defer func() {
+					ctx.ResponseWriter = origW
+					ctx.Request = origR
+				}()
+				nextErr = next(ctx)
+			})
+			sw := &statusSyncWriter{ResponseWriter: ctx.ResponseWriter, ctx: ctx}
+			mw(nextHandler).ServeHTTP(sw, ctx.Request)
+			return nextErr
+		}
+	}
+}

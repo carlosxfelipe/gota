@@ -700,3 +700,60 @@ func TestCheckTagsRejectsCommaOptionsOnBindingTags(t *testing.T) {
 		t.Fatalf("expected error for header tag with option, got: %v", err)
 	}
 }
+
+func TestNewBuiltInAndCustomRules(t *testing.T) {
+	RegisterRule("even", func(val any, param string) error {
+		n, ok := val.(int)
+		if !ok || n%2 != 0 {
+			return errors.New("must be an even number")
+		}
+		return nil
+	})
+
+	type RuleDTO struct {
+		Alpha    string `json:"alpha" validate:"alpha"`
+		Alphanum string `json:"alphanum" validate:"alphanum"`
+		Numeric  string `json:"numeric" validate:"numeric"`
+		Slug     string `json:"slug" validate:"required,pattern=^[a-z0-9-]{2,10}$"`
+		Count    int    `json:"count" validate:"even"`
+	}
+
+	if err := CheckTags(reflect.TypeOf(RuleDTO{})); err != nil {
+		t.Fatalf("CheckTags failed for valid rules: %v", err)
+	}
+
+	type BadPatternDTO struct {
+		Slug string `validate:"pattern=[unclosed"`
+	}
+	if err := CheckTags(reflect.TypeOf(BadPatternDTO{})); err == nil {
+		t.Fatal("expected CheckTags to fail on invalid regex pattern")
+	}
+
+	valid := RuleDTO{
+		Alpha:    "HelloWorld",
+		Alphanum: "User123",
+		Numeric:  "2026",
+		Slug:     "gota-v1",
+		Count:    4,
+	}
+	if err := ValidateStruct(nil, &valid); err != nil {
+		t.Fatalf("expected valid DTO to pass, got: %v", err)
+	}
+
+	invalid := RuleDTO{
+		Alpha:    "Hello1",
+		Alphanum: "User-1",
+		Numeric:  "12a",
+		Slug:     "BAD_SLUG!",
+		Count:    3,
+	}
+	valErr := ValidateStruct(nil, &invalid)
+	if valErr == nil {
+		t.Fatal("expected validation errors, got nil")
+	}
+	for _, field := range []string{"alpha", "alphanum", "numeric", "slug", "count"} {
+		if len(valErr.Errors[field]) == 0 {
+			t.Errorf("expected error for field %q, got none (errors=%+v)", field, valErr.Errors)
+		}
+	}
+}

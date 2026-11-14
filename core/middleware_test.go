@@ -849,3 +849,53 @@ func TestBearerTokenMiddleware(t *testing.T) {
 		t.Errorf("expected BearerAuth in components.securitySchemes, got %+v", spec.Components.SecuritySchemes)
 	}
 }
+
+func TestWrapHandlerAndWrapMiddleware(t *testing.T) {
+	stdMW := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("X-Block") == "1" {
+				w.Header().Set("X-Blocked", "true")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte("blocked"))
+				return
+			}
+			w.Header().Set("X-Std-MW", "ok")
+			next.ServeHTTP(w, r)
+		})
+	}
+
+	stdHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte("from-std-handler"))
+	})
+
+	app := New(Config{DisableDocs: true})
+	app.Use(WrapMiddleware(stdMW))
+	app.Get("/gota", func(ctx *Context) error {
+		return ctx.Send("from-gota")
+	})
+	app.Get("/std", WrapHandler(stdHandler))
+
+	// 1. Standard middleware passes through to Gota handler
+	rec1 := httptest.NewRecorder()
+	app.ServeHTTP(rec1, httptest.NewRequest("GET", "/gota", nil))
+	if rec1.Code != http.StatusOK || rec1.Header().Get("X-Std-MW") != "ok" || rec1.Body.String() != "from-gota" {
+		t.Fatalf("unexpected response from /gota: code=%d header=%q body=%q", rec1.Code, rec1.Header().Get("X-Std-MW"), rec1.Body.String())
+	}
+
+	// 2. Standard middleware short-circuits with 403
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest("GET", "/gota", nil)
+	req2.Header.Set("X-Block", "1")
+	app.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusForbidden || rec2.Header().Get("X-Blocked") != "true" || rec2.Body.String() != "blocked" {
+		t.Fatalf("unexpected short-circuit response: code=%d body=%q", rec2.Code, rec2.Body.String())
+	}
+
+	// 3. WrapHandler works with standard http.Handler
+	rec3 := httptest.NewRecorder()
+	app.ServeHTTP(rec3, httptest.NewRequest("GET", "/std", nil))
+	if rec3.Code != http.StatusCreated || rec3.Body.String() != "from-std-handler" {
+		t.Fatalf("unexpected /std response: code=%d body=%q", rec3.Code, rec3.Body.String())
+	}
+}

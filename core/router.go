@@ -85,10 +85,10 @@ func (r *Router) Add(method, path string, handler HandlerFunc) *Node {
 
 // addAuto registers an implicit route unless one already exists.
 // Implicit routes are hidden from the generated documentation.
-func (r *Router) addAuto(method, path string, handler HandlerFunc) {
+func (r *Router) addAuto(method, path string, handler HandlerFunc) (*Node, bool) {
 	current := r.insert(method, path, true)
 	if current.Handler != nil {
-		return
+		return current, false
 	}
 	current.auto = true
 	current.Handler = handler
@@ -96,6 +96,7 @@ func (r *Router) addAuto(method, path string, handler HandlerFunc) {
 	current.Method = method
 	current.FullPath = path
 	current.Doc = &RouteDoc{Hidden: true, Responses: make(map[int]*ResponseDoc)}
+	return current, true
 }
 
 // onlyAutoSubtree reports whether n and all of its descendants only carry implicitly

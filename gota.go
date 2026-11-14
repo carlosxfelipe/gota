@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/rsa"
+	"net/http"
 	"time"
 
 	"github.com/carlosxfelipe/gota/core"
@@ -24,6 +25,7 @@ type (
 	HTTPError             = core.HTTPError
 	ErrorResponse         = core.ErrorResponse
 	ValidationError       = validation.ValidationError
+	ValidationRuleFunc    = validation.RuleFunc
 	ScalarTheme           = core.ScalarTheme
 	CORSOptions           = core.CORSOptions
 	SecureHeadersOptions  = core.SecureHeadersOptions
@@ -98,6 +100,22 @@ func New(cfg Config) *App {
 // (such as validate:"required" on primitive bool or numeric fields).
 func SilenceTagWarnings(silence bool) {
 	validation.SilenceTagWarnings = silence
+}
+
+// RegisterValidationRule registers a custom validation rule by name for use in `validate` tags.
+func RegisterValidationRule(name string, fn ValidationRuleFunc) {
+	validation.RegisterRule(name, fn)
+}
+
+// WrapHandler adapts a standard net/http http.Handler to a Gota HandlerFunc.
+func WrapHandler(h http.Handler) HandlerFunc {
+	return core.WrapHandler(h)
+}
+
+// WrapMiddleware adapts a standard net/http middleware (func(http.Handler) http.Handler)
+// to a Gota MiddlewareFunc.
+func WrapMiddleware(mw func(http.Handler) http.Handler) MiddlewareFunc {
+	return core.WrapMiddleware(mw)
 }
 
 // ScalarCDNURL returns the standalone bundle URL for a given @scalar/api-reference version.

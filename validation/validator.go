@@ -17,8 +17,42 @@ import (
 
 var (
 	uuidPattern       = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	alphaPattern      = regexp.MustCompile(`^[a-zA-Z]+$`)
+	alphanumPattern   = regexp.MustCompile(`^[a-zA-Z0-9]+$`)
+	numericPattern    = regexp.MustCompile(`^[0-9]+$`)
 	compiledMetaCache sync.Map // map[reflect.Type]*compiledStructMeta
+	patternCache      sync.Map // map[string]*regexp.Regexp
+	customRules       sync.Map // map[string]RuleFunc
 )
+
+// RuleFunc defines a custom validation rule function registered via RegisterRule.
+// Return a non-nil error with the validation message when the value is invalid.
+type RuleFunc func(val any, param string) error
+
+// RegisterRule registers a custom validation rule by name for use in `validate` tags.
+// Panics if name is empty or fn is nil.
+func RegisterRule(name string, fn RuleFunc) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		panic("gota: validation rule name cannot be empty")
+	}
+	if fn == nil {
+		panic("gota: validation rule function cannot be nil")
+	}
+	customRules.Store(name, fn)
+}
+
+func compilePattern(expr string) (*regexp.Regexp, error) {
+	if cached, ok := patternCache.Load(expr); ok {
+		return cached.(*regexp.Regexp), nil
+	}
+	re, err := regexp.Compile(expr)
+	if err != nil {
+		return nil, err
+	}
+	patternCache.Store(expr, re)
+	return re, nil
+}
 
 type compiledFieldMeta struct {
 	index      int
@@ -121,19 +155,21 @@ func isStdLibStruct(t reflect.Type) bool {
 
 // isKnownRule reports whether a string represents a known validation rule name.
 func isKnownRule(s string) bool {
-	if s == "required" || s == "email" || s == "url" || s == "uuid" || s == "nowarn" {
+	if s == "required" || s == "email" || s == "url" || s == "uuid" || s == "nowarn" ||
+		s == "alpha" || s == "alphanum" || s == "numeric" {
 		return true
 	}
 	parts := strings.SplitN(s, "=", 2)
 	switch parts[0] {
-	case "min", "max", "len", "oneof":
+	case "min", "max", "len", "oneof", "pattern":
 		return true
 	default:
-		return false
+		_, ok := customRules.Load(parts[0])
+		return ok
 	}
 }
 
-// splitRules splits a validation tag into individual rules, preserving commas inside oneof parameters.
+// splitRules splits a validation tag into individual rules, preserving commas inside oneof and pattern parameters.
 func splitRules(tag string) []string {
 	var rules []string
 	for _, part := range strings.Split(tag, ",") {
@@ -141,7 +177,7 @@ func splitRules(tag string) []string {
 		if part == "" {
 			continue
 		}
-		if len(rules) > 0 && strings.HasPrefix(rules[len(rules)-1], "oneof=") && !isKnownRule(part) {
+		if len(rules) > 0 && (strings.HasPrefix(rules[len(rules)-1], "oneof=") || strings.HasPrefix(rules[len(rules)-1], "pattern=")) && !isKnownRule(part) {
 			rules[len(rules)-1] += "," + part
 		} else {
 			rules = append(rules, part)
@@ -283,7 +319,7 @@ func checkTagsInternal(t reflect.Type, seen map[reflect.Type]bool) error {
 				}
 				parts := strings.SplitN(rule, "=", 2)
 				switch parts[0] {
-				case "required", "email", "url", "uuid", "nowarn", "omitempty":
+				case "required", "email", "url", "uuid", "alpha", "alphanum", "numeric", "nowarn", "omitempty":
 				case "min", "max":
 					if len(parts) < 2 || parts[1] == "" {
 						return fmt.Errorf("field %q: rule %q requires a numeric parameter (e.g. %s=3)", name, parts[0], parts[0])
@@ -302,7 +338,17 @@ func checkTagsInternal(t reflect.Type, seen map[reflect.Type]bool) error {
 					if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
 						return fmt.Errorf("field %q: rule %q requires at least one choice (e.g. oneof=a,b,c)", name, parts[0])
 					}
+				case "pattern":
+					if len(parts) < 2 || parts[1] == "" {
+						return fmt.Errorf("field %q: rule %q requires a regular expression (e.g. pattern=^[a-z]+$)", name, parts[0])
+					}
+					if _, err := compilePattern(parts[1]); err != nil {
+						return fmt.Errorf("field %q: rule %q has an invalid regular expression %q: %w", name, parts[0], parts[1], err)
+					}
 				default:
+					if _, ok := customRules.Load(parts[0]); ok {
+						break
+					}
 					switch parts[0] {
 					case "gte":
 						param := ""
@@ -791,6 +837,45 @@ func applyValidationRule(field string, val reflect.Value, rule string) string {
 				if !matched {
 					return fmt.Sprintf("field %s must be a valid UUID", field)
 				}
+			}
+		}
+
+	case "alpha":
+		if val.Kind() == reflect.String {
+			if s := val.String(); s != "" && !alphaPattern.MatchString(s) {
+				return fmt.Sprintf("field %s must contain only letters", field)
+			}
+		}
+
+	case "alphanum":
+		if val.Kind() == reflect.String {
+			if s := val.String(); s != "" && !alphanumPattern.MatchString(s) {
+				return fmt.Sprintf("field %s must contain only letters and numbers", field)
+			}
+		}
+
+	case "numeric":
+		if val.Kind() == reflect.String {
+			if s := val.String(); s != "" && !numericPattern.MatchString(s) {
+				return fmt.Sprintf("field %s must contain only digits", field)
+			}
+		}
+
+	case "pattern":
+		if val.Kind() == reflect.String && ruleParam != "" {
+			if s := val.String(); s != "" {
+				re, err := compilePattern(ruleParam)
+				if err == nil && !re.MatchString(s) {
+					return fmt.Sprintf("field %s does not match the required pattern", field)
+				}
+			}
+		}
+
+	default:
+		if fnVal, ok := customRules.Load(ruleName); ok {
+			fn := fnVal.(RuleFunc)
+			if err := fn(val.Interface(), ruleParam); err != nil {
+				return err.Error()
 			}
 		}
 	}

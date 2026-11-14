@@ -134,16 +134,37 @@ func mustPanic(t *testing.T, name string, fn func()) {
 	fn()
 }
 
-func TestLateUsePanics(t *testing.T) {
+func TestLateUseAppliesToExistingRoutesAndGroups(t *testing.T) {
 	app := New(Config{})
-	app.Use(RequestID()) // fine: docs routes do not count as user routes
 	app.Get("/a", func(ctx *Context) error { return ctx.Send("a") })
-	mustPanic(t, "App.Use after route", func() { app.Use(RequestID()) })
 
 	g := app.Group("/g")
-	g.Use(RequestID())
+	sub := g.Group("/sub")
 	g.Get("/x", func(ctx *Context) error { return ctx.Send("x") })
-	mustPanic(t, "RouteGroup.Use after route", func() { g.Use(RequestID()) })
+	sub.Get("/y", func(ctx *Context) error { return ctx.Send("y") })
+
+	// Late App.Use and RouteGroup.Use should retroactively apply to existing routes and child groups.
+	app.Use(RequestID())
+	g.Use(func(next HandlerFunc) HandlerFunc {
+		return func(ctx *Context) error {
+			ctx.SetHeader("X-Group-MW", "applied")
+			return next(ctx)
+		}
+	})
+
+	for _, path := range []string{"/a", "/g/x", "/g/sub/y"} {
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: expected 200, got %d", path, rec.Code)
+		}
+		if rec.Header().Get("X-Request-ID") == "" {
+			t.Errorf("%s: expected X-Request-ID from late App.Use", path)
+		}
+		if strings.HasPrefix(path, "/g") && rec.Header().Get("X-Group-MW") != "applied" {
+			t.Errorf("%s: expected X-Group-MW from late RouteGroup.Use", path)
+		}
+	}
 }
 
 func TestDocsRoutesGetGlobalMiddleware(t *testing.T) {
