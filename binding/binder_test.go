@@ -388,6 +388,65 @@ func TestBinderTimeSlicesAndTextUnmarshaler(t *testing.T) {
 	}
 }
 
+type TestNarrowNumericDTO struct {
+	I8  int8    `query:"i8"`
+	U8  uint8   `query:"u8"`
+	F32 float32 `query:"f32"`
+}
+
+func TestBinderNumericOverflow(t *testing.T) {
+	t.Run("valid boundaries", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/?i8=127&u8=255&f32=3.5", nil)
+		ctx := core.NewContext(httptest.NewRecorder(), req, nil)
+		var dto TestNarrowNumericDTO
+		if err := BindRequest(ctx, &dto); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if dto.I8 != 127 || dto.U8 != 255 || dto.F32 != 3.5 {
+			t.Fatalf("unexpected values: %+v", dto)
+		}
+	})
+
+	cases := []struct {
+		name  string
+		query string
+	}{
+		{"int8 overflow", "/?i8=300"},
+		{"int8 underflow", "/?i8=-200"},
+		{"uint8 overflow", "/?u8=256"},
+		{"float32 overflow", "/?f32=1e40"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", tc.query, nil)
+			ctx := core.NewContext(httptest.NewRecorder(), req, nil)
+			var dto TestNarrowNumericDTO
+			if err := BindRequest(ctx, &dto); err == nil {
+				t.Fatalf("expected overflow error for %s, got nil (dto=%+v)", tc.query, dto)
+			}
+		})
+	}
+}
+
+func TestBinderCaseInsensitiveJSONContentType(t *testing.T) {
+	type payload struct {
+		Name string `json:"name"`
+	}
+	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"name":"Gota"}`))
+	req.Header.Set("Content-Type", "Application/JSON; charset=utf-8")
+	req.ContentLength = -1 // simulate chunked transfer encoding
+	ctx := core.NewContext(httptest.NewRecorder(), req, nil)
+
+	var p payload
+	if err := BindRequest(ctx, &p); err != nil {
+		t.Fatalf("bind failed: %v", err)
+	}
+	if p.Name != "Gota" {
+		t.Fatalf("expected Name=Gota, got %q", p.Name)
+	}
+}
+
 func BenchmarkBindRequest(b *testing.B) {
 	req := httptest.NewRequest("GET", "/users/42?page=3", nil)
 	req.Header.Set("Authorization", "Bearer token123")

@@ -366,8 +366,9 @@ func BindRequest(ctx *core.Context, target any) error {
 	plan := Compile(elem.Type())
 
 	contentType := ctx.Request.Header.Get("Content-Type")
-	isMultipart := strings.HasPrefix(strings.ToLower(contentType), "multipart/form-data")
-	isFormUrlencoded := strings.HasPrefix(strings.ToLower(contentType), "application/x-www-form-urlencoded")
+	lowerCT := strings.ToLower(contentType)
+	isMultipart := strings.HasPrefix(lowerCT, "multipart/form-data")
+	isFormUrlencoded := strings.HasPrefix(lowerCT, "application/x-www-form-urlencoded")
 	hasBody := ctx.Request.ContentLength != 0
 
 	// 1. If multipart/form-data, parse multipart form
@@ -379,7 +380,7 @@ func BindRequest(ctx *core.Context, target any) error {
 		if err := ctx.Request.ParseForm(); err != nil {
 			return fmt.Errorf("failed to parse form: %w", err)
 		}
-	} else if strings.Contains(contentType, "application/json") || (!isMultipart && !isFormUrlencoded && hasBody) {
+	} else if strings.Contains(lowerCT, "application/json") || (!isMultipart && !isFormUrlencoded && hasBody) {
 		body, err := ctx.Body()
 		if err != nil {
 			return fmt.Errorf("failed to read body: %w", err)
@@ -435,19 +436,19 @@ func setFieldValue(val reflect.Value, strVal string) error {
 	case reflect.String:
 		val.SetString(strVal)
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		intVal, err := strconv.ParseInt(strVal, 10, 64)
+		intVal, err := strconv.ParseInt(strVal, 10, val.Type().Bits())
 		if err != nil {
 			return err
 		}
 		val.SetInt(intVal)
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		uintVal, err := strconv.ParseUint(strVal, 10, 64)
+		uintVal, err := strconv.ParseUint(strVal, 10, val.Type().Bits())
 		if err != nil {
 			return err
 		}
 		val.SetUint(uintVal)
 	case reflect.Float32, reflect.Float64:
-		floatVal, err := strconv.ParseFloat(strVal, 64)
+		floatVal, err := strconv.ParseFloat(strVal, val.Type().Bits())
 		if err != nil {
 			return err
 		}

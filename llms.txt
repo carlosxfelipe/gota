@@ -567,24 +567,22 @@ Gota uses **two** distinct JSON error schemas:
 
 ### 6.1 `gota.ErrorResponse` (400, 401, 403, 404, 405, 413, 500 & `HTTPError`)
 
-Use the 6 built-in constructors in handlers or middlewares:
+Use the built-in constructors in handlers or middlewares:
 
 ```go
 return Res{}, gota.BadRequest("Invalid parameters")         // 400
 return Res{}, gota.Unauthorized("Authentication required")  // 401
 return Res{}, gota.Forbidden("Insufficient permissions")    // 403
 return Res{}, gota.NotFound("User not found")               // 404
+return Res{}, gota.Conflict("Email is already registered")  // 409
 return Res{}, gota.UnprocessableEntity("Semantic conflict") // 422 (ErrorResponse shape)
 return Res{}, gota.InternalServerError("Service error")     // 500
 ```
 
-For **any other HTTP status code** (e.g. `409 Conflict`, `429 Too Many Requests`, `503 Service Unavailable`), return `&gota.HTTPError` directly (there are no `gota.Conflict` or `gota.NewHTTPError` functions on the `gota` package):
+For **any other HTTP status code** (e.g. `429 Too Many Requests`, `503 Service Unavailable`), use `gota.NewHTTPError(status, message)` or return `&gota.HTTPError` directly:
 
 ```go
-return Res{}, &gota.HTTPError{
-	Status:  http.StatusConflict,
-	Message: "Email is already registered",
-}
+return Res{}, gota.NewHTTPError(http.StatusTooManyRequests, "Rate limit exceeded")
 ```
 
 Wrapped `HTTPError` values (`fmt.Errorf("step failed: %w", gota.NotFound("..."))`) are unwrapped via `errors.As` and preserve their HTTP status.
@@ -791,7 +789,7 @@ app.Get("/healthz", func(ctx *gota.Context) error {
   - `ctx.Get(key string) (any, bool)`
 - **Input Helpers** *(prefer REPR DTO tags in REPR endpoints)*:
   - Path: `ctx.Param(name) string`, `ctx.HasParam(name) bool`, `ctx.ParamInt(name, def) int`, `ctx.ParamInt64(name, def) int64`
-  - Query: `ctx.Query(name) string`, `ctx.QueryDefault(name, def) string`, `ctx.QueryInt(name, def) int`, `ctx.QueryBool(name, def) bool`
+  - Query: `ctx.Query(name) string`, `ctx.QueryDefault(name, def) string`, `ctx.QueryInt(name, def) int`, `ctx.QueryInt64(name, def) int64`, `ctx.QueryBool(name, def) bool`
   - Headers & Cookies: `ctx.Header(name) string`, `ctx.Cookie(name) (*http.Cookie, error)`
   - Client & Correlation: `ctx.ClientIP() string`, `ctx.RequestID() string`
   - Body & Forms: `ctx.Body() ([]byte, error)` *(cached, safe to call multiple times; reads at most `Config.MaxBodyBytes` — `DefaultMaxBodyBytes` for a `Context` created outside `App.ServeHTTP` — and returns `*http.MaxBytesError` beyond it)*, `ctx.BindJson(targetPtr) error`, `ctx.Form(name) string`, `ctx.FormFile(name) (*multipart.FileHeader, error)`, `ctx.SaveUploadedFile(fh *multipart.FileHeader, dstDir string, overrideName ...string) (string, error)` *(saves safely with path-traversal protection and `0600` permissions; see also `gota.SanitizeFilename(name)`)*, `ctx.MultipartForm() (*multipart.Form, error)`, `ctx.MaxMultipartMemory() int64`, `ctx.SetMaxMultipartMemory(limit int64)`
@@ -842,7 +840,7 @@ func TestCreateUser(t *testing.T) {
 9. ❌ **Do NOT invent non-existent Gota methods or helpers**:
    - There is **no** `ctx.Next()` — custom middlewares use `func(next gota.HandlerFunc) gota.HandlerFunc`.
    - Use `ctx.Json(...)` and `ctx.BindJson(...)`, **not** `ctx.JSON(...)`.
-   - Only 6 error constructors exist (`BadRequest`, `Unauthorized`, `Forbidden`, `NotFound`, `UnprocessableEntity`, `InternalServerError`). For other statuses (409, 429, etc.), return `&gota.HTTPError{Status: code, Message: msg}`.
+   - Only 7 status-specific error constructors exist (`BadRequest`, `Unauthorized`, `Forbidden`, `NotFound`, `Conflict`, `UnprocessableEntity`, `InternalServerError`), plus `gota.NewHTTPError(status, message)`. For other statuses (429, 503, etc.), use `gota.NewHTTPError(code, msg)` or `&gota.HTTPError{Status: code, Message: msg}`.
    - Do **not** use `go-playground/validator` rules (`gte`, `lte`, `gt`, `lt`, `dive`, `omitempty`); Gota panics on unknown rules (use `min`/`max`, automatic recursion, and pointer types instead).
 10. ❌ **Do NOT combine `CORSOptions{AllowCredentials: true}` with `AllowOrigins: []string{"*"}`**: Gota intentionally **panics**; list explicit origins instead.
 11. ❌ **Do NOT accept privilege fields (`role`, `isAdmin`, `permissions`) in public request DTOs**: Always derive identity and roles server-side from verified JWT claims.

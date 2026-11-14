@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path"
+	"path/filepath"
 	"reflect"
 	"runtime/debug"
 	"strings"
@@ -680,24 +680,24 @@ func (a *App) GenerateTypeScriptSDK() string {
 
 // ExportTypeScript writes the generated TypeScript type definitions (.d.ts) to a file on disk.
 // Automatically creates parent directories if needed. Ideal for CI/CD and offline code generation.
-func (a *App) ExportTypeScript(filepath string) error {
-	if dir := path.Dir(filepath); dir != "" && dir != "." {
+func (a *App) ExportTypeScript(filePath string) error {
+	if dir := filepath.Dir(filePath); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return err
 		}
 	}
-	return os.WriteFile(filepath, []byte(a.GenerateTypeScript()), 0644)
+	return os.WriteFile(filePath, []byte(a.GenerateTypeScript()), 0644)
 }
 
 // ExportTypeScriptSDK writes the generated standalone TypeScript client SDK (.ts) to a file on disk.
 // Automatically creates parent directories if needed. Ideal for CI/CD and offline code generation.
-func (a *App) ExportTypeScriptSDK(filepath string) error {
-	if dir := path.Dir(filepath); dir != "" && dir != "." {
+func (a *App) ExportTypeScriptSDK(filePath string) error {
+	if dir := filepath.Dir(filePath); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return err
 		}
 	}
-	return os.WriteFile(filepath, []byte(a.GenerateTypeScriptSDK()), 0644)
+	return os.WriteFile(filePath, []byte(a.GenerateTypeScriptSDK()), 0644)
 }
 
 // RunCodegen processes CLI arguments (e.g. from os.Args[1:]) to export TypeScript SDK and type definitions.
@@ -1255,14 +1255,21 @@ func (g *RouteGroup) Group(prefix string) *RouteGroup {
 	return child
 }
 
-func joinPrefix(prefix, path string) string {
-	if prefix == "" {
-		return path
+func joinPrefix(prefix, routePath string) string {
+	prefix = strings.TrimRight(prefix, "/")
+	if prefix != "" && !strings.HasPrefix(prefix, "/") {
+		prefix = "/" + prefix
 	}
-	if path == "/" {
+	if routePath == "" || routePath == "/" {
+		if prefix == "" {
+			return "/"
+		}
 		return prefix
 	}
-	return prefix + path
+	if !strings.HasPrefix(routePath, "/") {
+		routePath = "/" + routePath
+	}
+	return prefix + routePath
 }
 
 func nonNegativeDuration(d time.Duration) time.Duration {

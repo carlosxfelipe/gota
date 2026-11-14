@@ -47,6 +47,11 @@ func NotFound(message string) *HTTPError {
 	return NewHTTPError(http.StatusNotFound, message)
 }
 
+// Conflict creates a 409 Conflict error.
+func Conflict(message string) *HTTPError {
+	return NewHTTPError(http.StatusConflict, message)
+}
+
 // UnprocessableEntity creates a 422 Unprocessable Entity error.
 func UnprocessableEntity(message string) *HTTPError {
 	return NewHTTPError(http.StatusUnprocessableEntity, message)

@@ -433,3 +433,56 @@ func TestSanitizeFilenameAndSaveUploadedFile(t *testing.T) {
 		t.Fatal("expected error when saving hidden dotfile")
 	}
 }
+
+func TestJoinPrefixAndGroupNormalization(t *testing.T) {
+	cases := []struct {
+		prefix string
+		path   string
+		want   string
+	}{
+		{"", "/", "/"},
+		{"", "/users", "/users"},
+		{"/api", "/", "/api"},
+		{"/api/", "/", "/api"},
+		{"/api/", "/users", "/api/users"},
+		{"/api", "users", "/api/users"},
+		{"api", "users", "/api/users"},
+		{"/", "/users", "/users"},
+		{"/", "/", "/"},
+	}
+
+	for _, tc := range cases {
+		if got := joinPrefix(tc.prefix, tc.path); got != tc.want {
+			t.Errorf("joinPrefix(%q, %q) = %q, want %q", tc.prefix, tc.path, got, tc.want)
+		}
+	}
+
+	app := New(Config{DisableDocs: true})
+	g := app.Group("/api/")
+	rt := g.Get("items", func(ctx *Context) error {
+		return ctx.Send("ok")
+	})
+	if rt.Node.FullPath != "/api/items" {
+		t.Fatalf("expected FullPath=/api/items, got %q", rt.Node.FullPath)
+	}
+}
+
+func TestContextQueryInt64AndConflictError(t *testing.T) {
+	req := httptest.NewRequest("GET", "/?cursor=9223372036854775807&bad=abc", nil)
+	ctx := NewContext(httptest.NewRecorder(), req, nil)
+
+	if got := ctx.QueryInt64("cursor", 0); got != 9223372036854775807 {
+		t.Fatalf("expected max int64, got %d", got)
+	}
+	if got := ctx.QueryInt64("missing", 42); got != 42 {
+		t.Fatalf("expected default 42, got %d", got)
+	}
+	if got := ctx.QueryInt64("bad", 7); got != 7 {
+		t.Fatalf("expected default 7 on invalid int64, got %d", got)
+	}
+
+	err := Conflict("email already exists")
+	if err.Status != http.StatusConflict || err.Message != "email already exists" {
+		t.Fatalf("unexpected Conflict error: %+v", err)
+	}
+}

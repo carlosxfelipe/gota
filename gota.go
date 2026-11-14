@@ -269,6 +269,10 @@ func JWTClaims[T any](ctx *Context, key ...string) (T, bool) {
 }
 
 // Built-in HTTP Error constructors
+func NewHTTPError(status int, message string) *HTTPError {
+	return core.NewHTTPError(status, message)
+}
+
 func BadRequest(message string) *HTTPError {
 	return core.BadRequest(message)
 }
@@ -283,6 +287,10 @@ func Forbidden(message string) *HTTPError {
 
 func NotFound(message string) *HTTPError {
 	return core.NotFound(message)
+}
+
+func Conflict(message string) *HTTPError {
+	return core.Conflict(message)
 }
 
 func UnprocessableEntity(message string) *HTTPError {

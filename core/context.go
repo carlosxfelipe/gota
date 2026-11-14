@@ -123,6 +123,19 @@ func (c *Context) QueryInt(name string, def int) int {
 	return i
 }
 
+// QueryInt64 returns the query parameter parsed as int64, or def on failure.
+func (c *Context) QueryInt64(name string, def int64) int64 {
+	v := c.Query(name)
+	if v == "" {
+		return def
+	}
+	i, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return def
+	}
+	return i
+}
+
 // QueryBool returns true if the query parameter is "1", "true", "yes", etc.
 func (c *Context) QueryBool(name string, def bool) bool {
 	v := strings.ToLower(c.Query(name))
