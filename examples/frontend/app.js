@@ -19,6 +19,9 @@ const DEFAULT_RETRY_METHODS = ["GET", "HEAD", "OPTIONS", "PUT", "DELETE"];
 /** @type {Record<string, BodyEncoding | undefined>} */
 const BODY_ENCODINGS = {};
 
+/**
+ * @template [T=unknown]
+ */
 class GotaHttpError extends Error {
   /**
    * @param {number} status
@@ -40,6 +43,47 @@ class GotaHttpError extends Error {
 }
 
 /**
+ * @template [T=unknown]
+ * @param {unknown} error
+ * @returns {error is GotaHttpError<T>}
+ */
+function isGotaHttpError(error) {
+  return error instanceof GotaHttpError;
+}
+
+/**
+ * @param {unknown[]} items
+ * @returns {string}
+ */
+function formatValidationErrors(items) {
+  const parts = items.map((item) => {
+    if (typeof item === "string") return item;
+    if (item && typeof item === "object") {
+      const e = /** @type {Record<string, unknown>} */ (item);
+      const loc = Array.isArray(e["loc"])
+        ? e["loc"].map(String).join(".")
+        : typeof e["field"] === "string"
+          ? e["field"]
+          : typeof e["path"] === "string"
+            ? e["path"]
+            : "";
+      const msg =
+        typeof e["msg"] === "string"
+          ? e["msg"]
+          : typeof e["message"] === "string"
+            ? e["message"]
+            : typeof e["error"] === "string"
+              ? e["error"]
+              : "";
+      if (loc && msg) return loc + ": " + msg;
+      if (msg) return msg;
+    }
+    return JSON.stringify(item);
+  });
+  return "Validation error: " + parts.join("; ");
+}
+
+/**
  * @param {unknown} data
  * @param {string} fallback
  * @returns {string}
@@ -52,9 +96,9 @@ function errorMessage(data, fallback) {
     if (typeof d["error"] === "string" && d["error"]) return d["error"];
     if (typeof d["detail"] === "string" && d["detail"]) return d["detail"];
     if (Array.isArray(d["detail"]) && d["detail"].length > 0)
-      return "Validation error: " + JSON.stringify(d["detail"]);
+      return formatValidationErrors(d["detail"]);
     if (Array.isArray(d["errors"]) && d["errors"].length > 0)
-      return "Validation error: " + JSON.stringify(d["errors"]);
+      return formatValidationErrors(d["errors"]);
     if (typeof d["title"] === "string" && d["title"]) return d["title"];
   }
   return fallback;
@@ -65,7 +109,10 @@ function errorMessage(data, fallback) {
  * @returns {value is Blob}
  */
 function isBlob(value) {
-  return typeof Blob !== "undefined" && value instanceof Blob;
+  return (
+    (typeof Blob !== "undefined" && value instanceof Blob) ||
+    (typeof File !== "undefined" && value instanceof File)
+  );
 }
 
 /**
@@ -74,7 +121,12 @@ function isBlob(value) {
  */
 function isReadableStream(value) {
   return (
-    typeof ReadableStream !== "undefined" && value instanceof ReadableStream
+    (typeof ReadableStream !== "undefined" &&
+      value instanceof ReadableStream) ||
+    (value !== null &&
+      typeof value === "object" &&
+      typeof (/** @type {{ getReader?: unknown }} */ (value).getReader) ===
+        "function")
   );
 }
 
@@ -146,13 +198,19 @@ function toEntries(source) {
 }
 
 /**
- * @param {object} source
+ * @param {unknown} value
+ * @param {Set<unknown>} [seen]
  * @returns {boolean}
  */
-function hasBlobValue(source) {
-  return Object.values(source).some(
-    (value) => isBlob(value) || (Array.isArray(value) && value.some(isBlob)),
-  );
+function hasBlobValue(value, seen = new Set()) {
+  if (value === null || typeof value !== "object") return false;
+  if (isBlob(value)) return true;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  if (Array.isArray(value))
+    return value.some((item) => hasBlobValue(item, seen));
+  if (value instanceof Date) return false;
+  return Object.values(value).some((item) => hasBlobValue(item, seen));
 }
 
 /**
@@ -192,6 +250,10 @@ function resolvePath(endpoint, template, params) {
  * @returns {BodyInit}
  */
 function encodeBody(endpoint, body, headers) {
+  if (typeof FormData !== "undefined" && body instanceof FormData) {
+    headers.delete("Content-Type");
+    return body;
+  }
   if (isBodyInit(body)) return body;
   const encoding = BODY_ENCODINGS[endpoint] ?? "json";
   const contentType = headers.get("Content-Type") ?? "";
@@ -233,29 +295,26 @@ function encodeBody(endpoint, body, headers) {
  * @returns {AbortSignal | undefined}
  */
 function createTimeoutSignal(timeoutMs) {
+  if (timeoutMs === undefined || timeoutMs <= 0) return undefined;
   if (
-    timeoutMs === undefined ||
-    timeoutMs <= 0 ||
-    typeof AbortController === "undefined"
+    typeof AbortSignal !== "undefined" &&
+    typeof AbortSignal.timeout === "function"
   )
-    return undefined;
-  if (typeof AbortSignal.timeout === "function")
     return AbortSignal.timeout(timeoutMs);
+  if (typeof AbortController === "undefined") return undefined;
   const controller = new AbortController();
-  const timer = setTimeout(
-    () =>
-      controller.abort(
-        new DOMException("The operation timed out.", "TimeoutError"),
-      ),
-    timeoutMs,
-  );
+  const timeoutReason =
+    typeof DOMException !== "undefined"
+      ? new DOMException("The operation timed out.", "TimeoutError")
+      : new Error("The operation timed out.");
+  const timer = setTimeout(() => controller.abort(timeoutReason), timeoutMs);
   if (
     timer &&
     typeof timer === "object" &&
     "unref" in timer &&
     typeof (/** @type {{ unref?: unknown }} */ (timer).unref) === "function"
   ) {
-    (/** @type {{ unref: () => void }} */ (timer)).unref();
+    /** @type {{ unref: () => void }} */ (timer).unref();
   }
   return controller.signal;
 }
@@ -427,8 +486,11 @@ function createGotaClient(baseUrl = "", clientOptions = {}) {
     if (credentials) init.credentials = credentials;
     const cache = options.cache ?? clientOptions.cache;
     if (cache) init.cache = cache;
-    const next = options.next ?? clientOptions.next;
-    if (next) init.next = next;
+    const nextConfig =
+      clientOptions.next || options.next
+        ? { ...clientOptions.next, ...options.next }
+        : undefined;
+    if (nextConfig) init.next = nextConfig;
     const duplex =
       options.duplex ?? (isReadableStream(init.body) ? "half" : undefined);
     if (duplex) init.duplex = duplex;
@@ -439,8 +501,9 @@ function createGotaClient(baseUrl = "", clientOptions = {}) {
     );
     if (signal) init.signal = signal;
 
-    const onRequest = options.onRequest ?? clientOptions.onRequest;
-    if (onRequest) await onRequest({ endpoint, url, init });
+    if (clientOptions.onRequest)
+      await clientOptions.onRequest({ endpoint, url, init });
+    if (options.onRequest) await options.onRequest({ endpoint, url, init });
 
     const retryOpt = options.retry ?? clientOptions.retry;
     let maxAttempts = 1;
@@ -478,8 +541,9 @@ function createGotaClient(baseUrl = "", clientOptions = {}) {
         }
         const errObj =
           fetchErr instanceof Error ? fetchErr : new Error(String(fetchErr));
-        const onError = options.onError ?? clientOptions.onError;
-        if (onError) await onError(errObj, { endpoint, url });
+        if (clientOptions.onError)
+          await clientOptions.onError(errObj, { endpoint, url });
+        if (options.onError) await options.onError(errObj, { endpoint, url });
         throw fetchErr;
       }
       if (
@@ -497,8 +561,8 @@ function createGotaClient(baseUrl = "", clientOptions = {}) {
 
     /** @type {GotaResponseContext} */
     const context = { endpoint, url };
-    const onResponse = options.onResponse ?? clientOptions.onResponse;
-    if (onResponse) await onResponse(res, context);
+    if (clientOptions.onResponse) await clientOptions.onResponse(res, context);
+    if (options.onResponse) await options.onResponse(res, context);
 
     if (!res.ok) {
       const data = await readErrorBody(res);
@@ -509,8 +573,8 @@ function createGotaClient(baseUrl = "", clientOptions = {}) {
         res.headers,
         res,
       );
-      const onError = options.onError ?? clientOptions.onError;
-      if (onError) await onError(httpErr, context);
+      if (clientOptions.onError) await clientOptions.onError(httpErr, context);
+      if (options.onError) await options.onError(httpErr, context);
       throw httpErr;
     }
     return readBody(res);
@@ -603,7 +667,7 @@ createApp({
         form.title = "";
         form.priority = "normal";
       } catch (/** @type {any} */ err) {
-        if (err instanceof GotaHttpError) {
+        if (isGotaHttpError(err)) {
           /** @type {PostTodoError} */
           const data = err.data;
           createError.value = {
@@ -636,7 +700,7 @@ createApp({
           params: { id: id.trim() },
         });
       } catch (/** @type {any} */ err) {
-        if (err instanceof GotaHttpError) {
+        if (isGotaHttpError(err)) {
           lookupError.value = `${err.status}: ${err.message}`;
         } else {
           lookupError.value = err?.message || String(err);

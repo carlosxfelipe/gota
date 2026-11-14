@@ -120,17 +120,35 @@ func TestTypeScript_StrictTSCTypeCheck(t *testing.T) {
 	// - ResponseError resolves to typed union
 	// - response fields with pointer become T | null
 	consumerTS := `
-import { createGotaClient, GotaHttpError, type ResponseError, type ResponseData } from "./sdk.ts";
+import { createGotaClient, GotaHttpError, isGotaHttpError, DEFAULT_RETRY_METHODS, type ResponseError, type ResponseData } from "./sdk.ts";
 
 async function testTyping() {
-  const api = createGotaClient("https://api.example.com");
+  const api = createGotaClient("https://api.example.com", {
+    next: { revalidate: 60 },
+    onRequest: (cfg) => {
+      cfg.init.headers.set("X-Client", "gota");
+    },
+    onResponse: (res) => {
+      void res.status;
+    },
+    onError: (err) => {
+      void err.message;
+    }
+  });
 
   // 1. Endpoint without inputs: compiles with 0 args
   const h: string = await api.fetch("GET /health");
 
   // 2. Endpoint with only optional query: compiles with 0 args or optional query
   const optList1: ResponseData<"GET /items/optional"> = await api.fetch("GET /items/optional");
-  const optList2 = await api.fetch("GET /items/optional", { query: { limit: 5 } });
+  const optList2 = await api.fetch("GET /items/optional", {
+    query: { limit: 5 },
+    next: { tags: ["items"] },
+    retry: { attempts: 2, methods: [...DEFAULT_RETRY_METHODS, "PATCH"] },
+    onRequest: (cfg) => {
+      cfg.init.headers.set("X-Req", "1");
+    }
+  });
 
   // 3. Endpoint with required query + path param
   const catItems = await api.fetch("GET /categories/:category/items", {
@@ -150,18 +168,21 @@ async function testTyping() {
   const desc: string | null = created.description;
   const special: boolean = created["is-special"];
 
-  // 5. Error handling
+  // 5. Error handling with isGotaHttpError<T>
   try {
     await api.fetch("POST /items", {
       body: { title: "Test", "is-special": false }
     });
   } catch (err) {
-    if (err instanceof GotaHttpError) {
-      const errData = err.data as ResponseError<"POST /items">;
+    if (isGotaHttpError<ResponseError<"POST /items">>(err)) {
+      const errData = err.data;
       if (typeof errData === "object" && errData !== null && "code" in errData) {
         const code: string = errData.code;
         console.log(code);
       }
+    }
+    if (err instanceof GotaHttpError) {
+      console.log(err.status);
     }
   }
 

@@ -1250,3 +1250,202 @@ run().catch((err) => {
 		}
 	}
 }
+
+func TestTypeScript_SDKRuntimeImprovements(t *testing.T) {
+	app := New(Config{Title: "Improvements Test API", Version: "1.0.0"})
+	type UploadPayload struct {
+		Name string `json:"name"`
+	}
+	type Item struct {
+		ID string `json:"id"`
+	}
+	app.Get("/items", func(ctx *Context) error {
+		return ctx.Json([]Item{})
+	}).Response(http.StatusOK, []Item{})
+	app.Post("/upload", func(ctx *Context) error {
+		return ctx.Json(Item{ID: "1"})
+	}).Body(UploadPayload{}).Response(http.StatusOK, Item{})
+	app.Patch("/items/:id", func(ctx *Context) error {
+		return ctx.Json(Item{ID: "1"})
+	}).Param("id", "").Body(UploadPayload{}).Response(http.StatusOK, Item{})
+
+	dts := app.GenerateTypeScript()
+	sdk := app.GenerateTypeScriptSDK()
+
+	for _, expected := range []string{
+		"export declare function isGotaHttpError<T = unknown>(error: unknown): error is GotaHttpError<T>;",
+		"export declare const DEFAULT_RETRY_METHODS: readonly string[];",
+		`Record<never, never> extends GotaEndpoints[K]["request"]`,
+	} {
+		if !strings.Contains(dts, expected) {
+			t.Errorf("expected %q in dts", expected)
+		}
+	}
+
+	for _, expected := range []string{
+		"export function isGotaHttpError<T = unknown>(error: unknown): error is GotaHttpError<T>",
+		"export const DEFAULT_RETRY_METHODS: readonly string[] =",
+		"as Promise<ResponseData<typeof endpoint>>",
+	} {
+		if !strings.Contains(sdk, expected) {
+			t.Errorf("expected %q in sdk", expected)
+		}
+	}
+
+	if _, err := exec.LookPath("node"); err == nil {
+		testDir := t.TempDir()
+		sdkFile := filepath.Join(testDir, "sdk.ts")
+		runnerFile := filepath.Join(testDir, "run.ts")
+
+		if err := os.WriteFile(sdkFile, []byte(sdk), 0644); err != nil {
+			t.Fatalf("failed to write test sdk file: %v", err)
+		}
+
+		runnerScript := `
+import { createGotaClient, GotaHttpError, isGotaHttpError, DEFAULT_RETRY_METHODS } from "./sdk.ts";
+import assert from "node:assert";
+
+async function run() {
+  // 1. DEFAULT_RETRY_METHODS
+  assert.deepStrictEqual(DEFAULT_RETRY_METHODS, ["GET", "HEAD", "OPTIONS", "PUT", "DELETE"]);
+
+  // 2. isGotaHttpError & errorMessage validation formatting
+  const errLoc = new GotaHttpError(422, "Unprocessable Entity", {
+    detail: [{ loc: ["body", "email"], msg: "invalid email" }, { loc: ["body", "age"], msg: "must be > 0" }]
+  });
+  assert.strictEqual(isGotaHttpError(errLoc), true);
+  assert.strictEqual(isGotaHttpError(new Error("plain")), false);
+  assert.strictEqual(errLoc.message, "Validation error: body.email: invalid email; body.age: must be > 0");
+
+  const errField = new GotaHttpError(400, "Bad Request", {
+    errors: [{ field: "name", message: "is required" }]
+  });
+  assert.strictEqual(errField.message, "Validation error: name: is required");
+
+  // 3. Chained hooks, Next.js shallow merge, FormData Content-Type cleanup, nested File/Blob & cycle protection, custom retry methods
+  const hookOrder: string[] = [];
+  let capturedNext: any;
+  let capturedHeaders: Headers | undefined;
+  let capturedBody: any;
+  let patchAttempts = 0;
+
+  const client = createGotaClient("https://api.example.com", {
+    headers: { "Content-Type": "application/json" },
+    next: { revalidate: 60, tags: ["global"] },
+    onRequest: () => { hookOrder.push("client:onRequest"); },
+    onResponse: () => { hookOrder.push("client:onResponse"); },
+    onError: () => { hookOrder.push("client:onError"); },
+    fetch: async (url: string, init: any) => {
+      capturedNext = init.next;
+      capturedHeaders = init.headers;
+      capturedBody = init.body;
+
+      if (url.includes("/items/1") && init.method === "PATCH") {
+        patchAttempts++;
+        if (patchAttempts === 1) {
+          return {
+            ok: false,
+            status: 503,
+            statusText: "Service Unavailable",
+            headers: new Headers({ "content-type": "text/plain" }),
+            text: async () => "retry me"
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ "content-type": "application/json" }),
+          text: async () => JSON.stringify({ id: "1" })
+        };
+      }
+      if (url.includes("/fail-hook")) {
+        return {
+          ok: false,
+          status: 400,
+          statusText: "Bad Request",
+          headers: new Headers({ "content-type": "application/json" }),
+          text: async () => JSON.stringify({ detail: [{ loc: ["query", "q"], msg: "required" }] })
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-type": "application/json" }),
+        text: async () => JSON.stringify({ id: "1" })
+      };
+    }
+  });
+
+  // 3a. Chained hooks + Next.js shallow merge
+  await client.fetch("GET /items", {
+    next: { tags: ["local"] },
+    onRequest: () => { hookOrder.push("req:onRequest"); },
+    onResponse: () => { hookOrder.push("req:onResponse"); },
+  });
+  assert.deepStrictEqual(hookOrder, ["client:onRequest", "req:onRequest", "client:onResponse", "req:onResponse"]);
+  assert.deepStrictEqual(capturedNext, { revalidate: 60, tags: ["local"] });
+
+  // 3b. Chained onError hooks
+  hookOrder.length = 0;
+  await assert.rejects(
+    () => (client as any).fetch("GET /fail-hook", {
+      onError: () => { hookOrder.push("req:onError"); }
+    }),
+    (e: unknown) => isGotaHttpError(e) && e.message === "Validation error: query.q: required"
+  );
+  assert.deepStrictEqual(hookOrder, ["client:onRequest", "client:onResponse", "client:onError", "req:onError"]);
+
+  // 3c. Existing FormData strips global Content-Type: application/json
+  const fd = new FormData();
+  fd.append("name", "gota");
+  await client.fetch("POST /upload", { body: fd as any });
+  assert.ok(capturedBody instanceof FormData);
+  assert.strictEqual(capturedHeaders?.has("Content-Type"), false);
+
+  // 3d. Nested Blob/File detection triggers multipart & strips Content-Type
+  const file = new File(["hello"], "hello.txt", { type: "text/plain" });
+  await client.fetch("POST /upload", { body: { nested: { file } } as any });
+  assert.ok(capturedBody instanceof FormData);
+  assert.strictEqual(capturedHeaders?.has("Content-Type"), false);
+
+  // 3e. Circular object without Blob does not hang hasBlobValue
+  const circular: any = { name: "ok" };
+  circular.self = circular;
+  assert.throws(() => {
+    // JSON.stringify will throw TypeError on circular, proving hasBlobValue didn't infinite-loop
+    JSON.stringify(circular);
+  });
+  await assert.rejects(() => client.fetch("POST /upload", { body: circular }), TypeError);
+
+  // 3f. Composing DEFAULT_RETRY_METHODS with PATCH
+  patchAttempts = 0;
+  const patched = await client.fetch("PATCH /items/:id", {
+    params: { id: "1" },
+    body: { name: "updated" },
+    retry: { attempts: 1, delayMs: 5, methods: [...DEFAULT_RETRY_METHODS, "PATCH"] }
+  });
+  assert.strictEqual(patched.id, "1");
+  assert.strictEqual(patchAttempts, 2);
+
+  console.log("IMPROVEMENTS_PASSED");
+}
+
+run().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+`
+		if err := os.WriteFile(runnerFile, []byte(runnerScript), 0644); err != nil {
+			t.Fatalf("failed to write runner ts script: %v", err)
+		}
+
+		cmd := exec.Command("node", "--experimental-strip-types", runnerFile)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("node test execution failed: %v, output:\n%s", err, string(out))
+		}
+		if !strings.Contains(string(out), "IMPROVEMENTS_PASSED") {
+			t.Fatalf("expected node tests to pass, got:\n%s", string(out))
+		}
+	}
+}

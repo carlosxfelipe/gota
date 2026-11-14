@@ -180,11 +180,13 @@ export interface GotaClient {
   readonly baseUrl: string;
   fetch<K extends EndpointKey>(
     endpoint: K,
-    ...args: {} extends GotaEndpoints[K]["request"]
+    ...args: Record<never, never> extends GotaEndpoints[K]["request"]
       ? [options?: RequestOptions<K>]
       : [options: RequestOptions<K>]
   ): Promise<ResponseData<K>>;
 }
+
+export declare const DEFAULT_RETRY_METHODS: readonly string[];
 
 export declare class GotaHttpError<T = unknown> extends Error {
   readonly status: number;
@@ -194,5 +196,7 @@ export declare class GotaHttpError<T = unknown> extends Error {
   readonly response: Response | undefined;
   constructor(status: number, statusText: string, data: T, headers?: Headers, response?: Response);
 }
+
+export declare function isGotaHttpError<T = unknown>(error: unknown): error is GotaHttpError<T>;
 
 export declare function createGotaClient(baseUrl?: string, clientOptions?: GotaClientOptions): GotaClient;
