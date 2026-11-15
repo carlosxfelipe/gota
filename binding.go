@@ -1,4 +1,4 @@
-package binding
+package repr
 
 import (
 	"encoding"
@@ -10,34 +10,57 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/carlosxfelipe/gota/core"
 )
 
 var (
+	timeType             = reflect.TypeOf(time.Time{})
+	fileHeaderType       = reflect.TypeOf(multipart.FileHeader{})
 	fileHeaderPtrType    = reflect.TypeOf((*multipart.FileHeader)(nil))
 	fileHeaderSliceType  = reflect.TypeOf(([]*multipart.FileHeader)(nil))
-	timeType             = reflect.TypeOf(time.Time{})
-	compiledBindingCache sync.Map // map[reflect.Type]*BindingPlan
+	compiledBindingCache sync.Map // map[reflect.Type]*bindingPlan
 )
 
-// BindingPlan holds the pre-compiled schema and plan for binding a struct type.
-type BindingPlan struct {
-	items    []planItem
-	clear    *clearFieldPlan
-	hasQuery bool
+// embeddedStructType reports whether f is an anonymous embedded struct whose fields promote
+// into the enclosing struct (mirroring encoding/json promotion rules).
+func embeddedStructType(f reflect.StructField) (reflect.Type, bool) {
+	if !f.Anonymous {
+		return nil, false
+	}
+	if name, _, _ := strings.Cut(f.Tag.Get("json"), ","); name != "" {
+		return nil, false
+	}
+	for _, tag := range [...]string{"form", "param", "query", "header"} {
+		if f.Tag.Get(tag) != "" {
+			return nil, false
+		}
+	}
+
+	ft := f.Type
+	isPtr := ft.Kind() == reflect.Pointer
+	if isPtr {
+		ft = ft.Elem()
+	}
+	if ft.Kind() != reflect.Struct || ft == timeType || ft == fileHeaderType {
+		return nil, false
+	}
+	if isPtr && !f.IsExported() {
+		return nil, false
+	}
+	return ft, true
+}
+
+type bindingPlan struct {
+	items []planItem
+	clear *clearFieldPlan
 }
 
 type planItem struct {
-	index int
-
-	// Embedded struct support
+	index        int
 	isEmbedded   bool
 	isPointer    bool
 	embeddedType reflect.Type
-	embeddedPlan *BindingPlan
+	embeddedPlan *bindingPlan
 
-	// Direct field binding
 	paramTag    string
 	queryTag    string
 	headerTag   string
@@ -67,8 +90,7 @@ func (p *clearFieldPlan) execute(elem reflect.Value) {
 		return
 	}
 	for _, idx := range p.fieldIndices {
-		f := elem.Field(idx)
-		if f.CanSet() {
+		if f := elem.Field(idx); f.CanSet() {
 			f.SetZero()
 		}
 	}
@@ -99,13 +121,13 @@ func buildClearPlan(t reflect.Type, seen map[reflect.Type]bool) *clearFieldPlan 
 	p := &clearFieldPlan{}
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
-		if ft, ok := core.EmbeddedStructType(field); ok {
-			subPlan := buildClearPlan(ft, seen)
-			if subPlan != nil && !subPlan.isEmpty() {
+		if ft, ok := embeddedStructType(field); ok {
+			sub := buildClearPlan(ft, seen)
+			if sub != nil && !sub.isEmpty() {
 				p.embedded = append(p.embedded, embeddedClearPlan{
 					index:     i,
 					isPointer: field.Type.Kind() == reflect.Pointer,
-					plan:      subPlan,
+					plan:      sub,
 				})
 			}
 			continue
@@ -124,9 +146,7 @@ func buildClearPlan(t reflect.Type, seen map[reflect.Type]bool) *clearFieldPlan 
 	return p
 }
 
-// Compile compiles and caches the binding plan for struct type t.
-// If t is a pointer, it compiles for the element type.
-func Compile(t reflect.Type) *BindingPlan {
+func compileBindingPlan(t reflect.Type) *bindingPlan {
 	if t == nil {
 		return nil
 	}
@@ -137,28 +157,27 @@ func Compile(t reflect.Type) *BindingPlan {
 		return nil
 	}
 	if cached, ok := compiledBindingCache.Load(t); ok {
-		return cached.(*BindingPlan)
+		return cached.(*bindingPlan)
 	}
-	plan := compilePlan(t, nil, make(map[reflect.Type]bool))
+	plan := buildBindingPlan(t, nil, make(map[reflect.Type]bool))
 	compiledBindingCache.Store(t, plan)
 	return plan
 }
 
-func compilePlan(typ reflect.Type, shadowed map[string]bool, seen map[reflect.Type]bool) *BindingPlan {
+func buildBindingPlan(typ reflect.Type, shadowed map[string]bool, seen map[reflect.Type]bool) *bindingPlan {
 	if seen[typ] {
 		return nil
 	}
 	seen[typ] = true
 	defer delete(seen, typ)
 
-	// Collect tags declared on this struct itself so they shadow promoted fields.
 	mergedShadowed := make(map[string]bool, len(shadowed)+typ.NumField()*4)
 	for k, v := range shadowed {
 		mergedShadowed[k] = v
 	}
 	for i := 0; i < typ.NumField(); i++ {
 		f := typ.Field(i)
-		if _, ok := core.EmbeddedStructType(f); ok {
+		if _, ok := embeddedStructType(f); ok {
 			continue
 		}
 		for _, tag := range [...]string{"param", "query", "header", "form"} {
@@ -173,19 +192,12 @@ func compilePlan(typ reflect.Type, shadowed map[string]bool, seen map[reflect.Ty
 		clearPlan = nil
 	}
 
-	plan := &BindingPlan{
-		clear: clearPlan,
-	}
-
+	plan := &bindingPlan{clear: clearPlan}
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
-
-		if ft, ok := core.EmbeddedStructType(field); ok {
-			embPlan := compilePlan(ft, mergedShadowed, seen)
+		if ft, ok := embeddedStructType(field); ok {
+			embPlan := buildBindingPlan(ft, mergedShadowed, seen)
 			if embPlan != nil && len(embPlan.items) > 0 {
-				if embPlan.hasQuery {
-					plan.hasQuery = true
-				}
 				plan.items = append(plan.items, planItem{
 					isEmbedded:   true,
 					index:        i,
@@ -196,36 +208,28 @@ func compilePlan(typ reflect.Type, shadowed map[string]bool, seen map[reflect.Ty
 			}
 			continue
 		}
-
 		if !field.IsExported() {
 			continue
 		}
 
-		var item planItem
-		item.index = i
-		item.isSlice = field.Type.Kind() == reflect.Slice
+		item := planItem{
+			index:   i,
+			isSlice: field.Type.Kind() == reflect.Slice,
+		}
 		hasAction := false
 
-		// Check param tag: param:"id"
 		if paramTag := field.Tag.Get("param"); paramTag != "" && !shadowed["param:"+paramTag] {
 			item.paramTag = paramTag
 			hasAction = true
 		}
-
-		// Check query tag: query:"search"
 		if queryTag := field.Tag.Get("query"); queryTag != "" && !shadowed["query:"+queryTag] {
 			item.queryTag = queryTag
 			hasAction = true
-			plan.hasQuery = true
 		}
-
-		// Check header tag: header:"X-Token"
 		if headerTag := field.Tag.Get("header"); headerTag != "" && !shadowed["header:"+headerTag] {
 			item.headerTag = headerTag
 			hasAction = true
 		}
-
-		// Check form tag: form:"avatar" or form:"name"
 		if formTag := field.Tag.Get("form"); formTag != "" && formTag != "-" && !shadowed["form:"+formTag] {
 			item.formTag = formTag
 			hasAction = true
@@ -240,11 +244,10 @@ func compilePlan(typ reflect.Type, shadowed map[string]bool, seen map[reflect.Ty
 			plan.items = append(plan.items, item)
 		}
 	}
-
 	return plan
 }
 
-func (p *BindingPlan) execute(ctx *core.Context, elem reflect.Value, queryVals *url.Values) error {
+func (p *bindingPlan) execute(ctx *Context, elem reflect.Value, queryVals *url.Values) error {
 	for i := range p.items {
 		item := &p.items[i]
 		fieldVal := elem.Field(item.index)
@@ -279,16 +282,14 @@ func (p *BindingPlan) execute(ctx *core.Context, elem reflect.Value, queryVals *
 			continue
 		}
 
-		// Param tag
 		if item.paramTag != "" {
-			if strVal, ok := ctx.Params[item.paramTag]; ok && strVal != "" {
+			if strVal := ctx.Param(item.paramTag); strVal != "" {
 				if err := setFieldValue(fieldVal, strVal); err != nil {
 					return fmt.Errorf("invalid path param %q: %w", item.paramTag, err)
 				}
 			}
 		}
 
-		// Query tag
 		if item.queryTag != "" {
 			if *queryVals == nil {
 				*queryVals = ctx.Request.URL.Query()
@@ -304,7 +305,6 @@ func (p *BindingPlan) execute(ctx *core.Context, elem reflect.Value, queryVals *
 			}
 		}
 
-		// Header tag
 		if item.headerTag != "" {
 			if strVal := ctx.Header(item.headerTag); strVal != "" {
 				if err := setFieldValue(fieldVal, strVal); err != nil {
@@ -313,7 +313,6 @@ func (p *BindingPlan) execute(ctx *core.Context, elem reflect.Value, queryVals *
 			}
 		}
 
-		// Form tag
 		if item.formTag != "" {
 			if item.isFormFile {
 				if files := getFormFiles(ctx, item.formTag); len(files) > 0 {
@@ -327,10 +326,7 @@ func (p *BindingPlan) execute(ctx *core.Context, elem reflect.Value, queryVals *
 				}
 				continue
 			}
-
-			// Text / primitive form values
-			formVals := getFormValues(ctx, item.formTag)
-			if len(formVals) > 0 {
+			if formVals := getFormValues(ctx, item.formTag); len(formVals) > 0 {
 				if item.isSlice {
 					if err := setSliceValues(fieldVal, formVals, false); err != nil {
 						return fmt.Errorf("invalid form field %q: %w", item.formTag, err)
@@ -344,11 +340,11 @@ func (p *BindingPlan) execute(ctx *core.Context, elem reflect.Value, queryVals *
 	return nil
 }
 
-// BindRequest binds parameters, query strings, headers, form data, and JSON body from core.Context to a target pointer.
-func BindRequest(ctx *core.Context, target any) error {
+// bindRequest binds path params, query params, headers, form data, and JSON body into target.
+func bindRequest(ctx *Context, target any) error {
 	val := reflect.ValueOf(target)
 	if val.Kind() != reflect.Pointer || val.IsNil() {
-		return fmt.Errorf("gota: bind target must be a non-nil pointer, got %T", target)
+		return fmt.Errorf("repr: bind target must be a non-nil pointer, got %T", target)
 	}
 
 	elem := val.Elem()
@@ -363,24 +359,22 @@ func BindRequest(ctx *core.Context, target any) error {
 		return nil
 	}
 
-	plan := Compile(elem.Type())
+	plan := compileBindingPlan(elem.Type())
 
-	contentType := ctx.Request.Header.Get("Content-Type")
-	lowerCT := strings.ToLower(contentType)
+	lowerCT := strings.ToLower(ctx.Request.Header.Get("Content-Type"))
 	isMultipart := strings.HasPrefix(lowerCT, "multipart/form-data")
-	isFormUrlencoded := strings.HasPrefix(lowerCT, "application/x-www-form-urlencoded")
+	isFormURLEncoded := strings.HasPrefix(lowerCT, "application/x-www-form-urlencoded")
 	hasBody := ctx.Request.ContentLength != 0
 
-	// 1. If multipart/form-data, parse multipart form
 	if isMultipart {
-		if err := ctx.Request.ParseMultipartForm(ctx.MaxMultipartMemory()); err != nil {
+		if err := ctx.Request.ParseMultipartForm(ctx.maxMultipartMemory); err != nil {
 			return fmt.Errorf("failed to parse multipart form: %w", err)
 		}
-	} else if isFormUrlencoded {
+	} else if isFormURLEncoded {
 		if err := ctx.Request.ParseForm(); err != nil {
 			return fmt.Errorf("failed to parse form: %w", err)
 		}
-	} else if strings.Contains(lowerCT, "application/json") || (!isMultipart && !isFormUrlencoded && hasBody) {
+	} else if strings.Contains(lowerCT, "application/json") || hasBody {
 		body, err := ctx.Body()
 		if err != nil {
 			return fmt.Errorf("failed to read body: %w", err)
@@ -389,13 +383,14 @@ func BindRequest(ctx *core.Context, target any) error {
 			if err := ctx.DecodeJSON(body, target); err != nil {
 				return fmt.Errorf("invalid json body: %w", err)
 			}
+			// Clear fields that are bound exclusively from param/query/header/form so
+			// JSON payloads cannot spoof path/query/header fields.
 			if plan != nil && plan.clear != nil {
 				plan.clear.execute(elem)
 			}
 		}
 	}
 
-	// 2. Execute precompiled binding plan
 	if plan != nil {
 		var queryVals url.Values
 		return plan.execute(ctx, elem, &queryVals)
@@ -403,11 +398,8 @@ func BindRequest(ctx *core.Context, target any) error {
 	return nil
 }
 
-// setFieldValue sets a reflect.Value from a string representation.
 func setFieldValue(val reflect.Value, strVal string) error {
 	if val.Kind() == reflect.Pointer {
-		// Pointer fields (*int, *bool, *time.Time, ...) stay nil when the value is absent,
-		// so 0/false can be told apart from "not provided".
 		elem := reflect.New(val.Type().Elem())
 		if err := setFieldValue(elem.Elem(), strVal); err != nil {
 			return err
@@ -427,8 +419,8 @@ func setFieldValue(val reflect.Value, strVal string) error {
 	}
 
 	if val.CanAddr() {
-		if unmarshaler, ok := val.Addr().Interface().(encoding.TextUnmarshaler); ok {
-			return unmarshaler.UnmarshalText([]byte(strVal))
+		if u, ok := val.Addr().Interface().(encoding.TextUnmarshaler); ok {
+			return u.UnmarshalText([]byte(strVal))
 		}
 	}
 
@@ -436,23 +428,23 @@ func setFieldValue(val reflect.Value, strVal string) error {
 	case reflect.String:
 		val.SetString(strVal)
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		intVal, err := strconv.ParseInt(strVal, 10, val.Type().Bits())
+		n, err := strconv.ParseInt(strVal, 10, val.Type().Bits())
 		if err != nil {
 			return err
 		}
-		val.SetInt(intVal)
+		val.SetInt(n)
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		uintVal, err := strconv.ParseUint(strVal, 10, val.Type().Bits())
+		n, err := strconv.ParseUint(strVal, 10, val.Type().Bits())
 		if err != nil {
 			return err
 		}
-		val.SetUint(uintVal)
+		val.SetUint(n)
 	case reflect.Float32, reflect.Float64:
-		floatVal, err := strconv.ParseFloat(strVal, val.Type().Bits())
+		f, err := strconv.ParseFloat(strVal, val.Type().Bits())
 		if err != nil {
 			return err
 		}
-		val.SetFloat(floatVal)
+		val.SetFloat(f)
 	case reflect.Bool:
 		switch strings.ToLower(strVal) {
 		case "true", "1", "t", "yes", "y":
@@ -463,8 +455,7 @@ func setFieldValue(val reflect.Value, strVal string) error {
 			return fmt.Errorf("invalid boolean value %q", strVal)
 		}
 	case reflect.Slice:
-		parts := strings.Split(strVal, ",")
-		return setSliceValues(val, parts, true)
+		return setSliceValues(val, strings.Split(strVal, ","), true)
 	default:
 		return fmt.Errorf("unsupported field type: %s", val.Kind())
 	}
@@ -485,14 +476,14 @@ func setSliceValues(val reflect.Value, items []string, trim bool) error {
 	return nil
 }
 
-func getFormFiles(ctx *core.Context, tag string) []*multipart.FileHeader {
+func getFormFiles(ctx *Context, key string) []*multipart.FileHeader {
 	if ctx.Request.MultipartForm != nil && ctx.Request.MultipartForm.File != nil {
-		return ctx.Request.MultipartForm.File[tag]
+		return ctx.Request.MultipartForm.File[key]
 	}
 	return nil
 }
 
-func getFormValues(ctx *core.Context, key string) []string {
+func getFormValues(ctx *Context, key string) []string {
 	if ctx.Request.MultipartForm != nil && ctx.Request.MultipartForm.Value != nil {
 		if vals := ctx.Request.MultipartForm.Value[key]; len(vals) > 0 {
 			return vals

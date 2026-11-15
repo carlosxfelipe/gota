@@ -1,4 +1,4 @@
-package core
+package repr
 
 // TypeScript runtime templates emitted into the generated declarations (.d.ts) and SDK (.ts).
 //
@@ -297,16 +297,15 @@ function resolvePath(endpoint: string, template: string, params: Record<string, 
   return template
     .split("/")
     .map((segment) => {
-      const kind = segment.charAt(0);
-      if (kind !== ":" && kind !== "*") return segment;
-      const name = segment.slice(1) || "wildcard";
+      if (!segment.startsWith("{") || !segment.endsWith("}") || segment.length <= 2) {
+        return segment;
+      }
+      const inner = segment.slice(1, -1);
+      const colonIdx = inner.indexOf(":");
+      const name = colonIdx >= 0 ? inner.slice(0, colonIdx) : inner;
       const value = params[name];
       if (value === undefined || value === null) {
         throw new Error("Missing required path parameter \"" + name + "\" for " + endpoint);
-      }
-      if (kind === "*") {
-        const parts = Array.isArray(value) ? value.map(String) : String(value).replace(/^\/+/, "").split("/");
-        return parts.map(encodeURIComponent).join("/");
       }
       return encodeURIComponent(String(value));
     })
