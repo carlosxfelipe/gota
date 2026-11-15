@@ -220,21 +220,26 @@ func tsNeedsParens(ts string) bool {
 	inString := false
 	for i := 0; i < len(ts); i++ {
 		c := ts[i]
-		switch {
-		case inString:
-			if c == '\\' {
+		if inString {
+			switch c {
+			case '\\':
 				i++
-			} else if c == '"' {
+			case '"':
 				inString = false
 			}
-		case c == '"':
+			continue
+		}
+		switch c {
+		case '"':
 			inString = true
-		case c == '<' || c == '(' || c == '{' || c == '[':
+		case '<', '(', '{', '[':
 			depth++
-		case c == '>' || c == ')' || c == '}' || c == ']':
+		case '>', ')', '}', ']':
 			depth--
-		case depth == 0 && (c == '|' || c == '&'):
-			return true
+		case '|', '&':
+			if depth == 0 {
+				return true
+			}
 		}
 	}
 	return false
