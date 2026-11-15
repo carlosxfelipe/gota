@@ -20,7 +20,7 @@
 
 - **Typed REPR Endpoints**: `Endpoint[Req, Res]` / `EndpointFunc[Req, Res]` with `param`, `query`, `header`, `form`, and JSON binding, validation, typed responses, and SSE streams.
 - **OpenAPI 3.1 & Scalar**: Automatic spec at `/openapi.json`, interactive UI at `/docs` (with SRI, themes, CSP, and isolated `Config.DocsMiddlewares`), plus `app.ExportOpenAPI()`.
-- **TypeScript SDK**: Generates `.d.ts` declarations and a zero-dependency `fetch` client (`createGotaClient`), served optionally at runtime or exported via `app.ExportTypeScriptSDK()` / `app.RunCodegen()`.
+- **TypeScript SDK**: Generates `.d.ts` declarations and a modular, zero-dependency, tree-shakeable `fetch` client (`createGotaClient`, `parseGotaError`, `isAbortError`, `queryOptions`) split by tag with CI drift verification (`--check`), exported via `app.ExportTypeScriptSDK()` / `app.RunCodegen()`.
 - **`net/http` & `chi` Native**: Standard `func(http.Handler) http.Handler` middlewares via `app.Use(...)` and `group.Use(...)`, with safe body/header limits and startup tag checks.
 
 ## Installation

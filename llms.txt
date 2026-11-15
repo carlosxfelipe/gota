@@ -45,7 +45,6 @@ func main() {
 		Version:               "1.0.0",
 		Description:           "Example Gota service.",
 		TypeScriptURL:         "/types.d.ts", // set "-" in production
-		TypeScriptSDKURL:      "/sdk.ts",     // set "-" in production
 		DisallowUnknownFields: true,
 		Scalar: scalar.Config{
 			Theme:      scalar.ThemeFastify,
@@ -79,7 +78,6 @@ func main() {
 - `DocsURL` (`string`, default `"/docs"`): Scalar UI route.
 - `OpenAPIURL` (`string`, default `"/openapi.json"`): OpenAPI 3.1 JSON spec route.
 - `TypeScriptURL` (`string`, default `""`): HTTP route for `.d.ts` definitions (e.g. `"/types.d.ts"`). Empty or `"-"` disables serving over HTTP.
-- `TypeScriptSDKURL` (`string`, default `""`): HTTP route for the standalone `.ts` SDK (e.g. `"/sdk.ts"`). Empty or `"-"` disables serving over HTTP.
 - `DisableDocs` (`bool`): Disables `/docs`, `/openapi.json`, and runtime TypeScript routes.
 - `Scalar` (`scalar.Config`): Visual and security settings for Scalar UI.
 - `Servers` (`[]repr.OpenAPIServer`): OpenAPI `servers` entries.
@@ -274,7 +272,7 @@ Gota generates both `.d.ts` type declarations and a zero-dependency `fetch` clie
 
 ### Programmatic Export & CLI Codegen
 
-In production, set `TypeScriptURL: "-"` and `TypeScriptSDKURL: "-"` and generate the SDK during CI/CD:
+In production, set `TypeScriptURL: "-"` and generate the modular SDK during CI/CD:
 
 ```go
 if handled, err := app.RunCodegen(os.Args[1:]); handled {
@@ -286,39 +284,93 @@ if handled, err := app.RunCodegen(os.Args[1:]); handled {
 ```
 
 Supported `RunCodegen` CLI flags:
-- `--ts-sdk` (defaults to `./dist/sdk.ts`) / `--ts-sdk=<path>`
-- `--ts-types` (defaults to `./dist/types.d.ts`) / `--ts-types=<path>`
-- `--stdout` (prints full SDK, or `.d.ts` when combined with `--types-only`)
+- `--ts-sdk` (defaults to `./dist/sdk`) / `--ts-sdk=<dir>` — modular TypeScript client SDK directory (`index.ts`, `runtime.ts`, `types/<tag>.ts`, `types/_shared.ts`, `endpoints/<tag>.ts`)
+- `--ts-types` (defaults to `./dist/types.d.ts`) / `--ts-types=<path>` — `.d.ts` declarations only
+- `--ts-import-ext=<ext>` — relative import suffix in `--ts-sdk`: `""`/`none` (default, bundlers), `".js"` (`node16`/`nodenext` ESM), or `".ts"` (Node type stripping, Deno, Bun)
+- `--check` — CI verification mode; verifies exported SDK/types match current routes (no missing, modified, or stale managed files) without writing to disk
+- `--stdout` — prints `.d.ts` declarations to standard output
 
-Direct export methods: `app.GenerateTypeScript()`, `app.GenerateTypeScriptSDK()`, `app.ExportTypeScript(path)`, `app.ExportTypeScriptSDK(path)`.
+Direct export & check methods: `app.GenerateTypeScript()`, `app.GenerateTypeScriptSDK(opts...)`, `app.ExportTypeScript(path)`, `app.ExportTypeScriptSDK(dir, opts...)`, `app.CheckTypeScript(path)`, `app.CheckTypeScriptSDK(dir, opts...)`.
+
+### Modular Layout & Project Extensions
+
+Running `--ts-sdk=./src/lib/sdk` splits schemas and `GotaEndpoints` by route tag (`types/<tag>.ts`, `types/_shared.ts`, `endpoints/<tag>.ts`), isolates the route-independent core in `runtime.ts`, and removes stale Gota-managed files on regeneration while preserving determinism for clean Git diffs.
+
+Keep project-specific client configuration and domain helpers in a separate wrapper outside the generated directory (e.g., `src/lib/api.ts` importing from `./sdk`), so regenerating the SDK overwrites only the generated directory. In CI, run your codegen binary with `--ts-sdk=... --check` to catch forgotten SDK updates.
 
 ### Using the Generated TypeScript SDK
 
 ```ts
-import { createGotaClient, isGotaHttpError } from "./sdk";
+// src/lib/api.ts (project wrapper outside the generated ./sdk directory)
+import {
+  createGotaClient,
+  isAbortError,
+  isEndpointError,
+  parseGotaError,
+} from "./sdk";
 
-const api = createGotaClient("http://localhost:3000", {
+export const api = createGotaClient(process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000", {
   headers: async () => ({ Authorization: `Bearer ${getToken()}` }),
-  timeoutMs: 5000,
+  timeoutMs: 8000,
   retry: 2,
 });
 
+export { isAbortError, isEndpointError, parseGotaError };
+```
+
+#### Error Parsing & Narrowing
+
+Use `parseGotaError(err)` instead of custom error parsers to normalize HTTP errors, Gota `ValidationError` (`kind === "validation"` with `fieldErrors`), `ErrorResponse` (`requestId`), timeouts (`kind === "timeout"`), caller cancellations (`kind === "abort"`), and network failures (`kind === "network"`):
+
+```ts
 try {
-  const todos = await api.fetch("GET /todos");
   const created = await api.fetch("POST /todos", {
     body: { title: "Ship release", priority: "high" },
   });
-  const todo = await api.fetch("GET /todos/{id}", {
-    params: { id: created.id },
-  });
 } catch (err) {
-  if (isGotaHttpError(err)) {
-    console.error(err.status, err.data);
+  if (isEndpointError(err, "POST /todos")) {
+    // err.data is narrowed to ResponseError<"POST /todos">
+  }
+  const parsed = parseGotaError(err);
+  if (parsed.kind === "validation") {
+    console.error(parsed.fieldErrors); // Record<string, string[]>
+  } else {
+    console.error(parsed.message, parsed.requestId);
   }
 }
 ```
 
-Client features: dynamic async `headers`, `credentials`, `cache`, Next.js `next` (`revalidate` / `tags`), `timeoutMs`, `retry` (exponential backoff with `Retry-After` support on idempotent methods), `onRequest`/`onResponse`/`onError` hooks, automatic `FormData` (when `Blob`/`File` is present) and `URLSearchParams` encoding, and `ReadableStream<string>` for SSE responses.
+#### Frontend Hooks (TanStack Query / SWR) & Effect Cancellation
+
+Prefer `api.queryOptions(...)` with a data-fetching library (or a thin service/hook layer) over calling `api.fetch` directly inside `useEffect`:
+
+```ts
+// TanStack Query: automatically passes { signal } and builds prefix-invalidatable keys
+const todosQuery = useQuery(api.queryOptions("GET /todos", { query: { done: false } }));
+// Invalidate any variant with: queryClient.invalidateQueries({ queryKey: ["GET /todos"] })
+
+// SWR:
+const { queryKey, queryFn } = api.queryOptions("GET /todos", { query: { done: false } });
+const { data } = useSWR(queryKey, () => queryFn());
+```
+
+When using `useEffect` directly, pass an `AbortController.signal` and ignore `isAbortError(err)` (caller cancellations also automatically skip `onError` hooks):
+
+```ts
+useEffect(() => {
+  const controller = new AbortController();
+  api
+    .fetch("GET /todos", { query: { done: false }, signal: controller.signal })
+    .then(setTodos)
+    .catch((err) => {
+      if (isAbortError(err)) return;
+      setError(parseGotaError(err).message);
+    });
+  return () => controller.abort();
+}, []);
+```
+
+Client features: dynamic async `headers`, `credentials`, `cache`, Next.js `next` (`revalidate` / `tags`), `timeoutMs`, `retry` (exponential backoff with `Retry-After` support on idempotent methods), `onRequest`/`onResponse`/`onError` hooks, `AbortSignal` cancellation, `queryOptions` helper, `parseGotaError` / `isAbortError` / `isEndpointError`, automatic `FormData` (when `Blob`/`File` is present) and `URLSearchParams` encoding, and `ReadableStream<string>` for SSE responses.
 
 ## Security & Auditing Utilities
 

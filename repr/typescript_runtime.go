@@ -7,14 +7,20 @@ package repr
 //   - "erasable" syntax only (no enums, namespaces or parameter properties), so the SDK runs
 //     directly with `node sdk.ts` (type stripping), Deno, Bun and any bundler;
 //   - compiles under `strict`, `exactOptionalPropertyTypes` and `noUncheckedIndexedAccess`;
-//   - no template literals (backticks), since the templates live in Go raw strings.
+//   - no template literals (backticks), since the templates live in Go raw strings;
+//   - no top-level side effects, so bundlers can tree-shake unused helpers.
 //
-// The rendered file is: header + schemas + GotaEndpoints + tsRuntimeTypes, followed by either
-// tsRuntimeDeclarations (.d.ts) or the BODY_ENCODINGS table + tsRuntimeImplementation (.ts).
+// The runtime is split in two layers:
+//   - the generic core (tsRuntimeTypes + tsRuntimeImplementation / tsRuntimeDeclarations) knows
+//     nothing about the API routes. In multi-file mode it is emitted verbatim as runtime.ts, so
+//     the file only changes when Gota itself changes;
+//   - the bindings (tsBindingTypes + tsBindingImplementation / tsBindingDeclarations) specialize
+//     the core for the generated GotaEndpoints map and BODY_ENCODINGS table.
 
-// tsRuntimeExportedNames lists every name exported (or declared at top level) by the runtime.
-// Generated schema types must never shadow them.
+// tsRuntimeExportedNames lists every name exported (or declared at top level) by the runtime
+// and the bindings. Generated schema types must never shadow them.
 var tsRuntimeExportedNames = []string{
+	// Bindings.
 	"GotaEndpoints",
 	"EndpointKey",
 	"RequestParams",
@@ -22,27 +28,45 @@ var tsRuntimeExportedNames = []string{
 	"RequestBody",
 	"ResponseData",
 	"ResponseError",
+	"RequestOptions",
+	"GotaClient",
+	"createGotaClient",
+	"isEndpointError",
+	"BODY_ENCODINGS",
+	// Generic runtime core.
 	"NextFetchRequestConfig",
 	"GotaRetryConfig",
 	"GotaRequestInit",
 	"GotaRequestConfig",
 	"GotaResponseContext",
 	"BaseRequestOptions",
-	"RequestOptions",
 	"BodyEncoding",
+	"BodyEncodingMap",
 	"GotaClientOptions",
-	"GotaClient",
+	"EndpointDefinition",
+	"EndpointMap",
+	"RequestOptionsFor",
+	"RequestArgs",
+	"GotaQueryKeyArgs",
+	"GotaQueryOptions",
+	"GotaClientFor",
+	"GotaErrorKind",
+	"GotaErrorDetails",
 	"GotaHttpError",
 	"isGotaHttpError",
+	"isAbortError",
+	"parseGotaError",
 	"DEFAULT_RETRY_METHODS",
-	"createGotaClient",
+	"createGotaClientFor",
 	// Internal (non-exported) runtime identifiers.
 	"RawRequestOptions",
 	"FormEntry",
-	"BODY_ENCODINGS",
+	"NETWORK_ERRORS",
+	"GOTA_ERROR_BRAND",
 }
 
-const tsRuntimeTypes = `export type EndpointKey = keyof GotaEndpoints;
+// tsBindingTypes specializes the generic runtime types for the generated GotaEndpoints map.
+const tsBindingTypes = `export type EndpointKey = keyof GotaEndpoints;
 
 export type RequestParams<K extends EndpointKey> = GotaEndpoints[K]["params"];
 export type RequestQuery<K extends EndpointKey> = GotaEndpoints[K]["query"];
@@ -50,7 +74,37 @@ export type RequestBody<K extends EndpointKey> = GotaEndpoints[K]["body"];
 export type ResponseData<K extends EndpointKey> = GotaEndpoints[K]["response"];
 export type ResponseError<K extends EndpointKey> = GotaEndpoints[K]["error"];
 
-export interface NextFetchRequestConfig {
+export type RequestOptions<K extends EndpointKey> = RequestOptionsFor<GotaEndpoints, K>;
+
+export type GotaClient = GotaClientFor<GotaEndpoints>;
+`
+
+const tsBindingDeclarations = `
+export declare function createGotaClient(baseUrl?: string, clientOptions?: GotaClientOptions): GotaClient;
+
+export declare function isEndpointError<K extends EndpointKey>(
+  error: unknown,
+  endpoint: K,
+): error is GotaHttpError<ResponseError<K>>;
+`
+
+const tsBindingImplementation = `
+/** Creates a typed client for this API. */
+export function createGotaClient(baseUrl = "", clientOptions: GotaClientOptions = {}): GotaClient {
+  return createGotaClientFor<GotaEndpoints>(baseUrl, clientOptions, BODY_ENCODINGS);
+}
+
+/** Narrows an error to the documented error payload of a specific endpoint. */
+export function isEndpointError<K extends EndpointKey>(
+  error: unknown,
+  endpoint: K,
+): error is GotaHttpError<ResponseError<K>> {
+  return isGotaHttpError(error) && error.endpoint === endpoint;
+}
+`
+
+// tsRuntimeTypes holds the route-independent runtime types.
+const tsRuntimeTypes = `export interface NextFetchRequestConfig {
   revalidate?: number | false;
   tags?: string[];
 }
@@ -87,6 +141,10 @@ export interface GotaResponseContext {
 export interface BaseRequestOptions {
   headers?: Record<string, string>;
   credentials?: RequestCredentials;
+  /**
+   * Cancels the request (e.g. from an AbortController in a React effect cleanup).
+   * Cancellations requested through this signal are not reported to onError hooks.
+   */
   signal?: AbortSignal;
   cache?: RequestCache;
   next?: NextFetchRequestConfig;
@@ -98,9 +156,10 @@ export interface BaseRequestOptions {
   onError?: (error: GotaHttpError | Error, config: GotaResponseContext) => void | Promise<void>;
 }
 
-export type RequestOptions<K extends EndpointKey> = GotaEndpoints[K]["request"] & BaseRequestOptions;
-
 export type BodyEncoding = "json" | "form" | "multipart" | "raw";
+
+/** Request body encodings of endpoints that do not send JSON, keyed by "METHOD /path". */
+export type BodyEncodingMap = Readonly<Record<string, BodyEncoding | undefined>>;
 
 export interface GotaClientOptions {
   /** Static headers, or a (sync/async) callback evaluated on every request (e.g. JWT). */
@@ -120,14 +179,72 @@ export interface GotaClientOptions {
   fetch?: typeof fetch;
 }
 
-export interface GotaClient {
+/** Shape of one entry of a generated endpoint map (such as GotaEndpoints). */
+export interface EndpointDefinition {
+  method: string;
+  path: string;
+  params: unknown;
+  query: unknown;
+  body: unknown;
+  response: unknown;
+  error: unknown;
+  request: object;
+}
+
+/** Constraint satisfied by every generated endpoint map. */
+export type EndpointMap<E> = { [K in keyof E]: EndpointDefinition };
+
+export type RequestOptionsFor<E extends EndpointMap<E>, K extends keyof E> = E[K]["request"] & BaseRequestOptions;
+
+/** Options argument of client methods: optional when the endpoint has no required params, query or body. */
+export type RequestArgs<E extends EndpointMap<E>, K extends keyof E> =
+  Record<never, never> extends E[K]["request"]
+    ? [options?: RequestOptionsFor<E, K>]
+    : [options: RequestOptionsFor<E, K>];
+
+export interface GotaQueryKeyArgs {
+  params?: unknown;
+  query?: unknown;
+  body?: unknown;
+}
+
+/**
+ * Framework-agnostic query descriptor: pass it to TanStack Query (useQuery, queryOptions,
+ * prefetchQuery) or use queryKey/queryFn with SWR. The query key always starts with the
+ * endpoint, so invalidateQueries({ queryKey: ["GET /todos"] }) matches every variant.
+ */
+export interface GotaQueryOptions<K extends string, R> {
+  queryKey: readonly [K, GotaQueryKeyArgs];
+  queryFn: (context?: { signal?: AbortSignal | undefined }) => Promise<R>;
+}
+
+export interface GotaClientFor<E extends EndpointMap<E>> {
   readonly baseUrl: string;
-  fetch<K extends EndpointKey>(
+  fetch<K extends keyof E & string>(endpoint: K, ...args: RequestArgs<E, K>): Promise<E[K]["response"]>;
+  queryOptions<K extends keyof E & string>(
     endpoint: K,
-    ...args: Record<never, never> extends GotaEndpoints[K]["request"]
-      ? [options?: RequestOptions<K>]
-      : [options: RequestOptions<K>]
-  ): Promise<ResponseData<K>>;
+    ...args: RequestArgs<E, K>
+  ): GotaQueryOptions<K, E[K]["response"]>;
+}
+
+export type GotaErrorKind = "http" | "validation" | "timeout" | "abort" | "network" | "unknown";
+
+/** Normalized error information returned by parseGotaError. */
+export interface GotaErrorDetails {
+  kind: GotaErrorKind;
+  /** Human-readable message, safe to display. */
+  message: string;
+  /** HTTP status code (only for HTTP errors). */
+  status?: number;
+  /** Per-field validation messages (empty when the error is not a validation error). */
+  fieldErrors: Record<string, string[]>;
+  requestId?: string;
+  /** Endpoint key ("METHOD /path") that produced the error. */
+  endpoint?: string;
+  /** Raw error payload returned by the API. */
+  data?: unknown;
+  /** The original thrown value. */
+  cause: unknown;
 }
 `
 
@@ -140,17 +257,30 @@ export declare class GotaHttpError<T = unknown> extends Error {
   readonly data: T;
   readonly headers: Headers;
   readonly response: Response | undefined;
-  constructor(status: number, statusText: string, data: T, headers?: Headers, response?: Response);
+  readonly endpoint: string | undefined;
+  constructor(status: number, statusText: string, data: T, headers?: Headers, response?: Response, endpoint?: string);
 }
 
 export declare function isGotaHttpError<T = unknown>(error: unknown): error is GotaHttpError<T>;
 
-export declare function createGotaClient(baseUrl?: string, clientOptions?: GotaClientOptions): GotaClient;
+export declare function isAbortError(error: unknown): boolean;
+
+export declare function parseGotaError(error: unknown): GotaErrorDetails;
+
+export declare function createGotaClientFor<E extends EndpointMap<E>>(
+  baseUrl?: string,
+  clientOptions?: GotaClientOptions,
+  bodyEncodings?: BodyEncodingMap,
+): GotaClientFor<E>;
 `
 
 const tsRuntimeImplementation = `
 const DEFAULT_RETRY_STATUSES = [408, 429, 500, 502, 503, 504];
 export const DEFAULT_RETRY_METHODS: readonly string[] = ["GET", "HEAD", "OPTIONS", "PUT", "DELETE"];
+
+/** Errors thrown by fetch itself (connection refused, DNS failure, CORS...). */
+const NETWORK_ERRORS: WeakSet<object> = /* @__PURE__ */ new WeakSet<object>();
+const GOTA_ERROR_BRAND = Symbol.for("gota.httpError");
 
 export class GotaHttpError<T = unknown> extends Error {
   readonly status: number;
@@ -158,8 +288,9 @@ export class GotaHttpError<T = unknown> extends Error {
   readonly data: T;
   readonly headers: Headers;
   readonly response: Response | undefined;
+  readonly endpoint: string | undefined;
 
-  constructor(status: number, statusText: string, data: T, headers?: Headers, response?: Response) {
+  constructor(status: number, statusText: string, data: T, headers?: Headers, response?: Response, endpoint?: string) {
     super(errorMessage(data, statusText || "HTTP Error " + status));
     this.name = "GotaHttpError";
     this.status = status;
@@ -167,12 +298,60 @@ export class GotaHttpError<T = unknown> extends Error {
     this.data = data;
     this.headers = headers ?? new Headers();
     this.response = response;
+    this.endpoint = endpoint;
+    Object.defineProperty(this, GOTA_ERROR_BRAND, { value: true });
     Object.setPrototypeOf(this, GotaHttpError.prototype);
   }
 }
 
 export function isGotaHttpError<T = unknown>(error: unknown): error is GotaHttpError<T> {
-  return error instanceof GotaHttpError;
+  return (
+    error instanceof GotaHttpError ||
+    (error !== null && typeof error === "object" && (error as Record<symbol, unknown>)[GOTA_ERROR_BRAND] === true)
+  );
+}
+
+/** Reports whether the error comes from a cancelled request (AbortController.abort()). Timeouts return false. */
+export function isAbortError(error: unknown): boolean {
+  return errorName(error) === "AbortError";
+}
+
+/**
+ * Normalizes anything thrown by the client into a display-friendly structure, including
+ * per-field validation messages (Gota ValidationError) and the request ID (Gota ErrorResponse).
+ */
+export function parseGotaError(error: unknown): GotaErrorDetails {
+  if (isGotaHttpError(error)) {
+    const fieldErrors = extractFieldErrors(error.data);
+    const details: GotaErrorDetails = {
+      kind: Object.keys(fieldErrors).length > 0 ? "validation" : "http",
+      message: error.message,
+      status: error.status,
+      fieldErrors,
+      data: error.data,
+      cause: error,
+    };
+    const requestId = readStringField(error.data, "requestId") || error.headers.get("X-Request-Id");
+    if (requestId) details.requestId = requestId;
+    if (error.endpoint) details.endpoint = error.endpoint;
+    return details;
+  }
+  if (isAbortError(error)) {
+    return { kind: "abort", message: "The request was cancelled.", fieldErrors: {}, cause: error };
+  }
+  if (errorName(error) === "TimeoutError") {
+    return { kind: "timeout", message: "The request timed out.", fieldErrors: {}, cause: error };
+  }
+  if (error !== null && typeof error === "object" && NETWORK_ERRORS.has(error)) {
+    return { kind: "network", message: "Network error: unable to reach the API.", fieldErrors: {}, cause: error };
+  }
+  if (error instanceof Error && error.message) {
+    return { kind: "unknown", message: error.message, fieldErrors: {}, cause: error };
+  }
+  if (typeof error === "string" && error) {
+    return { kind: "unknown", message: error, fieldErrors: {}, cause: error };
+  }
+  return { kind: "unknown", message: "Unexpected error communicating with the API.", fieldErrors: {}, cause: error };
 }
 
 type FormEntry = [string, string | Blob];
@@ -183,26 +362,70 @@ interface RawRequestOptions extends BaseRequestOptions {
   body?: unknown;
 }
 
+function errorName(error: unknown): unknown {
+  return error !== null && typeof error === "object" ? (error as { name?: unknown }).name : undefined;
+}
+
+function readStringField(data: unknown, key: string): string {
+  if (data === null || typeof data !== "object") return "";
+  const value = (data as Record<string, unknown>)[key];
+  return typeof value === "string" ? value : "";
+}
+
+function issueField(e: Record<string, unknown>): string {
+  if (Array.isArray(e["loc"])) return e["loc"].map(String).join(".");
+  if (typeof e["field"] === "string") return e["field"];
+  if (typeof e["path"] === "string") return e["path"];
+  return "";
+}
+
+function issueMessage(e: Record<string, unknown>): string {
+  if (typeof e["msg"] === "string") return e["msg"];
+  if (typeof e["message"] === "string") return e["message"];
+  if (typeof e["error"] === "string") return e["error"];
+  return "";
+}
+
+function addFieldError(out: Record<string, string[]>, field: string, message: string): void {
+  const list = out[field];
+  if (list) list.push(message);
+  else out[field] = [message];
+}
+
+function extractFieldErrors(data: unknown): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  if (data === null || typeof data !== "object") return out;
+  const d = data as Record<string, unknown>;
+  const source = d["errors"] ?? d["detail"];
+  if (Array.isArray(source)) {
+    for (const item of source) {
+      if (item === null || typeof item !== "object") continue;
+      const e = item as Record<string, unknown>;
+      const field = issueField(e);
+      const message = issueMessage(e);
+      if (field && message) addFieldError(out, field, message);
+    }
+  } else if (source !== null && typeof source === "object") {
+    for (const [field, value] of Object.entries(source)) {
+      if (typeof value === "string") {
+        addFieldError(out, field, value);
+      } else if (Array.isArray(value)) {
+        for (const item of value) {
+          if (typeof item === "string") addFieldError(out, field, item);
+        }
+      }
+    }
+  }
+  return out;
+}
+
 function formatValidationErrors(items: unknown[]): string {
   const parts = items.map((item) => {
     if (typeof item === "string") return item;
     if (item && typeof item === "object") {
       const e = item as Record<string, unknown>;
-      const loc = Array.isArray(e["loc"])
-        ? e["loc"].map(String).join(".")
-        : typeof e["field"] === "string"
-          ? e["field"]
-          : typeof e["path"] === "string"
-            ? e["path"]
-            : "";
-      const msg =
-        typeof e["msg"] === "string"
-          ? e["msg"]
-          : typeof e["message"] === "string"
-            ? e["message"]
-            : typeof e["error"] === "string"
-              ? e["error"]
-              : "";
+      const loc = issueField(e);
+      const msg = issueMessage(e);
       if (loc && msg) return loc + ": " + msg;
       if (msg) return msg;
     }
@@ -312,13 +535,12 @@ function resolvePath(endpoint: string, template: string, params: Record<string, 
     .join("/");
 }
 
-function encodeBody(endpoint: string, body: unknown, headers: Headers): BodyInit {
+function encodeBody(body: unknown, headers: Headers, encoding: BodyEncoding): BodyInit {
   if (typeof FormData !== "undefined" && body instanceof FormData) {
     headers.delete("Content-Type"); // let fetch set the multipart boundary
     return body;
   }
   if (isBodyInit(body)) return body;
-  const encoding = BODY_ENCODINGS[endpoint] ?? "json";
   const contentType = headers.get("Content-Type") ?? "";
   if (body !== null && typeof body === "object") {
     if (encoding === "multipart" || contentType.includes("multipart/form-data") || hasBlobValue(body)) {
@@ -352,7 +574,7 @@ function createTimeoutSignal(timeoutMs: number | undefined): AbortSignal | undef
   const timeoutReason =
     typeof DOMException !== "undefined"
       ? new DOMException("The operation timed out.", "TimeoutError")
-      : new Error("The operation timed out.");
+      : Object.assign(new Error("The operation timed out."), { name: "TimeoutError" });
   const timer: unknown = setTimeout(() => controller.abort(timeoutReason), timeoutMs);
   if (
     timer &&
@@ -407,8 +629,23 @@ function retryDelay(baseDelay: number, attempt: number, response?: Response): nu
   return delay;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/** Waits for the retry backoff, rejecting early when the request is cancelled or times out. */
+function sleep(ms: number, signal: AbortSignal | null | undefined): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 async function readErrorBody(res: Response): Promise<unknown> {
@@ -446,7 +683,15 @@ async function readBody(res: Response): Promise<unknown> {
   return res.text();
 }
 
-export function createGotaClient(baseUrl = "", clientOptions: GotaClientOptions = {}): GotaClient {
+/**
+ * Creates a client for any generated endpoint map. Generated SDKs expose a pre-bound
+ * createGotaClient; use this directly only to target several APIs with one runtime.
+ */
+export function createGotaClientFor<E extends EndpointMap<E>>(
+  baseUrl = "",
+  clientOptions: GotaClientOptions = {},
+  bodyEncodings: BodyEncodingMap = {},
+): GotaClientFor<E> {
   const root = baseUrl.replace(/\/+$/, "");
 
   async function request(endpoint: string, options: RawRequestOptions): Promise<unknown> {
@@ -471,7 +716,7 @@ export function createGotaClient(baseUrl = "", clientOptions: GotaClientOptions 
 
     const init: GotaRequestInit = { method, headers };
     if (options.body !== undefined) {
-      init.body = encodeBody(endpoint, options.body, headers);
+      init.body = encodeBody(options.body, headers, bodyEncodings[endpoint] ?? "json");
     }
     const credentials = options.credentials ?? clientOptions.credentials;
     if (credentials) init.credentials = credentials;
@@ -490,6 +735,17 @@ export function createGotaClient(baseUrl = "", clientOptions: GotaClientOptions 
 
     if (clientOptions.onRequest) await clientOptions.onRequest({ endpoint, url, init });
     if (options.onRequest) await options.onRequest({ endpoint, url, init });
+
+    const context: GotaResponseContext = { endpoint, url };
+    const fail = async (err: unknown): Promise<never> => {
+      // Cancellations requested by the caller (e.g. effect cleanup) are expected: skip onError hooks.
+      if (!options.signal?.aborted) {
+        const errObj = err instanceof Error ? err : new Error(String(err));
+        if (clientOptions.onError) await clientOptions.onError(errObj, context);
+        if (options.onError) await options.onError(errObj, context);
+      }
+      throw err;
+    };
 
     const retryOpt = options.retry ?? clientOptions.retry;
     let maxAttempts = 1;
@@ -513,43 +769,63 @@ export function createGotaClient(baseUrl = "", clientOptions: GotaClientOptions 
       try {
         res = await fetchFn(url, init);
       } catch (fetchErr) {
-        if (attempt < maxAttempts - 1 && !init.signal?.aborted) {
+        const aborted = init.signal?.aborted === true;
+        if (!aborted && fetchErr !== null && typeof fetchErr === "object") NETWORK_ERRORS.add(fetchErr);
+        if (attempt < maxAttempts - 1 && !aborted) {
           attempt++;
-          await sleep(retryDelay(baseDelay, attempt));
+          try {
+            await sleep(retryDelay(baseDelay, attempt), init.signal);
+          } catch (abortErr) {
+            return fail(abortErr);
+          }
           continue;
         }
-        const errObj = fetchErr instanceof Error ? fetchErr : new Error(String(fetchErr));
-        if (clientOptions.onError) await clientOptions.onError(errObj, { endpoint, url });
-        if (options.onError) await options.onError(errObj, { endpoint, url });
-        throw fetchErr;
+        return fail(fetchErr);
       }
       if (!res.ok && attempt < maxAttempts - 1 && retryStatuses.includes(res.status) && !init.signal?.aborted) {
         attempt++;
-        await sleep(retryDelay(baseDelay, attempt, res));
+        res.body?.cancel().catch(() => undefined); // release the connection before retrying
+        try {
+          await sleep(retryDelay(baseDelay, attempt, res), init.signal);
+        } catch (abortErr) {
+          return fail(abortErr);
+        }
         continue;
       }
       break;
     }
 
-    const context: GotaResponseContext = { endpoint, url };
     if (clientOptions.onResponse) await clientOptions.onResponse(res, context);
     if (options.onResponse) await options.onResponse(res, context);
 
     if (!res.ok) {
       const data = await readErrorBody(res);
-      const httpErr = new GotaHttpError(res.status, res.statusText, data, res.headers, res);
-      if (clientOptions.onError) await clientOptions.onError(httpErr, context);
-      if (options.onError) await options.onError(httpErr, context);
-      throw httpErr;
+      return fail(new GotaHttpError(res.status, res.statusText, data, res.headers, res, endpoint));
     }
     return readBody(res);
   }
 
-  const client: GotaClient = {
+  const client: GotaClientFor<E> = {
     baseUrl: root,
     fetch(endpoint, ...args) {
       const [options] = args as unknown as [RawRequestOptions?];
-      return request(String(endpoint), options ?? {}) as Promise<ResponseData<typeof endpoint>>;
+      return request(String(endpoint), options ?? {}) as Promise<E[typeof endpoint]["response"]>;
+    },
+    queryOptions(endpoint, ...args) {
+      const [options] = args as unknown as [RawRequestOptions?];
+      const base: RawRequestOptions = options ?? {};
+      const keyArgs: GotaQueryKeyArgs = {};
+      if (base.params !== undefined) keyArgs.params = base.params;
+      if (base.query !== undefined) keyArgs.query = base.query;
+      if (base.body !== undefined) keyArgs.body = base.body;
+      return {
+        queryKey: [endpoint, keyArgs] as const,
+        queryFn: (queryContext?: { signal?: AbortSignal | undefined }) => {
+          const signal = combineSignals(base.signal, queryContext?.signal);
+          const merged: RawRequestOptions = signal ? { ...base, signal } : base;
+          return request(String(endpoint), merged) as Promise<E[typeof endpoint]["response"]>;
+        },
+      };
     },
   };
   return client;

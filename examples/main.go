@@ -29,10 +29,10 @@ func corsMiddleware(next http.Handler) http.Handler {
 func main() {
 	isProd := os.Getenv("ENV") == "production"
 
-	// Disable runtime TypeScript HTTP routes in production (use examples/codegen in CI/CD instead)
-	tsURL, tsSDKURL := "/types.d.ts", "/sdk.ts"
+	// Disable runtime TypeScript HTTP route in production (use examples/codegen in CI/CD instead)
+	tsURL := "/types.d.ts"
 	if isProd {
-		tsURL, tsSDKURL = "-", "-"
+		tsURL = "-"
 	}
 
 	docsPassword := os.Getenv("DOCS_PASSWORD")
@@ -48,7 +48,6 @@ func main() {
 		Version:               "1.0.0",
 		Description:           "Simple API for managing todo items.",
 		TypeScriptURL:         tsURL,
-		TypeScriptSDKURL:      tsSDKURL,
 		DisallowUnknownFields: true,
 		Scalar: scalar.Config{
 			Theme:      scalar.ThemeFastify,

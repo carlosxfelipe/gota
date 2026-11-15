@@ -12,21 +12,22 @@ import (
 
 // Example demonstrating offline TypeScript SDK code generation (e.g. for CI/CD or build scripts).
 //
-// Running this script writes the full client SDK to disk without needing to expose
-// HTTP endpoints (/sdk.ts or /types.d.ts) in your production application.
+// Running this script writes the modular client SDK and type declarations to disk without needing
+// to expose HTTP endpoints in your production application.
 //
 // Usage:
 //
 //	go run ./examples/codegen/main.go
-//	go run ./examples/codegen/main.go --ts-sdk=./dist/sdk.ts --ts-types=./dist/types.d.ts
+//	go run ./examples/codegen/main.go --ts-sdk=./dist/sdk
+//	go run ./examples/codegen/main.go --ts-sdk=./dist/sdk --check
+//	go run ./examples/codegen/main.go --ts-types=./dist/types.d.ts
 //	go run ./examples/codegen/main.go --stdout
 func main() {
 	app := gota.New(repr.Config{
-		Title:            "Gota API",
-		Version:          "1.0.0",
-		Description:      "Simple API for managing todo items.",
-		TypeScriptURL:    "-",
-		TypeScriptSDKURL: "-",
+		Title:         "Gota API",
+		Version:       "1.0.0",
+		Description:   "Simple API for managing todo items.",
+		TypeScriptURL: "-",
 	})
 
 	store := todos.NewTodoStore()
@@ -45,7 +46,7 @@ func main() {
 		distDir = "./examples/codegen/dist"
 	}
 
-	sdkTarget := distDir + "/sdk.ts"
+	sdkTarget := distDir + "/sdk"
 	if err := app.ExportTypeScriptSDK(sdkTarget); err != nil {
 		log.Fatalf("Failed to export TypeScript SDK: %v", err)
 	}
