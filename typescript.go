@@ -30,7 +30,7 @@ func sanitizeTSTypeName(name string) string {
 	return strings.Trim(name, "_")
 }
 
-// TypeScriptGenerator inspects registered repr routes and types to produce TypeScript declarations and SDKs.
+// TypeScriptGenerator inspects registered gota routes and types to produce TypeScript declarations and SDKs.
 type TypeScriptGenerator struct {
 	config       Config
 	schemas      map[string]string

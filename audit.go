@@ -97,7 +97,7 @@ func warnIfSensitiveField(structType reflect.Type, field reflect.StructField, si
 	if isSens, reason := IsSensitiveFieldName(field.Name); isSens {
 		warnKey := fmt.Sprintf("%s.%s", structType.String(), field.Name)
 		if _, loaded := loggedSensitiveWarnings.LoadOrStore(warnKey, true); !loaded {
-			log.Printf("repr [SECURITY]: field %q in struct %s appears to contain a %s without `json:\"-\"`", field.Name, structType.String(), reason)
+			log.Printf("gota [SECURITY]: field %q in struct %s appears to contain a %s without `json:\"-\"`", field.Name, structType.String(), reason)
 		}
 	}
 }

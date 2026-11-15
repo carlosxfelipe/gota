@@ -30,7 +30,7 @@ const (
 	DefaultIdleTimeout       time.Duration = 120 * time.Second
 )
 
-// Config configures the repr application, OpenAPI specification, and Scalar docs.
+// Config configures the gota application, OpenAPI specification, and Scalar docs.
 type Config struct {
 	Title            string                           `json:"title,omitempty"`
 	Version          string                           `json:"version,omitempty"`
@@ -58,7 +58,7 @@ type Config struct {
 	SilenceTagWarnings    bool          `json:"silenceTagWarnings,omitempty"`
 }
 
-// App is the core repr engine backed by chi and net/http.
+// App is the core gota engine backed by chi and net/http.
 type App struct {
 	config       Config
 	mux          *chi.Mux
@@ -76,7 +76,7 @@ type App struct {
 	cachedSDK    string
 }
 
-// New creates and configures a new repr App instance.
+// New creates and configures a new gota App instance.
 func New(cfg Config) *App {
 	if cfg.Title == "" {
 		cfg.Title = "API Reference"
@@ -174,9 +174,9 @@ func (a *App) registerDocsRoutes() {
 func defaultErrorHandler(ctx *Context, err error) {
 	reqID := ctx.RequestID()
 	if reqID != "" {
-		log.Printf("repr: handler error %s %s [%s]: %v", ctx.Request.Method, ctx.Request.URL.Path, reqID, err)
+		log.Printf("gota: handler error %s %s [%s]: %v", ctx.Request.Method, ctx.Request.URL.Path, reqID, err)
 	} else {
-		log.Printf("repr: handler error %s %s: %v", ctx.Request.Method, ctx.Request.URL.Path, err)
+		log.Printf("gota: handler error %s %s: %v", ctx.Request.Method, ctx.Request.URL.Path, err)
 	}
 
 	if ctx.Written() {
@@ -301,14 +301,14 @@ func newNonREPRRouteDoc() *RouteDoc {
 
 func registerRawRoute(target RouterTarget, method, path string, h HandlerFunc) *Route {
 	if h == nil {
-		panic("repr: route handler cannot be nil")
+		panic("gota: route handler cannot be nil")
 	}
 	return target.registerRoute(method, path, h, newNonREPRRouteDoc())
 }
 
 func adaptStdHandler(h http.Handler) HandlerFunc {
 	if h == nil {
-		panic("repr: http.Handler cannot be nil")
+		panic("gota: http.Handler cannot be nil")
 	}
 	return func(ctx *Context) error {
 		h.ServeHTTP(ctx.Writer, ctx.Request)

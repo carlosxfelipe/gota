@@ -240,7 +240,7 @@ func (c *Context) RedirectLocal(target string, code ...int) error {
 func (c *Context) Stream(step func(w io.Writer) bool) error {
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
-		return errors.New("repr: streaming unsupported by response writer")
+		return errors.New("gota: streaming unsupported by response writer")
 	}
 	c.writeHeaderOnce()
 	ctx := c.Request.Context()
@@ -269,7 +269,7 @@ func (c *Context) SSEvent(event string, data any) error {
 
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
-		return errors.New("repr: streaming unsupported by response writer")
+		return errors.New("gota: streaming unsupported by response writer")
 	}
 
 	var sb strings.Builder
@@ -310,7 +310,7 @@ func (c *Context) SSEvent(event string, data any) error {
 	}()
 
 	if _, err := c.Writer.Write([]byte(sb.String())); err != nil {
-		return fmt.Errorf("repr: failed to write SSE frame: %w", err)
+		return fmt.Errorf("gota: failed to write SSE frame: %w", err)
 	}
 	flusher.Flush()
 	return nil

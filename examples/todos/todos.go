@@ -91,7 +91,7 @@ func (e *CreateTodoEndpoint) Handle(_ *repr.Context, req CreateTodoRequest) (Tod
 	return todo, nil
 }
 
-// RegisterRoutes registers all Todo REPR endpoints on the given repr app.
+// RegisterRoutes registers all Todo REPR endpoints on the given gota app.
 func RegisterRoutes(app *repr.App, store *TodoStore) {
 	repr.HandleEndpoint(app, http.MethodGet, "/todos", &ListTodosEndpoint{Store: store}).
 		Summary("List all todos").

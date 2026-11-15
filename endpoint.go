@@ -208,7 +208,7 @@ func (r *Route) Param(in, name string, model any, required bool, description ...
 func WrapEndpoint[Req any, Res any](handler EndpointFunc[Req, Res], defaultStatus int) (HandlerFunc, *RouteDoc, *int) {
 	reqType := reflect.TypeOf(*new(Req))
 	if err := checkStructTags(reqType, make(map[reflect.Type]bool)); err != nil {
-		panic(fmt.Sprintf("repr: invalid tag in %T: %v", *new(Req), err))
+		panic(fmt.Sprintf("gota: invalid tag in %T: %v", *new(Req), err))
 	}
 
 	compileBindingPlan(reqType)
@@ -543,7 +543,7 @@ func checkRoutePathParams[Req any](method, fullPath string, params []ParamDoc) {
 	}
 	for _, p := range params {
 		if p.In == "path" && !routeParams[p.Name] {
-			panic(fmt.Sprintf("repr: %s %q: struct %T has param:%q tag, but route path does not contain {%s}", method, fullPath, *new(Req), p.Name, p.Name))
+			panic(fmt.Sprintf("gota: %s %q: struct %T has param:%q tag, but route path does not contain {%s}", method, fullPath, *new(Req), p.Name, p.Name))
 		}
 	}
 }

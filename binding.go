@@ -344,7 +344,7 @@ func (p *bindingPlan) execute(ctx *Context, elem reflect.Value, queryVals *url.V
 func bindRequest(ctx *Context, target any) error {
 	val := reflect.ValueOf(target)
 	if val.Kind() != reflect.Pointer || val.IsNil() {
-		return fmt.Errorf("repr: bind target must be a non-nil pointer, got %T", target)
+		return fmt.Errorf("gota: bind target must be a non-nil pointer, got %T", target)
 	}
 
 	elem := val.Elem()
