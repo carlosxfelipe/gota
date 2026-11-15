@@ -1011,8 +1011,8 @@ func TestTypeScript_EdgeCasesAndStrictTypeCheck(t *testing.T) {
 		OnlyA string `json:"onlyA"`
 	}
 	type BaseB struct {
-		ID    int    `json:"id"`
-		OnlyB string `json:"onlyB"`
+		FormID int    `form:"id"`
+		OnlyB  string `json:"onlyB"`
 	}
 	type Combined struct {
 		BaseA

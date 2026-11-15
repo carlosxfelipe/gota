@@ -148,11 +148,21 @@ func writeTSDoc(sb *strings.Builder, lines []string, indent string) {
 	if len(lines) == 0 {
 		return
 	}
-	sb.WriteString(indent + "/**\n")
+	sb.WriteString(indent)
+	sb.WriteString("/**\n")
 	for _, line := range lines {
-		sb.WriteString(strings.TrimRight(indent+" * "+line, " ") + "\n")
+		trimmed := strings.TrimRight(line, " ")
+		sb.WriteString(indent)
+		if trimmed == "" {
+			sb.WriteString(" *\n")
+		} else {
+			sb.WriteString(" * ")
+			sb.WriteString(trimmed)
+			sb.WriteByte('\n')
+		}
 	}
-	sb.WriteString(indent + " */\n")
+	sb.WriteString(indent)
+	sb.WriteString(" */\n")
 }
 
 func (g *TypeScriptGenerator) schemaName(t reflect.Type) string {
