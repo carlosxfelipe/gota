@@ -24,12 +24,48 @@ export interface ErrorResponse {
   requestId?: string;
 }
 
+export interface HealthStatus {
+  /**
+   * Service health state
+   * @example ok
+   */
+  status: string;
+  /**
+   * Process uptime in seconds
+   * @example 42
+   */
+  uptimeSeconds: number;
+  /**
+   * Go runtime version
+   * @example go1.26.1
+   */
+  goVersion: string;
+}
+
+export interface PatchTodoRequest {
+  /**
+   * Updated task title
+   * @example Deploy release v2.1
+   */
+  title?: string;
+  /**
+   * Updated task priority
+   * @example high
+   */
+  priority?: "low" | "normal" | "high";
+  /**
+   * Updated completion status
+   * @example true
+   */
+  done?: boolean;
+}
+
 export interface TodoResponse {
   /**
    * Todo ID
-   * @example todo_1
+   * @example 1
    */
-  id: string;
+  id: number;
   /**
    * Task title
    * @example Review pull requests
@@ -47,6 +83,24 @@ export interface TodoResponse {
   done: boolean;
 }
 
+export interface UpdateTodoRequest {
+  /**
+   * Task title
+   * @example Review pull requests
+   */
+  title: string;
+  /**
+   * Task priority
+   * @example high
+   */
+  priority: "low" | "normal" | "high";
+  /**
+   * Completion status
+   * @example true
+   */
+  done?: boolean;
+}
+
 export interface ValidationError {
   message: string;
   errors: Record<string, string[]>;
@@ -55,18 +109,60 @@ export interface ValidationError {
 
 export interface GotaEndpoints {
   /**
+   * Delete a todo
+   * Deletes an existing todo item by its unique identifier.
+   */
+  "DELETE /todos/{id}": {
+    method: "DELETE";
+    path: "/todos/{id}";
+    params: { id: number };
+    query: void;
+    body: void;
+    response: void;
+    error: ErrorResponse | ValidationError;
+    request: { params: { id: number }; query?: never; body?: never };
+  };
+  /**
+   * Service health check
+   * Returns service liveness and runtime uptime using an imperative non-REPR Context handler.
+   */
+  "GET /health": {
+    method: "GET";
+    path: "/health";
+    params: void;
+    query: void;
+    body: void;
+    response: HealthStatus;
+    error: unknown;
+    request: { params?: never; query?: never; body?: never };
+  };
+  /**
+   * Ping endpoint
+   * Standard net/http handler exposed in OpenAPI and Scalar without REPR.
+   */
+  "GET /ping": {
+    method: "GET";
+    path: "/ping";
+    params: void;
+    query: void;
+    body: void;
+    response: string;
+    error: unknown;
+    request: { params?: never; query?: never; body?: never };
+  };
+  /**
    * List all todos
-   * Returns all todo items in the store.
+   * Returns all todo items in the store, with optional filtering by completion status and priority.
    */
   "GET /todos": {
     method: "GET";
     path: "/todos";
     params: void;
-    query: void;
+    query: { done?: boolean; priority?: "low" | "normal" | "high" };
     body: void;
     response: TodoResponse[];
     error: ErrorResponse | ValidationError;
-    request: { params?: never; query?: never; body?: never };
+    request: { params?: never; query?: { done?: boolean; priority?: "low" | "normal" | "high" }; body?: never };
   };
   /**
    * Get todo by ID
@@ -75,12 +171,26 @@ export interface GotaEndpoints {
   "GET /todos/{id}": {
     method: "GET";
     path: "/todos/{id}";
-    params: { id: string };
+    params: { id: number };
     query: void;
     body: void;
     response: TodoResponse;
     error: ErrorResponse | ValidationError;
-    request: { params: { id: string }; query?: never; body?: never };
+    request: { params: { id: number }; query?: never; body?: never };
+  };
+  /**
+   * Partially update a todo
+   * Updates only the provided fields of an existing todo item.
+   */
+  "PATCH /todos/{id}": {
+    method: "PATCH";
+    path: "/todos/{id}";
+    params: { id: number };
+    query: void;
+    body: PatchTodoRequest;
+    response: TodoResponse;
+    error: ErrorResponse | ValidationError;
+    request: { params: { id: number }; query?: never; body: PatchTodoRequest };
   };
   /**
    * Create a new todo
@@ -95,6 +205,20 @@ export interface GotaEndpoints {
     response: TodoResponse;
     error: ErrorResponse | ValidationError;
     request: { params?: never; query?: never; body: CreateTodoRequest };
+  };
+  /**
+   * Replace a todo
+   * Validates the full payload and replaces an existing todo item.
+   */
+  "PUT /todos/{id}": {
+    method: "PUT";
+    path: "/todos/{id}";
+    params: { id: number };
+    query: void;
+    body: UpdateTodoRequest;
+    response: TodoResponse;
+    error: ErrorResponse | ValidationError;
+    request: { params: { id: number }; query?: never; body: UpdateTodoRequest };
   };
 }
 

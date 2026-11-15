@@ -6,7 +6,6 @@
 *.dylib
 *.test
 *.out
-dist/
 bin/
 
 # Coverage
