@@ -44,7 +44,6 @@ func main() {
 		Title:                 "My API",
 		Version:               "1.0.0",
 		Description:           "Example Gota service.",
-		TypeScriptURL:         "/types.d.ts", // set "-" in production
 		DisallowUnknownFields: true,
 		Scalar: scalar.Config{
 			Theme:      scalar.ThemeFastify,
@@ -77,12 +76,11 @@ func main() {
 - `Description` (`string`): OpenAPI `info.description` and TypeScript header comment.
 - `DocsURL` (`string`, default `"/docs"`): Scalar UI route.
 - `OpenAPIURL` (`string`, default `"/openapi.json"`): OpenAPI 3.1 JSON spec route.
-- `TypeScriptURL` (`string`, default `""`): HTTP route for `.d.ts` definitions (e.g. `"/types.d.ts"`). Empty or `"-"` disables serving over HTTP.
-- `DisableDocs` (`bool`): Disables `/docs`, `/openapi.json`, and runtime TypeScript routes.
+- `DisableDocs` (`bool`): Disables `/docs` and `/openapi.json` routes.
 - `Scalar` (`scalar.Config`): Visual and security settings for Scalar UI.
 - `Servers` (`[]repr.OpenAPIServer`): OpenAPI `servers` entries.
 - `SecuritySchemes` (`map[string]repr.OpenAPISecurityScheme`): OpenAPI `components.securitySchemes`.
-- `DocsMiddlewares` (`[]func(http.Handler) http.Handler`): Middlewares applied ONLY to docs/OpenAPI/TypeScript routes (e.g. `middleware.BasicAuth`). Docs routes run on an isolated router (`docsMux`) and do not inherit `app.Use(...)` middlewares such as CORS.
+- `DocsMiddlewares` (`[]func(http.Handler) http.Handler`): Middlewares applied ONLY to docs and OpenAPI routes (e.g. `middleware.BasicAuth`). Docs routes run on an isolated router (`docsMux`) and do not inherit `app.Use(...)` middlewares such as CORS.
 - `MaxBodyBytes` (`int64`, default `10 MiB`): Max request body read limit.
 - `MaxMultipartMemory` (`int64`, default `32 MiB`): Max memory for `ParseMultipartForm`.
 - `MaxHeaderBytes` (`int`, default `1 MiB`), `ReadTimeout` (`30s`), `WriteTimeout` (`30s`), `IdleTimeout` (`120s`): HTTP server limits (negative timeout disables that timeout).
@@ -156,7 +154,7 @@ app.Get("/health", func(ctx *repr.Context) error {
 All REPR and documented non-REPR registration methods return `*repr.Route`:
 
 - `.Summary(s)` / `.Description(d)` / `.OperationID(id)`
-- `.Tags(tags...)`
+- `.Tags(tags...)` — Adds OpenAPI tags. All tags appear in OpenAPI; the TypeScript SDK uses the first tag as the module name (falling back to the first meaningful static path segment, or `default` when none exists). Explicit route/child-group tags take precedence ahead of parent `Group.Tags(...)`.
 - `.Security(schemes...)` — Adds OpenAPI security requirements. Known names `BearerAuth`/`bearerAuth` and `BasicAuth`/`basicAuth` are auto-populated in `components.securitySchemes` if not explicitly defined in `Config.SecuritySchemes`.
 - `.Deprecated()` / `.Hidden()` — Marks deprecated or omits from OpenAPI & TypeScript output.
 - `.Status(code)` — Overrides the default `200` success status code in OpenAPI and at runtime (unless `ctx.Status(...)` is called explicitly).
@@ -171,16 +169,16 @@ Gota uses standard `func(http.Handler) http.Handler` middlewares and chi's order
 ```go
 app.Use(middleware.RequestID, middleware.Logger, middleware.Recoverer)
 
-api := app.Group("/api/v1").Security("BearerAuth")
+api := app.Group("/api/v1").Security("BearerAuth").Tags("Account")
 api.Use(authMiddleware)
 
 repr.Get(api, "/me", getProfileHandler)
 
-admin := api.Group("/admin", adminOnlyMiddleware)
+admin := api.Group("/admin", adminOnlyMiddleware).Tags("Admin")
 repr.Delete(admin, "/users/{id}", deleteUserHandler)
 ```
 
-- `Group` supports `Use`, `Security`, `Group` (nested), `Route`, `Get`, `Post`, `Put`, `Patch`, `Delete`, `HandleHTTP`, and all `repr.Get`/`Post`/`Put`/`Patch`/`Delete`/`HandleEndpoint` functions.
+- `Group` supports `Use`, `Security`, `Tags` (inherited by routes and nested subgroups; child/route tags take precedence for SDK module grouping), `Group` (nested), `Route`, `Get`, `Post`, `Put`, `Patch`, `Delete`, `HandleHTTP`, and all `repr.Get`/`Post`/`Put`/`Patch`/`Delete`/`HandleEndpoint` functions.
 
 ## Request Binding & Struct Tags
 
@@ -268,11 +266,11 @@ Imperative helpers on `*repr.Context`: `ctx.SSEvent(event, data)` and `ctx.Strea
 
 ## TypeScript SDK & Offline Codegen
 
-Gota generates both `.d.ts` type declarations and a zero-dependency `fetch` client (`createGotaClient`) typed via `GotaEndpoints`.
+Gota generates a modular, zero-dependency `fetch` client (`createGotaClient`) typed via `GotaEndpoints`.
 
 ### Programmatic Export & CLI Codegen
 
-In production, set `TypeScriptURL: "-"` and generate the modular SDK during CI/CD:
+Generate the modular SDK during development or CI/CD via `RunCodegen`:
 
 ```go
 if handled, err := app.RunCodegen(os.Args[1:]); handled {
@@ -284,17 +282,15 @@ if handled, err := app.RunCodegen(os.Args[1:]); handled {
 ```
 
 Supported `RunCodegen` CLI flags:
-- `--ts-sdk` (defaults to `./dist/sdk`) / `--ts-sdk=<dir>` — modular TypeScript client SDK directory (`index.ts`, `runtime.ts`, `types/<tag>.ts`, `types/_shared.ts`, `endpoints/<tag>.ts`)
-- `--ts-types` (defaults to `./dist/types.d.ts`) / `--ts-types=<path>` — `.d.ts` declarations only
-- `--ts-import-ext=<ext>` — relative import suffix in `--ts-sdk`: `""`/`none` (default, bundlers), `".js"` (`node16`/`nodenext` ESM), or `".ts"` (Node type stripping, Deno, Bun)
-- `--check` — CI verification mode; verifies exported SDK/types match current routes (no missing, modified, or stale managed files) without writing to disk
-- `--stdout` — prints `.d.ts` declarations to standard output
+- `--ts-sdk` (defaults to `./dist/sdk`) / `--ts-sdk=<dir>` — modular TypeScript client SDK directory (`index.ts`, `runtime.ts`, `types/<module>.ts`, `types/_shared.ts`, `endpoints/<module>.ts`)
+- `--ts-import-ext=<ext>` — relative import suffix in `--ts-sdk`: `""`/`none` (default, bundlers), `".js"` (`node16`/`nodenext` ESM), `".ts"` (Node type stripping, Deno, Bun), or `"auto"` (autodetect from nearest `deno.json(c)`, `tsconfig.json`, or `package.json`)
+- `--check` — CI verification mode; verifies exported SDK matches current routes (no missing, modified, or stale managed files) without writing to disk
 
-Direct export & check methods: `app.GenerateTypeScript()`, `app.GenerateTypeScriptSDK(opts...)`, `app.ExportTypeScript(path)`, `app.ExportTypeScriptSDK(dir, opts...)`, `app.CheckTypeScript(path)`, `app.CheckTypeScriptSDK(dir, opts...)`.
+Direct export & utility methods: `app.GenerateTypeScriptSDK(opts...)`, `app.ExportTypeScriptSDK(dir, opts...)`, `app.CheckTypeScriptSDK(dir, opts...)`, and `repr.DetectTypeScriptImportExtension(dir)`.
 
 ### Modular Layout & Project Extensions
 
-Running `--ts-sdk=./src/lib/sdk` splits schemas and `GotaEndpoints` by route tag (`types/<tag>.ts`, `types/_shared.ts`, `endpoints/<tag>.ts`), isolates the route-independent core in `runtime.ts`, and removes stale Gota-managed files on regeneration while preserving determinism for clean Git diffs.
+Running `--ts-sdk=./src/lib/sdk` splits schemas and `GotaEndpoints` by module (`types/<module>.ts`, `types/_shared.ts`, `endpoints/<module>.ts`), using the route's first tag (inherited from `Group.Tags(...)` or set via `route.Tags(...)`) or falling back to the first meaningful static path segment (skipping leading `api` / `v[0-9]+`, falling back to `default` only for `/` or param-only paths). It isolates the route-independent core in `runtime.ts` and removes stale Gota-managed files on regeneration while preserving determinism for clean Git diffs.
 
 Keep project-specific client configuration and domain helpers in a separate wrapper outside the generated directory (e.g., `src/lib/api.ts` importing from `./sdk`), so regenerating the SDK overwrites only the generated directory. In CI, run your codegen binary with `--ts-sdk=... --check` to catch forgotten SDK updates.
 

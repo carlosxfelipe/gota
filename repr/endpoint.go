@@ -82,6 +82,7 @@ type Route struct {
 	path          string
 	doc           *RouteDoc
 	defaultStatus *int
+	inheritedTags int
 }
 
 func (r *Route) Summary(s string) *Route     { r.doc.Summary = s; r.app.invalidateSpec(); return r }
@@ -91,8 +92,24 @@ func (r *Route) OperationID(id string) *Route {
 	r.app.invalidateSpec()
 	return r
 }
+
+// Tags appends OpenAPI tags to the route. Explicit route tags are placed before inherited
+// group tags so the TypeScript SDK groups routes by their most specific tag while preserving
+// all tags in OpenAPI.
 func (r *Route) Tags(tags ...string) *Route {
-	r.doc.Tags = append(r.doc.Tags, tags...)
+	if len(tags) == 0 {
+		return r
+	}
+	if r.inheritedTags > 0 && r.inheritedTags <= len(r.doc.Tags) {
+		split := len(r.doc.Tags) - r.inheritedTags
+		combined := make([]string, 0, len(r.doc.Tags)+len(tags))
+		combined = append(combined, r.doc.Tags[:split]...)
+		combined = append(combined, tags...)
+		combined = append(combined, r.doc.Tags[split:]...)
+		r.doc.Tags = combined
+	} else {
+		r.doc.Tags = append(r.doc.Tags, tags...)
+	}
 	r.app.invalidateSpec()
 	return r
 }

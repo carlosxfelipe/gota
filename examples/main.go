@@ -29,12 +29,6 @@ func corsMiddleware(next http.Handler) http.Handler {
 func main() {
 	isProd := os.Getenv("ENV") == "production"
 
-	// Disable runtime TypeScript HTTP route in production (use examples/codegen in CI/CD instead)
-	tsURL := "/types.d.ts"
-	if isProd {
-		tsURL = "-"
-	}
-
 	docsPassword := os.Getenv("DOCS_PASSWORD")
 	if docsPassword == "" {
 		if isProd {
@@ -47,7 +41,6 @@ func main() {
 		Title:                 "Gota API",
 		Version:               "1.0.0",
 		Description:           "Simple API for managing todo items.",
-		TypeScriptURL:         tsURL,
 		DisallowUnknownFields: true,
 		Scalar: scalar.Config{
 			Theme:      scalar.ThemeFastify,

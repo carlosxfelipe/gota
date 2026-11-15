@@ -437,24 +437,36 @@ func TestNonREPRRoutes_ExecutionOpenAPIAndTypeScript(t *testing.T) {
 		t.Fatalf("unexpected noteOp metadata: reqBody=%v params=%d sec=%d", noteOp.RequestBody, len(noteOp.Parameters), len(noteOp.Security))
 	}
 
-	// 3. TypeScript generation checks
-	dts := app.GenerateTypeScript()
+	// 3. TypeScript SDK generation checks
+	sdkFiles, err := app.GenerateTypeScriptSDK()
+	if err != nil {
+		t.Fatalf("GenerateTypeScriptSDK failed: %v", err)
+	}
+	sysEP := sdkFiles["endpoints/system.ts"]
+	notesEP := sdkFiles["endpoints/notes.ts"]
 	for _, want := range []string{
 		`"GET /health"`,
 		`response: healthStatus;`,
 		`"GET /ping"`,
 		`response: string;`,
+	} {
+		if !strings.Contains(sysEP, want) {
+			t.Errorf("expected %q in endpoints/system.ts:\n%s", want, sysEP)
+		}
+	}
+	for _, want := range []string{
 		`"POST /api/notes/{bucket}"`,
 		`params: { bucket: string };`,
 		`query?: { tag?: string };`,
 		`body: createNoteReq;`,
 		`response: createNoteRes;`,
 	} {
-		if !strings.Contains(dts, want) {
-			t.Errorf("expected %q in generated .d.ts:\n%s", want, dts)
+		if !strings.Contains(notesEP, want) {
+			t.Errorf("expected %q in endpoints/notes.ts:\n%s", want, notesEP)
 		}
 	}
-	if strings.Contains(dts, `"GET /"`) || strings.Contains(dts, `"/api/secret"`) {
-		t.Errorf("unexpected hidden/raw routes in .d.ts:\n%s", dts)
+	allSDK := strings.Join([]string{sdkFiles["index.ts"], sysEP, notesEP}, "\n")
+	if strings.Contains(allSDK, `"GET /"`) || strings.Contains(allSDK, `"/api/secret"`) {
+		t.Errorf("unexpected hidden/raw routes in TypeScript SDK:\n%s", allSDK)
 	}
 }

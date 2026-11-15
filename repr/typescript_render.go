@@ -1,6 +1,7 @@
 package repr
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -17,22 +18,22 @@ const (
 	// carrying both markers are ever deleted when they become stale.
 	tsManagedDirMarker = "This directory is managed by Gota codegen"
 
-	tsDeclarationsNote = "This file is overwritten on every regeneration: keep customizations outside of it."
-	tsDirNote          = tsManagedDirMarker + ": files are overwritten and stale ones removed on every regeneration.\n" +
+	tsDirNote = tsManagedDirMarker + ": files are overwritten and stale ones removed on every regeneration.\n" +
 		"Keep customizations in a wrapper module outside of this directory."
 
 	// tsSharedModule holds schemas referenced by more than one module.
 	tsSharedModule = "_shared"
-	// tsDefaultModule groups routes without tags.
+	// tsDefaultModule groups routes without tags or static resource segments.
 	tsDefaultModule = "default"
 )
 
 // TypeScriptSDKOptions configures the multi-file TypeScript SDK output.
 type TypeScriptSDKOptions struct {
 	// ImportExtension is appended to relative import specifiers between generated files:
-	//   - "" (default): extensionless imports, for bundlers (Next.js, Vite, webpack) and moduleResolution "bundler";
+	//   - "" (default) / "none": extensionless imports, for bundlers (Next.js, Vite, webpack);
 	//   - ".js": for TypeScript moduleResolution "node16"/"nodenext" emitting ESM;
-	//   - ".ts": for Deno, Bun and Node.js type stripping (or allowImportingTsExtensions).
+	//   - ".ts": for Deno, Bun and Node.js type stripping (or allowImportingTsExtensions);
+	//   - "auto": detects the appropriate suffix from deno.json / tsconfig.json / package.json near outDir.
 	ImportExtension string
 }
 
@@ -44,9 +45,191 @@ func normalizeTSImportExtension(ext string) (string, error) {
 		return ".js", nil
 	case ".ts", "ts":
 		return ".ts", nil
+	case "auto":
+		return "auto", nil
 	default:
-		return "", fmt.Errorf("gota: unsupported TypeScript import extension %q (use \"\", \".js\" or \".ts\")", ext)
+		return "", fmt.Errorf("gota: unsupported TypeScript import extension %q (use \"\", \".js\", \".ts\", or \"auto\")", ext)
 	}
+}
+
+func resolveTSOptionsForDir(outDir string, opts []TypeScriptSDKOptions) (TypeScriptSDKOptions, error) {
+	var opt TypeScriptSDKOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+	norm, err := normalizeTSImportExtension(opt.ImportExtension)
+	if err != nil {
+		return opt, err
+	}
+	if norm == "auto" {
+		opt.ImportExtension = DetectTypeScriptImportExtension(outDir)
+	} else {
+		opt.ImportExtension = norm
+	}
+	return opt, nil
+}
+
+// DetectTypeScriptImportExtension inspects deno.json(c), tsconfig.json, and package.json
+// walking up from dir and returns ".ts", ".js", or "" (extensionless bundler default).
+func DetectTypeScriptImportExtension(dir string) string {
+	cur := strings.TrimSpace(dir)
+	if cur == "" {
+		cur = "."
+	}
+	if abs, err := filepath.Abs(cur); err == nil {
+		cur = abs
+	}
+	if info, err := os.Stat(cur); err == nil && !info.IsDir() {
+		cur = filepath.Dir(cur)
+	}
+
+	for {
+		if fileExists(filepath.Join(cur, "deno.json")) || fileExists(filepath.Join(cur, "deno.jsonc")) {
+			return ".ts"
+		}
+		if ext, decided := detectFromTSConfig(filepath.Join(cur, "tsconfig.json")); decided {
+			return ext
+		}
+		if ext, decided := detectFromPackageJSON(filepath.Join(cur, "package.json")); decided {
+			return ext
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			break
+		}
+		cur = parent
+	}
+	return ""
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func detectFromTSConfig(path string) (string, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	var cfg struct {
+		CompilerOptions struct {
+			Module                     string `json:"module"`
+			ModuleResolution           string `json:"moduleResolution"`
+			AllowImportingTsExtensions bool   `json:"allowImportingTsExtensions"`
+		} `json:"compilerOptions"`
+	}
+	if err := json.Unmarshal(stripJSONC(data), &cfg); err != nil {
+		return "", false
+	}
+	if cfg.CompilerOptions.AllowImportingTsExtensions {
+		return ".ts", true
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.CompilerOptions.ModuleResolution)) {
+	case "node16", "nodenext":
+		return ".js", true
+	case "bundler", "node", "node10", "classic":
+		return "", true
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.CompilerOptions.Module)) {
+	case "node16", "nodenext":
+		return ".js", true
+	}
+	return "", false
+}
+
+func detectFromPackageJSON(path string) (string, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	var pkg struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return "", false
+	}
+	if strings.EqualFold(strings.TrimSpace(pkg.Type), "module") {
+		return ".js", true
+	}
+	return "", true
+}
+
+// stripJSONC removes // comments, /* */ comments, and trailing commas from tsconfig JSONC.
+func stripJSONC(src []byte) []byte {
+	noComments := make([]byte, 0, len(src))
+	inStr := false
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+		if inStr {
+			noComments = append(noComments, c)
+			if c == '\\' && i+1 < len(src) {
+				i++
+				noComments = append(noComments, src[i])
+			} else if c == '"' {
+				inStr = false
+			}
+			continue
+		}
+		if c == '"' {
+			inStr = true
+			noComments = append(noComments, c)
+			continue
+		}
+		if c == '/' && i+1 < len(src) {
+			if src[i+1] == '/' {
+				i += 2
+				for i < len(src) && src[i] != '\n' {
+					i++
+				}
+				if i < len(src) {
+					noComments = append(noComments, '\n')
+				}
+				continue
+			}
+			if src[i+1] == '*' {
+				i += 2
+				for i+1 < len(src) && !(src[i] == '*' && src[i+1] == '/') {
+					i++
+				}
+				i++
+				continue
+			}
+		}
+		noComments = append(noComments, c)
+	}
+
+	out := make([]byte, 0, len(noComments))
+	inStr = false
+	for i := 0; i < len(noComments); i++ {
+		c := noComments[i]
+		if inStr {
+			out = append(out, c)
+			if c == '\\' && i+1 < len(noComments) {
+				i++
+				out = append(out, noComments[i])
+			} else if c == '"' {
+				inStr = false
+			}
+			continue
+		}
+		if c == '"' {
+			inStr = true
+			out = append(out, c)
+			continue
+		}
+		if c == ',' {
+			j := i + 1
+			for j < len(noComments) && (noComments[j] == ' ' || noComments[j] == '\t' || noComments[j] == '\r' || noComments[j] == '\n') {
+				j++
+			}
+			if j < len(noComments) && (noComments[j] == '}' || noComments[j] == ']') {
+				continue
+			}
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 func tsRouteKey(rt *Route) string {
@@ -91,6 +274,22 @@ func tsSlugify(s string) string {
 	return b.String()
 }
 
+func isVersionOrAPIPrefix(seg string) bool {
+	lower := strings.ToLower(seg)
+	if lower == "api" {
+		return true
+	}
+	if len(lower) >= 2 && lower[0] == 'v' {
+		for i := 1; i < len(lower); i++ {
+			if lower[i] < '0' || lower[i] > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
 func tsModuleSlug(rt *Route) string {
 	if rt.doc != nil {
 		for _, tag := range rt.doc.Tags {
@@ -98,6 +297,21 @@ func tsModuleSlug(rt *Route) string {
 				return slug
 			}
 		}
+	}
+	var staticSegs []string
+	for _, seg := range strings.Split(rt.path, "/") {
+		if seg == "" || seg == "*" || (strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "}")) {
+			continue
+		}
+		if slug := tsSlugify(seg); slug != "" {
+			staticSegs = append(staticSegs, slug)
+		}
+	}
+	for len(staticSegs) > 1 && isVersionOrAPIPrefix(staticSegs[0]) {
+		staticSegs = staticSegs[1:]
+	}
+	if len(staticSegs) > 0 {
+		return staticSegs[0]
 	}
 	return tsDefaultModule
 }
@@ -232,11 +446,6 @@ func (g *TypeScriptGenerator) build(routes []*Route) *tsBuild {
 	return b
 }
 
-// Generate produces full TypeScript type definitions (.d.ts) for all registered routes.
-func (g *TypeScriptGenerator) Generate(routes []*Route) string {
-	return g.renderDeclarations(g.build(routes))
-}
-
 // GenerateSDK produces the modular TypeScript client SDK files, keyed by slash-separated paths
 // relative to the output directory:
 //
@@ -244,7 +453,7 @@ func (g *TypeScriptGenerator) Generate(routes []*Route) string {
 //	runtime.ts          route-independent client core (changes only when Gota changes)
 //	types/<tag>.ts      schemas used by a single tag
 //	types/_shared.ts    schemas used by several tags
-//	endpoints/<tag>.ts  endpoint map of each tag (routes without tags go to "default")
+//	endpoints/<tag>.ts  endpoint map of each tag (untagged routes use their path resource or "default")
 func (g *TypeScriptGenerator) GenerateSDK(routes []*Route, opts ...TypeScriptSDKOptions) (map[string]string, error) {
 	var opt TypeScriptSDKOptions
 	if len(opts) > 0 {
@@ -253,6 +462,9 @@ func (g *TypeScriptGenerator) GenerateSDK(routes []*Route, opts ...TypeScriptSDK
 	ext, err := normalizeTSImportExtension(opt.ImportExtension)
 	if err != nil {
 		return nil, err
+	}
+	if ext == "auto" {
+		ext = DetectTypeScriptImportExtension(".")
 	}
 	b := g.build(routes)
 
@@ -355,27 +567,6 @@ func addTSImport(imports map[string]map[string]bool, spec, name string) {
 		imports[spec] = make(map[string]bool)
 	}
 	imports[spec][name] = true
-}
-
-func (g *TypeScriptGenerator) renderDeclarations(b *tsBuild) string {
-	var sb strings.Builder
-	g.writeFileHeader(&sb, true, tsDeclarationsNote)
-
-	for _, name := range b.schemaNames {
-		sb.WriteString(g.schemas[name])
-		sb.WriteString("\n")
-	}
-
-	sb.WriteString("export interface GotaEndpoints {\n")
-	writeTSEndpointEntries(&sb, b.routes)
-	sb.WriteString("}\n\n")
-
-	sb.WriteString(tsBindingTypes)
-	sb.WriteString("\n")
-	sb.WriteString(tsRuntimeTypes)
-	sb.WriteString(tsRuntimeDeclarations)
-	sb.WriteString(tsBindingDeclarations)
-	return sb.String()
 }
 
 func (g *TypeScriptGenerator) renderRuntimeFile() string {
@@ -546,20 +737,6 @@ func exportTSDir(outDir string, files map[string]string) error {
 		if err == nil && len(entries) == 0 {
 			_ = os.Remove(dir)
 		}
-	}
-	return nil
-}
-
-func checkTSExportFile(outPath, expected string) error {
-	data, err := os.ReadFile(outPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("missing generated file %s", outPath)
-		}
-		return err
-	}
-	if string(data) != expected {
-		return fmt.Errorf("out-of-date generated file %s", outPath)
 	}
 	return nil
 }

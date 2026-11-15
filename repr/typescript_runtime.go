@@ -1,21 +1,20 @@
 package repr
 
-// TypeScript runtime templates emitted into the generated declarations (.d.ts) and SDK (.ts).
+// TypeScript runtime templates emitted into the generated modular SDK.
 //
 // Constraints for the TypeScript below, so the output works everywhere:
 //   - zero dependencies: only fetch, Headers, URLSearchParams, FormData, AbortController;
 //   - "erasable" syntax only (no enums, namespaces or parameter properties), so the SDK runs
-//     directly with `node sdk.ts` (type stripping), Deno, Bun and any bundler;
+//     directly with `node index.ts` (type stripping), Deno, Bun and any bundler;
 //   - compiles under `strict`, `exactOptionalPropertyTypes` and `noUncheckedIndexedAccess`;
 //   - no template literals (backticks), since the templates live in Go raw strings;
 //   - no top-level side effects, so bundlers can tree-shake unused helpers.
 //
 // The runtime is split in two layers:
-//   - the generic core (tsRuntimeTypes + tsRuntimeImplementation / tsRuntimeDeclarations) knows
-//     nothing about the API routes. In multi-file mode it is emitted verbatim as runtime.ts, so
-//     the file only changes when Gota itself changes;
-//   - the bindings (tsBindingTypes + tsBindingImplementation / tsBindingDeclarations) specialize
-//     the core for the generated GotaEndpoints map and BODY_ENCODINGS table.
+//   - the generic core (tsRuntimeTypes + tsRuntimeImplementation) knows nothing about the API
+//     routes and is emitted verbatim as runtime.ts, so it only changes when Gota itself changes;
+//   - the bindings (tsBindingTypes + tsBindingImplementation) specialize the core in index.ts
+//     for the generated GotaEndpoints map and BODY_ENCODINGS table.
 
 // tsRuntimeExportedNames lists every name exported (or declared at top level) by the runtime
 // and the bindings. Generated schema types must never shadow them.
@@ -77,15 +76,6 @@ export type ResponseError<K extends EndpointKey> = GotaEndpoints[K]["error"];
 export type RequestOptions<K extends EndpointKey> = RequestOptionsFor<GotaEndpoints, K>;
 
 export type GotaClient = GotaClientFor<GotaEndpoints>;
-`
-
-const tsBindingDeclarations = `
-export declare function createGotaClient(baseUrl?: string, clientOptions?: GotaClientOptions): GotaClient;
-
-export declare function isEndpointError<K extends EndpointKey>(
-  error: unknown,
-  endpoint: K,
-): error is GotaHttpError<ResponseError<K>>;
 `
 
 const tsBindingImplementation = `
@@ -246,32 +236,6 @@ export interface GotaErrorDetails {
   /** The original thrown value. */
   cause: unknown;
 }
-`
-
-const tsRuntimeDeclarations = `
-export declare const DEFAULT_RETRY_METHODS: readonly string[];
-
-export declare class GotaHttpError<T = unknown> extends Error {
-  readonly status: number;
-  readonly statusText: string;
-  readonly data: T;
-  readonly headers: Headers;
-  readonly response: Response | undefined;
-  readonly endpoint: string | undefined;
-  constructor(status: number, statusText: string, data: T, headers?: Headers, response?: Response, endpoint?: string);
-}
-
-export declare function isGotaHttpError<T = unknown>(error: unknown): error is GotaHttpError<T>;
-
-export declare function isAbortError(error: unknown): boolean;
-
-export declare function parseGotaError(error: unknown): GotaErrorDetails;
-
-export declare function createGotaClientFor<E extends EndpointMap<E>>(
-  baseUrl?: string,
-  clientOptions?: GotaClientOptions,
-  bodyEncodings?: BodyEncodingMap,
-): GotaClientFor<E>;
 `
 
 const tsRuntimeImplementation = `

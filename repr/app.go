@@ -38,13 +38,12 @@ type Config struct {
 	Description     string                           `json:"description,omitempty"`
 	DocsURL         string                           `json:"docsUrl,omitempty"`
 	OpenAPIURL      string                           `json:"openApiUrl,omitempty"`
-	TypeScriptURL   string                           `json:"typescriptUrl,omitempty"`
 	DisableDocs     bool                             `json:"disableDocs,omitempty"`
 	Scalar          scalar.Config                    `json:"scalar,omitempty"`
 	Servers         []OpenAPIServer                  `json:"servers,omitempty"`
 	SecuritySchemes map[string]OpenAPISecurityScheme `json:"securitySchemes,omitempty"`
 
-	// DocsMiddlewares applies standard net/http middlewares to /docs, /openapi.json, and /types.d.ts.
+	// DocsMiddlewares applies standard net/http middlewares to /docs and /openapi.json.
 	// Docs routes are isolated from App.Use middlewares (such as CORS) by design.
 	DocsMiddlewares []func(http.Handler) http.Handler `json:"-"`
 
@@ -66,12 +65,10 @@ type App struct {
 	routes       []*Route
 	ErrorHandler func(ctx *Context, err error)
 
-	docVersion  atomic.Uint64
-	specMu      sync.RWMutex
-	cachedVer   uint64
-	cachedSpec  *OpenAPISpec
-	cachedTSVer uint64
-	cachedTS    string
+	docVersion atomic.Uint64
+	specMu     sync.RWMutex
+	cachedVer  uint64
+	cachedSpec *OpenAPISpec
 }
 
 // New creates and configures a new gota App instance.
@@ -152,16 +149,6 @@ func (a *App) registerDocsRoutes() {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(a.OpenAPISpec())
 	})
-
-	if a.config.TypeScriptURL != "" && a.config.TypeScriptURL != "-" {
-		a.docsMux.Get(a.config.TypeScriptURL, func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/typescript; charset=utf-8")
-			w.Header().Set("X-Content-Type-Options", "nosniff")
-			w.Header().Set("Cache-Control", "no-store")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(a.GenerateTypeScript()))
-		})
-	}
 }
 
 func defaultErrorHandler(ctx *Context, err error) {
@@ -214,13 +201,7 @@ func (a *App) Router() *chi.Mux {
 }
 
 func (a *App) isDocsPath(p string) bool {
-	if p == a.config.DocsURL || p == a.config.OpenAPIURL {
-		return true
-	}
-	if a.config.TypeScriptURL != "" && a.config.TypeScriptURL != "-" && p == a.config.TypeScriptURL {
-		return true
-	}
-	return false
+	return p == a.config.DocsURL || p == a.config.OpenAPIURL
 }
 
 // ServeHTTP implements http.Handler.
@@ -356,6 +337,8 @@ type Group struct {
 	prefix      string
 	middlewares []func(http.Handler) http.Handler
 	security    []string
+	ownTags     []string
+	parentTags  []string
 }
 
 // Use appends standard net/http middlewares to this Group (must be called before adding routes).
@@ -369,7 +352,24 @@ func (g *Group) Security(schemes ...string) *Group {
 	return g
 }
 
-// Group creates a nested sub-group inheriting prefix, middlewares, and security schemes.
+// Tags declares OpenAPI tags inherited by routes in this Group. Child group tags and route-level
+// Tags calls take precedence ahead of parent group tags for TypeScript SDK module grouping.
+func (g *Group) Tags(tags ...string) *Group {
+	g.ownTags = append(g.ownTags, tags...)
+	return g
+}
+
+func (g *Group) effectiveTags() []string {
+	if len(g.ownTags) == 0 && len(g.parentTags) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(g.ownTags)+len(g.parentTags))
+	out = append(out, g.ownTags...)
+	out = append(out, g.parentTags...)
+	return out
+}
+
+// Group creates a nested sub-group inheriting prefix, middlewares, security schemes, and tags.
 func (g *Group) Group(prefix string, mws ...func(http.Handler) http.Handler) *Group {
 	combined := make([]func(http.Handler) http.Handler, 0, len(g.middlewares)+len(mws))
 	combined = append(combined, g.middlewares...)
@@ -379,6 +379,7 @@ func (g *Group) Group(prefix string, mws ...func(http.Handler) http.Handler) *Gr
 		prefix:      joinPaths(g.prefix, normalizePrefix(prefix)),
 		middlewares: combined,
 		security:    append([]string(nil), g.security...),
+		parentTags:  g.effectiveTags(),
 	}
 }
 
@@ -387,7 +388,13 @@ func (g *Group) registerRoute(method, path string, h HandlerFunc, doc *RouteDoc)
 	if len(g.security) > 0 {
 		doc.Security = append(append([]string(nil), g.security...), doc.Security...)
 	}
-	return g.app.registerRouteWithMiddlewares(method, fullPath, h, doc, g.middlewares)
+	effective := g.effectiveTags()
+	if len(effective) > 0 {
+		doc.Tags = append(doc.Tags, effective...)
+	}
+	rt := g.app.registerRouteWithMiddlewares(method, fullPath, h, doc, g.middlewares)
+	rt.inheritedTags = len(effective)
+	return rt
 }
 
 // Route registers a documented non-REPR HandlerFunc under this Group.
@@ -496,40 +503,6 @@ func (a *App) ExportOpenAPI(outPath string) error {
 	return writeExportFile(outPath, append(data, '\n'))
 }
 
-func (a *App) cachedTSOutput(cache *string, cacheVer *uint64, build func(*TypeScriptGenerator) string) string {
-	ver := a.docVersion.Load()
-	a.specMu.RLock()
-	if *cache != "" && *cacheVer == ver {
-		res := *cache
-		a.specMu.RUnlock()
-		return res
-	}
-	a.specMu.RUnlock()
-
-	a.specMu.Lock()
-	defer a.specMu.Unlock()
-	ver = a.docVersion.Load()
-	if *cache != "" && *cacheVer == ver {
-		return *cache
-	}
-	gen := NewTypeScriptGenerator(a.config)
-	*cache = build(gen)
-	*cacheVer = ver
-	return *cache
-}
-
-// GenerateTypeScript generates complete TypeScript declarations (.d.ts) for all registered routes.
-func (a *App) GenerateTypeScript() string {
-	return a.cachedTSOutput(&a.cachedTS, &a.cachedTSVer, func(g *TypeScriptGenerator) string {
-		return g.Generate(a.routes)
-	})
-}
-
-// ExportTypeScript writes the generated TypeScript type definitions (.d.ts) to disk.
-func (a *App) ExportTypeScript(outPath string) error {
-	return writeExportFile(outPath, []byte(a.GenerateTypeScript()))
-}
-
 // GenerateTypeScriptSDK generates the modular TypeScript client SDK files keyed by
 // slash-separated paths relative to the SDK directory (index.ts, runtime.ts, types/*.ts, endpoints/*.ts).
 func (a *App) GenerateTypeScriptSDK(opts ...TypeScriptSDKOptions) (map[string]string, error) {
@@ -542,42 +515,41 @@ func (a *App) GenerateTypeScriptSDK(opts ...TypeScriptSDKOptions) (map[string]st
 // ExportTypeScriptSDK writes the modular TypeScript client SDK into outDir, updating changed
 // files and removing stale files previously created by Gota codegen.
 func (a *App) ExportTypeScriptSDK(outDir string, opts ...TypeScriptSDKOptions) error {
-	files, err := a.GenerateTypeScriptSDK(opts...)
+	resolved, err := resolveTSOptionsForDir(outDir, opts)
+	if err != nil {
+		return err
+	}
+	files, err := a.GenerateTypeScriptSDK(resolved)
 	if err != nil {
 		return err
 	}
 	return exportTSDir(outDir, files)
 }
 
-// CheckTypeScript verifies that the generated TypeScript definitions at outPath match the current routes.
-func (a *App) CheckTypeScript(outPath string) error {
-	return checkTSExportFile(outPath, a.GenerateTypeScript())
-}
-
 // CheckTypeScriptSDK verifies that outDir matches the modular TypeScript SDK for the current routes
 // with no missing, modified, or stale generated files.
 func (a *App) CheckTypeScriptSDK(outDir string, opts ...TypeScriptSDKOptions) error {
-	files, err := a.GenerateTypeScriptSDK(opts...)
+	resolved, err := resolveTSOptionsForDir(outDir, opts)
+	if err != nil {
+		return err
+	}
+	files, err := a.GenerateTypeScriptSDK(resolved)
 	if err != nil {
 		return err
 	}
 	return checkTSDir(outDir, files)
 }
 
-// RunCodegen processes CLI arguments (e.g. from os.Args[1:]) to export or verify TypeScript SDK and definitions.
+// RunCodegen processes CLI arguments (e.g. from os.Args[1:]) to export or verify the TypeScript SDK.
 // Supported flags:
 //
 //	--ts-sdk[=<dir>]        writes modular client SDK directory to dir (default ./dist/sdk)
-//	--ts-types[=<path>]     writes TypeScript definitions (.d.ts) to path (default ./dist/types.d.ts)
-//	--ts-import-ext=<ext>   sets relative import suffix in --ts-sdk ("", ".js", or ".ts")
-//	--check                 verifies exported files/dir are up to date without modifying disk (for CI)
-//	--stdout                writes TypeScript definitions (.d.ts) to standard output
+//	--ts-import-ext=<ext>   sets relative import suffix in --ts-sdk ("", ".js", ".ts", or "auto")
+//	--check                 verifies exported SDK directory is up to date without modifying disk (for CI)
 func (a *App) RunCodegen(args []string) (bool, error) {
 	sdkDir := ""
-	typesPath := ""
 	importExt := ""
 	hasImportExt := false
-	stdout := false
 	check := false
 	matched := false
 
@@ -589,18 +561,9 @@ func (a *App) RunCodegen(args []string) (bool, error) {
 		case arg == "--ts-sdk":
 			sdkDir = "./dist/sdk"
 			matched = true
-		case strings.HasPrefix(arg, "--ts-types="):
-			typesPath = strings.TrimPrefix(arg, "--ts-types=")
-			matched = true
-		case arg == "--ts-types":
-			typesPath = "./dist/types.d.ts"
-			matched = true
 		case strings.HasPrefix(arg, "--ts-import-ext="):
 			importExt = strings.TrimPrefix(arg, "--ts-import-ext=")
 			hasImportExt = true
-			matched = true
-		case arg == "--stdout":
-			stdout = true
 			matched = true
 		case arg == "--check":
 			check = true
@@ -618,33 +581,14 @@ func (a *App) RunCodegen(args []string) (bool, error) {
 		}
 	}
 
-	if stdout {
-		if check {
-			return true, fmt.Errorf("gota codegen: --check cannot be combined with --stdout")
-		}
-		_, _ = os.Stdout.WriteString(a.GenerateTypeScript())
-		return true, nil
-	}
-
 	sdkOpts := TypeScriptSDKOptions{ImportExtension: importExt}
 
 	if check {
-		if sdkDir == "" && typesPath == "" {
-			return true, fmt.Errorf("gota codegen: --check requires at least one of --ts-sdk or --ts-types")
+		if sdkDir == "" {
+			return true, fmt.Errorf("gota codegen: --check requires --ts-sdk")
 		}
-		var errs []error
-		if sdkDir != "" {
-			if err := a.CheckTypeScriptSDK(sdkDir, sdkOpts); err != nil {
-				errs = append(errs, err)
-			}
-		}
-		if typesPath != "" {
-			if err := a.CheckTypeScript(typesPath); err != nil {
-				errs = append(errs, err)
-			}
-		}
-		if len(errs) > 0 {
-			return true, errors.Join(errs...)
+		if err := a.CheckTypeScriptSDK(sdkDir, sdkOpts); err != nil {
+			return true, err
 		}
 		return true, nil
 	}
@@ -652,11 +596,6 @@ func (a *App) RunCodegen(args []string) (bool, error) {
 	if sdkDir != "" {
 		if err := a.ExportTypeScriptSDK(sdkDir, sdkOpts); err != nil {
 			return true, fmt.Errorf("failed to export TypeScript SDK: %w", err)
-		}
-	}
-	if typesPath != "" {
-		if err := a.ExportTypeScript(typesPath); err != nil {
-			return true, fmt.Errorf("failed to export TypeScript definitions: %w", err)
 		}
 	}
 
@@ -722,11 +661,6 @@ func (a *App) logStartupBanner(display string) {
 	log.Printf("📖 Scalar docs: http://%s%s", display, a.config.DocsURL)
 	log.Printf("📄 OpenAPI spec: http://%s%s", display, a.config.OpenAPIURL)
 
-	tsEnabled := a.config.TypeScriptURL != "" && a.config.TypeScriptURL != "-"
-	if tsEnabled {
-		log.Printf("🔷 TypeScript defs: http://%s%s", display, a.config.TypeScriptURL)
-	}
-
 	prod := isProductionEnv()
 	if len(a.config.DocsMiddlewares) > 0 {
 		log.Printf("🔒 Docs protected with %d middleware(s)", len(a.config.DocsMiddlewares))
@@ -734,10 +668,6 @@ func (a *App) logStartupBanner(display string) {
 		log.Printf("⚠️  SECURITY WARNING: Documentation is running without authentication in production! Set Config.DisableDocs = true or configure Config.DocsMiddlewares")
 	} else {
 		log.Printf("🔒 Docs are public: set Config.DisableDocs = true or configure Config.DocsMiddlewares if exposed to untrusted networks")
-	}
-
-	if prod && len(a.config.DocsMiddlewares) == 0 && tsEnabled {
-		log.Printf("⚠️  SECURITY WARNING: TypeScript definitions are served publicly over HTTP in production. For maximum security, export offline (app.ExportTypeScriptSDK) during CI/CD and set TypeScriptURL: \"-\".")
 	}
 }
 
