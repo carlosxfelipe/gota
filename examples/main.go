@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/subtle"
 	"log"
 	"net/http"
 	"os"
@@ -11,22 +10,6 @@ import (
 	"github.com/carlosxfelipe/gota/scalar"
 	"github.com/go-chi/chi/v5/middleware"
 )
-
-func basicAuthMiddleware(username, password, realm string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			u, p, ok := r.BasicAuth()
-			uMatch := subtle.ConstantTimeCompare([]byte(u), []byte(username)) == 1
-			pMatch := subtle.ConstantTimeCompare([]byte(p), []byte(password)) == 1
-			if !ok || !uMatch || !pMatch {
-				w.Header().Set("WWW-Authenticate", `Basic realm="`+realm+`"`)
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
-}
 
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -71,7 +54,7 @@ func main() {
 			CSPEnforce: true,
 		},
 		DocsMiddlewares: []func(http.Handler) http.Handler{
-			basicAuthMiddleware("admin", docsPassword, "Gota API Documentation"),
+			middleware.BasicAuth("Gota API Documentation", map[string]string{"admin": docsPassword}),
 		},
 	})
 
