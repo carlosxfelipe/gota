@@ -286,9 +286,69 @@ func (a *App) registerRouteWithMiddlewares(method, path string, h HandlerFunc, d
 	return rt
 }
 
-// Handle registers a standard http.Handler on the App router.
+// Handle registers an undocumented standard http.Handler on the App router.
 func (a *App) Handle(method, path string, h http.Handler) {
 	a.mux.Method(method, path, h)
+}
+
+func newNonREPRRouteDoc() *RouteDoc {
+	return &RouteDoc{
+		Responses: map[int]*ResponseDoc{
+			http.StatusOK: {Description: http.StatusText(http.StatusOK)},
+		},
+	}
+}
+
+func registerRawRoute(target RouterTarget, method, path string, h HandlerFunc) *Route {
+	if h == nil {
+		panic("repr: route handler cannot be nil")
+	}
+	return target.registerRoute(method, path, h, newNonREPRRouteDoc())
+}
+
+func adaptStdHandler(h http.Handler) HandlerFunc {
+	if h == nil {
+		panic("repr: http.Handler cannot be nil")
+	}
+	return func(ctx *Context) error {
+		h.ServeHTTP(ctx.Writer, ctx.Request)
+		return nil
+	}
+}
+
+// Route registers a documented non-REPR HandlerFunc for the given HTTP method and path.
+func (a *App) Route(method, path string, h HandlerFunc) *Route {
+	return registerRawRoute(a, method, path, h)
+}
+
+// Get registers a documented non-REPR GET HandlerFunc.
+func (a *App) Get(path string, h HandlerFunc) *Route {
+	return registerRawRoute(a, http.MethodGet, path, h)
+}
+
+// Post registers a documented non-REPR POST HandlerFunc.
+func (a *App) Post(path string, h HandlerFunc) *Route {
+	return registerRawRoute(a, http.MethodPost, path, h)
+}
+
+// Put registers a documented non-REPR PUT HandlerFunc.
+func (a *App) Put(path string, h HandlerFunc) *Route {
+	return registerRawRoute(a, http.MethodPut, path, h)
+}
+
+// Patch registers a documented non-REPR PATCH HandlerFunc.
+func (a *App) Patch(path string, h HandlerFunc) *Route {
+	return registerRawRoute(a, http.MethodPatch, path, h)
+}
+
+// Delete registers a documented non-REPR DELETE HandlerFunc.
+func (a *App) Delete(path string, h HandlerFunc) *Route {
+	return registerRawRoute(a, http.MethodDelete, path, h)
+}
+
+// HandleHTTP registers a standard net/http http.Handler and exposes it in OpenAPI, Scalar, and TypeScript.
+func (a *App) HandleHTTP(method, path string, h http.Handler) *Route {
+	return registerRawRoute(a, method, path, adaptStdHandler(h))
 }
 
 // Group creates a route group sharing a URL prefix and optional middlewares.
@@ -338,6 +398,41 @@ func (g *Group) registerRoute(method, path string, h HandlerFunc, doc *RouteDoc)
 		doc.Security = append(append([]string(nil), g.security...), doc.Security...)
 	}
 	return g.app.registerRouteWithMiddlewares(method, fullPath, h, doc, g.middlewares)
+}
+
+// Route registers a documented non-REPR HandlerFunc under this Group.
+func (g *Group) Route(method, path string, h HandlerFunc) *Route {
+	return registerRawRoute(g, method, path, h)
+}
+
+// Get registers a documented non-REPR GET HandlerFunc under this Group.
+func (g *Group) Get(path string, h HandlerFunc) *Route {
+	return registerRawRoute(g, http.MethodGet, path, h)
+}
+
+// Post registers a documented non-REPR POST HandlerFunc under this Group.
+func (g *Group) Post(path string, h HandlerFunc) *Route {
+	return registerRawRoute(g, http.MethodPost, path, h)
+}
+
+// Put registers a documented non-REPR PUT HandlerFunc under this Group.
+func (g *Group) Put(path string, h HandlerFunc) *Route {
+	return registerRawRoute(g, http.MethodPut, path, h)
+}
+
+// Patch registers a documented non-REPR PATCH HandlerFunc under this Group.
+func (g *Group) Patch(path string, h HandlerFunc) *Route {
+	return registerRawRoute(g, http.MethodPatch, path, h)
+}
+
+// Delete registers a documented non-REPR DELETE HandlerFunc under this Group.
+func (g *Group) Delete(path string, h HandlerFunc) *Route {
+	return registerRawRoute(g, http.MethodDelete, path, h)
+}
+
+// HandleHTTP registers a standard net/http http.Handler under this Group and exposes it in OpenAPI, Scalar, and TypeScript.
+func (g *Group) HandleHTTP(method, path string, h http.Handler) *Route {
+	return registerRawRoute(g, method, path, adaptStdHandler(h))
 }
 
 func normalizePrefix(p string) string {

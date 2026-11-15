@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/carlosxfelipe/gota"
+	"github.com/carlosxfelipe/gota/examples/system"
 	"github.com/carlosxfelipe/gota/examples/todos"
 	"github.com/carlosxfelipe/gota/scalar"
 	"github.com/go-chi/chi/v5/middleware"
@@ -74,6 +75,7 @@ func main() {
 	}))
 
 	todos.RegisterRoutes(app, store)
+	system.RegisterRoutes(app)
 
 	if err := app.ListenGraceful(":3000"); err != nil {
 		log.Printf("Server error: %v", err)

@@ -43,7 +43,7 @@ Requires Go 1.26 or newer.
 
 A Todos API example using `package repr` is available in [examples/](examples):
 
-- Server & routes setup: [examples/main.go](examples/main.go) and [examples/todos/todos.go](examples/todos/todos.go)
+- Server & routes setup: [examples/main.go](examples/main.go), [examples/todos/todos.go](examples/todos/todos.go) (REPR), and [examples/system/system.go](examples/system/system.go) (non-REPR)
 - Offline TypeScript SDK generator: [examples/codegen/main.go](examples/codegen/main.go)
 
 Start the example API (Scalar UI at `/docs` with `admin` / `admin123`):

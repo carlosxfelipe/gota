@@ -715,7 +715,11 @@ func (g *TypeScriptGenerator) inspectRoute(rt *Route) routeTS {
 		case isRawContentType(resp.ContentType):
 			r.responseTS = "Blob"
 		case mType == nil || isEmptyStruct(mType):
-			r.responseTS = "void"
+			if strings.HasPrefix(resp.ContentType, "text/") {
+				r.responseTS = "string"
+			} else {
+				r.responseTS = "void"
+			}
 		default:
 			r.responseTS = g.typeToTS(mType, map[reflect.Type]bool{})
 		}

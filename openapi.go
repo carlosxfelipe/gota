@@ -366,6 +366,14 @@ func (g *openAPIGenerator) buildOperation(rt *Route) OpenAPIOp {
 			resp.Content = map[string]OpenAPIMediaType{
 				cType: {Schema: g.registerOrRef(respDoc.Model)},
 			}
+		} else if respDoc.ContentType != "" && status != http.StatusNoContent && status != http.StatusResetContent {
+			schema := map[string]any{}
+			if strings.HasPrefix(respDoc.ContentType, "text/") {
+				schema["type"] = "string"
+			}
+			resp.Content = map[string]OpenAPIMediaType{
+				respDoc.ContentType: {Schema: schema},
+			}
 		}
 		op.Responses[strconv.Itoa(status)] = resp
 	}

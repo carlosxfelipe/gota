@@ -134,6 +134,76 @@ func (r *Route) ErrorResponse(status int, description string, model ...any) *Rou
 	return r
 }
 
+// Response documents an HTTP response status and optional JSON model for OpenAPI and TypeScript.
+func (r *Route) Response(status int, model any, description ...string) *Route {
+	cType := ""
+	if model != nil {
+		cType = "application/json"
+	}
+	return r.ResponseMedia(status, cType, model, description...)
+}
+
+// ResponseMedia documents an HTTP response status with an explicit media content type and optional model.
+func (r *Route) ResponseMedia(status int, contentType string, model any, description ...string) *Route {
+	desc := http.StatusText(status)
+	if len(description) > 0 && description[0] != "" {
+		desc = description[0]
+	}
+	if status >= 200 && status < 300 && status != http.StatusOK {
+		if placeholder, ok := r.doc.Responses[http.StatusOK]; ok && placeholder != nil && placeholder.Model == nil && placeholder.ContentType == "" {
+			delete(r.doc.Responses, http.StatusOK)
+		}
+	}
+	r.doc.Responses[status] = &ResponseDoc{
+		Model:       model,
+		Description: desc,
+		ContentType: contentType,
+	}
+	r.app.invalidateSpec()
+	return r
+}
+
+// Request documents a JSON request body model for OpenAPI and TypeScript on non-REPR routes.
+func (r *Route) Request(model any, description ...string) *Route {
+	if model == nil {
+		r.doc.RequestBody = nil
+		r.app.invalidateSpec()
+		return r
+	}
+	desc := "Request body payload"
+	if len(description) > 0 && description[0] != "" {
+		desc = description[0]
+	}
+	r.doc.RequestBody = &BodyDoc{
+		Model:       model,
+		Description: desc,
+		Required:    true,
+		ContentType: "application/json",
+	}
+	r.app.invalidateSpec()
+	return r
+}
+
+// Param documents a path, query, or header parameter for OpenAPI and TypeScript on non-REPR routes.
+func (r *Route) Param(in, name string, model any, required bool, description ...string) *Route {
+	desc := ""
+	if len(description) > 0 {
+		desc = description[0]
+	}
+	if model == nil {
+		model = ""
+	}
+	r.doc.Parameters = append(r.doc.Parameters, ParamDoc{
+		In:          in,
+		Name:        name,
+		Model:       model,
+		Description: desc,
+		Required:    required || in == "path",
+	})
+	r.app.invalidateSpec()
+	return r
+}
+
 // WrapEndpoint converts a typed REPR EndpointFunc into a HandlerFunc + RouteDoc.
 func WrapEndpoint[Req any, Res any](handler EndpointFunc[Req, Res], defaultStatus int) (HandlerFunc, *RouteDoc, *int) {
 	reqType := reflect.TypeOf(*new(Req))

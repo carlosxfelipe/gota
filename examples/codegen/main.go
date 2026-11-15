@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/carlosxfelipe/gota"
+	"github.com/carlosxfelipe/gota/examples/system"
 	"github.com/carlosxfelipe/gota/examples/todos"
 )
 
@@ -29,6 +30,7 @@ func main() {
 
 	store := todos.NewTodoStore()
 	todos.RegisterRoutes(app, store)
+	system.RegisterRoutes(app)
 
 	if handled, err := app.RunCodegen(os.Args[1:]); handled {
 		if err != nil {

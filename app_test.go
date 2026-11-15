@@ -320,3 +320,141 @@ func TestCheckRoutePathParamsRejectsColonSyntax(t *testing.T) {
 		return repr.Empty{}, nil
 	})
 }
+
+func TestNonREPRRoutes_ExecutionOpenAPIAndTypeScript(t *testing.T) {
+	type healthStatus struct {
+		Status string `json:"status" example:"ok"`
+	}
+	type createNoteReq struct {
+		Text string `json:"text"`
+	}
+	type createNoteRes struct {
+		ID   string `json:"id"`
+		Text string `json:"text"`
+	}
+
+	app := repr.New(repr.Config{Title: "Mixed API", Version: "1.0.0"})
+
+	// Raw app.Handle stays invisible in OpenAPI/Scalar/TS
+	app.Handle(http.MethodGet, "/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/docs", http.StatusFound)
+	}))
+
+	// Imperative non-REPR Context handler documented in OpenAPI/Scalar/TS
+	app.Get("/health", func(ctx *repr.Context) error {
+		return ctx.JSON(healthStatus{Status: "ok"})
+	}).Summary("Health check").Tags("System").Response(http.StatusOK, healthStatus{}, "Healthy")
+
+	// Standard net/http http.Handler documented in OpenAPI/Scalar/TS
+	app.HandleHTTP(http.MethodGet, "/ping", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte("pong"))
+	})).Summary("Ping").Tags("System").ResponseMedia(http.StatusOK, "text/plain", nil, "Pong")
+
+	// Group non-REPR route with middleware, security, request body, query param, and 201 response
+	api := app.Group("/api", func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Group", "yes")
+			next.ServeHTTP(w, r)
+		})
+	}).Security("BearerAuth")
+
+	api.Post("/notes/{bucket}", func(ctx *repr.Context) error {
+		raw, err := ctx.Body()
+		if err != nil {
+			return repr.BadRequest(err.Error())
+		}
+		var body createNoteReq
+		if err := ctx.DecodeJSON(raw, &body); err != nil {
+			return repr.BadRequest(err.Error())
+		}
+		return ctx.Status(http.StatusCreated).JSON(createNoteRes{
+			ID:   ctx.Param("bucket") + "-1",
+			Text: body.Text,
+		})
+	}).
+		Summary("Create note").
+		Param("query", "tag", "", false, "Optional tag").
+		Request(createNoteReq{}, "Note payload").
+		Response(http.StatusCreated, createNoteRes{}, "Created")
+
+	api.Get("/secret", func(ctx *repr.Context) error {
+		return ctx.NoContent()
+	}).Hidden()
+
+	// 1. Runtime execution checks
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"ok"`) {
+		t.Fatalf("unexpected /health response: %d %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/ping", nil)
+	rec = httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || rec.Body.String() != "pong" {
+		t.Fatalf("unexpected /ping response: %d %q", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/notes/inbox", strings.NewReader(`{"text":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated || rec.Header().Get("X-Group") != "yes" || !strings.Contains(rec.Body.String(), `"id":"inbox-1"`) {
+		t.Fatalf("unexpected /api/notes/inbox response: %d %v %s", rec.Code, rec.Header(), rec.Body.String())
+	}
+
+	// 2. OpenAPI / Scalar spec checks
+	spec := app.OpenAPISpec()
+	if _, ok := spec.Paths["/"]; ok {
+		t.Fatalf("expected raw app.Handle / route to stay omitted from OpenAPI")
+	}
+	if _, ok := spec.Paths["/api/secret"]; ok {
+		t.Fatalf("expected Hidden() non-REPR route to be omitted from OpenAPI")
+	}
+	if _, ok := spec.Paths["/health"]["get"]; !ok {
+		t.Fatalf("expected /health in OpenAPI paths")
+	}
+	pingOp, ok := spec.Paths["/ping"]["get"]
+	if !ok {
+		t.Fatalf("expected /ping in OpenAPI paths")
+	}
+	if _, ok := pingOp.Responses["200"].Content["text/plain"]; !ok {
+		t.Fatalf("expected text/plain content on /ping OpenAPI 200 response")
+	}
+	noteOp, ok := spec.Paths["/api/notes/{bucket}"]["post"]
+	if !ok {
+		t.Fatalf("expected /api/notes/{bucket} in OpenAPI paths")
+	}
+	if _, has200 := noteOp.Responses["200"]; has200 {
+		t.Fatalf("expected placeholder 200 response to be replaced by 201")
+	}
+	if _, has201 := noteOp.Responses["201"]; !has201 {
+		t.Fatalf("expected 201 response on /api/notes/{bucket}")
+	}
+	if noteOp.RequestBody == nil || len(noteOp.Parameters) != 2 || len(noteOp.Security) != 1 {
+		t.Fatalf("unexpected noteOp metadata: reqBody=%v params=%d sec=%d", noteOp.RequestBody, len(noteOp.Parameters), len(noteOp.Security))
+	}
+
+	// 3. TypeScript generation checks
+	dts := app.GenerateTypeScript()
+	for _, want := range []string{
+		`"GET /health"`,
+		`response: healthStatus;`,
+		`"GET /ping"`,
+		`response: string;`,
+		`"POST /api/notes/{bucket}"`,
+		`params: { bucket: string };`,
+		`query?: { tag?: string };`,
+		`body: createNoteReq;`,
+		`response: createNoteRes;`,
+	} {
+		if !strings.Contains(dts, want) {
+			t.Errorf("expected %q in generated .d.ts:\n%s", want, dts)
+		}
+	}
+	if strings.Contains(dts, `"GET /"`) || strings.Contains(dts, `"/api/secret"`) {
+		t.Errorf("unexpected hidden/raw routes in .d.ts:\n%s", dts)
+	}
+}
