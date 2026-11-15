@@ -282,7 +282,7 @@ if handled, err := app.RunCodegen(os.Args[1:]); handled {
 ```
 
 Supported `RunCodegen` CLI flags:
-- `--ts-sdk` (defaults to `./dist/sdk`) / `--ts-sdk=<dir>` — modular TypeScript client SDK directory (`index.ts`, `runtime.ts`, `types/<module>.ts`, `types/_shared.ts`, `endpoints/<module>.ts`)
+- `--ts-sdk` (defaults to `./dist`) / `--ts-sdk=<dir>` — modular TypeScript client SDK directory (`index.ts`, `runtime.ts`, `types/<module>.ts`, `types/_shared.ts`, `endpoints/<module>.ts`)
 - `--ts-import-ext=<ext>` — relative import suffix in `--ts-sdk`: `""`/`none` (default, bundlers), `".js"` (`node16`/`nodenext` ESM), `".ts"` (Node type stripping, Deno, Bun), or `"auto"` (autodetect from nearest `deno.json(c)`, `tsconfig.json`, or `package.json`)
 - `--check` — CI verification mode; verifies exported SDK matches current routes (no missing, modified, or stale managed files) without writing to disk
 

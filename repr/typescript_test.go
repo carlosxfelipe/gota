@@ -244,6 +244,16 @@ func TestTypeScript_ExportAndRunCodegen(t *testing.T) {
 		t.Fatalf("failed reading exported sdk/runtime.ts: err=%v", err)
 	}
 
+	// Bare --ts-sdk should default to ./dist.
+	t.Chdir(tmpDir)
+	handled, err = app.RunCodegen([]string{"--ts-sdk"})
+	if !handled || err != nil {
+		t.Fatalf("RunCodegen --ts-sdk failed: handled=%v err=%v", handled, err)
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "dist", "index.ts")); err != nil {
+		t.Fatalf("expected bare --ts-sdk to write ./dist/index.ts, err=%v", err)
+	}
+
 	handled, err = app.RunCodegen([]string{"--port=8080"})
 	if handled || err != nil {
 		t.Errorf("expected unrelated flags to return handled=false, err=nil; got handled=%v err=%v", handled, err)

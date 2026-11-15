@@ -15,9 +15,9 @@ import (
 // Usage:
 //
 //	go run ./examples/codegen/main.go
-//	go run ./examples/codegen/main.go --ts-sdk=./dist/sdk
-//	go run ./examples/codegen/main.go --ts-sdk=./dist/sdk --ts-import-ext=auto
-//	go run ./examples/codegen/main.go --ts-sdk=./dist/sdk --check
+//	go run ./examples/codegen/main.go --ts-sdk=./dist
+//	go run ./examples/codegen/main.go --ts-sdk=./dist --ts-import-ext=auto
+//	go run ./examples/codegen/main.go --ts-sdk=./dist --check
 func main() {
 	app := gota.New(repr.Config{
 		Title:       "Gota API",
@@ -41,9 +41,8 @@ func main() {
 		distDir = "./examples/codegen/dist"
 	}
 
-	sdkTarget := distDir + "/sdk"
-	if err := app.ExportTypeScriptSDK(sdkTarget); err != nil {
+	if err := app.ExportTypeScriptSDK(distDir); err != nil {
 		log.Fatalf("Failed to export TypeScript SDK: %v", err)
 	}
-	log.Printf("✅ Successfully exported TypeScript SDK to %s", sdkTarget)
+	log.Printf("✅ Successfully exported TypeScript SDK to %s", distDir)
 }

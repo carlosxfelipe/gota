@@ -52,7 +52,7 @@ Start the example API (Scalar UI at `/docs` with `admin` / `admin123`):
 go run ./examples/main.go
 ```
 
-Export the modular TypeScript SDK to `examples/codegen/dist/sdk/`:
+Export the modular TypeScript SDK to `examples/codegen/dist/`:
 
 ```bash
 go run ./examples/codegen/main.go

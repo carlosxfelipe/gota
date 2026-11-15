@@ -543,7 +543,7 @@ func (a *App) CheckTypeScriptSDK(outDir string, opts ...TypeScriptSDKOptions) er
 // RunCodegen processes CLI arguments (e.g. from os.Args[1:]) to export or verify the TypeScript SDK.
 // Supported flags:
 //
-//	--ts-sdk[=<dir>]        writes modular client SDK directory to dir (default ./dist/sdk)
+//	--ts-sdk[=<dir>]        writes modular client SDK directory to dir (default ./dist)
 //	--ts-import-ext=<ext>   sets relative import suffix in --ts-sdk ("", ".js", ".ts", or "auto")
 //	--check                 verifies exported SDK directory is up to date without modifying disk (for CI)
 func (a *App) RunCodegen(args []string) (bool, error) {
@@ -559,7 +559,7 @@ func (a *App) RunCodegen(args []string) (bool, error) {
 			sdkDir = strings.TrimPrefix(arg, "--ts-sdk=")
 			matched = true
 		case arg == "--ts-sdk":
-			sdkDir = "./dist/sdk"
+			sdkDir = "./dist"
 			matched = true
 		case strings.HasPrefix(arg, "--ts-import-ext="):
 			importExt = strings.TrimPrefix(arg, "--ts-import-ext=")
