@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -540,10 +541,69 @@ func (a *App) newHTTPServer(addr string) *http.Server {
 	}
 }
 
+// displayAddr normalizes a listen address into the address to bind and a
+// host:port that can be opened in a browser. Accepts ":3000", "3000", or "host:3000".
+func displayAddr(addr string) (listen string, display string) {
+	if !strings.Contains(addr, ":") {
+		addr = ":" + addr
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr, addr
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "localhost"
+	}
+	return addr, net.JoinHostPort(host, port)
+}
+
+func isProductionEnv() bool {
+	for _, key := range []string{"ENV", "APP_ENV", "NODE_ENV"} {
+		v := strings.ToLower(os.Getenv(key))
+		if v == "production" || v == "prod" {
+			return true
+		}
+	}
+	return strings.ToLower(os.Getenv("GIN_MODE")) == "release"
+}
+
+func (a *App) logStartupBanner(display string) {
+	log.Printf("💧 Gota server listening on http://%s", display)
+	if a.config.DisableDocs {
+		return
+	}
+
+	log.Printf("📖 Scalar docs: http://%s%s", display, a.config.DocsURL)
+	log.Printf("📄 OpenAPI spec: http://%s%s", display, a.config.OpenAPIURL)
+
+	tsEnabled := a.config.TypeScriptURL != "" && a.config.TypeScriptURL != "-"
+	tsSDKEnabled := a.config.TypeScriptSDKURL != "" && a.config.TypeScriptSDKURL != "-"
+	if tsEnabled {
+		log.Printf("🔷 TypeScript defs: http://%s%s", display, a.config.TypeScriptURL)
+	}
+	if tsSDKEnabled {
+		log.Printf("🧩 TypeScript SDK: http://%s%s", display, a.config.TypeScriptSDKURL)
+	}
+
+	prod := isProductionEnv()
+	if len(a.config.DocsMiddlewares) > 0 {
+		log.Printf("🔒 Docs protected with %d middleware(s)", len(a.config.DocsMiddlewares))
+	} else if prod {
+		log.Printf("⚠️  SECURITY WARNING: Documentation is running without authentication in production! Set Config.DisableDocs = true or configure Config.DocsMiddlewares")
+	} else {
+		log.Printf("🔒 Docs are public: set Config.DisableDocs = true or configure Config.DocsMiddlewares if exposed to untrusted networks")
+	}
+
+	if prod && len(a.config.DocsMiddlewares) == 0 && (tsEnabled || tsSDKEnabled) {
+		log.Printf("⚠️  SECURITY WARNING: TypeScript definitions/SDK are served publicly over HTTP in production. For maximum security, export the SDK offline (app.ExportTypeScriptSDK) during CI/CD and set TypeScriptURL: \"-\" / TypeScriptSDKURL: \"-\".")
+	}
+}
+
 // Listen starts the HTTP server on addr.
 func (a *App) Listen(addr string) error {
-	srv := a.newHTTPServer(addr)
-	log.Printf("repr listening on %s", addr)
+	listen, display := displayAddr(addr)
+	srv := a.newHTTPServer(listen)
+	a.logStartupBanner(display)
 	return srv.ListenAndServe()
 }
 
@@ -553,11 +613,12 @@ func (a *App) ListenGraceful(addr string, shutdownTimeout ...time.Duration) erro
 	if len(shutdownTimeout) > 0 && shutdownTimeout[0] > 0 {
 		timeout = shutdownTimeout[0]
 	}
-	srv := a.newHTTPServer(addr)
+	listen, display := displayAddr(addr)
+	srv := a.newHTTPServer(listen)
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("repr listening on %s", addr)
+		a.logStartupBanner(display)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
