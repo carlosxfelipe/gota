@@ -16,8 +16,8 @@ var (
 	tsSchemaNameInvalid    = regexp.MustCompile(`[^A-Za-z0-9_]+`)
 	tsIdentifier           = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*$`)
 	tsReservedNames        = buildTSReservedNames()
-	tsRawBodyPrefix        = []string{"image/", "audio/", "video/"}
-	tsRawBodyExact         = []string{"application/octet-stream", "application/pdf", "application/zip"}
+	tsRawBodyPrefix        = []string{"image/", "audio/", "video/", "application/vnd.", "application/x-"}
+	tsRawBodyExact         = []string{"application/octet-stream", "application/pdf", "application/zip", "application/gzip"}
 )
 
 const tsDateTimeFormat = "date-time"
@@ -230,18 +230,37 @@ func hasJSONOmitOption(jsonTag string) bool {
 	return false
 }
 
+func normalizeMediaType(ct string) string {
+	media, _, _ := strings.Cut(ct, ";")
+	return strings.ToLower(strings.TrimSpace(media))
+}
+
 func isRawContentType(ct string) bool {
+	mt := normalizeMediaType(ct)
+	if mt == "application/x-www-form-urlencoded" {
+		return false
+	}
 	for _, p := range tsRawBodyPrefix {
-		if strings.HasPrefix(ct, p) {
+		if strings.HasPrefix(mt, p) {
 			return true
 		}
 	}
 	for _, e := range tsRawBodyExact {
-		if ct == e {
+		if mt == e {
 			return true
 		}
 	}
 	return false
+}
+
+func isTextContentType(ct string) bool {
+	mt := normalizeMediaType(ct)
+	return strings.HasPrefix(mt, "text/") || strings.Contains(mt, "xml")
+}
+
+func isJSONContentType(ct string) bool {
+	mt := normalizeMediaType(ct)
+	return mt == "application/json" || strings.HasSuffix(mt, "+json")
 }
 
 func modelType(model any) reflect.Type {
@@ -459,8 +478,10 @@ func (g *TypeScriptGenerator) collectStructFields(t reflect.Type, fields *[]stru
 	}
 
 	*fields = append(*fields, ownFields...)
+	seenPromoted := make(map[string]bool, len(promotedFields))
 	for _, pf := range promotedFields {
-		if !own[pf.name] {
+		if !own[pf.name] && !seenPromoted[pf.name] {
+			seenPromoted[pf.name] = true
 			*fields = append(*fields, pf)
 		}
 	}
@@ -605,6 +626,16 @@ type tsParamField struct {
 	required bool
 }
 
+func upsertTSParamField(fields []tsParamField, field tsParamField) []tsParamField {
+	for i := range fields {
+		if fields[i].name == field.name {
+			fields[i] = field
+			return fields
+		}
+	}
+	return append(fields, field)
+}
+
 func joinTSFields(fields []tsParamField) string {
 	sort.Slice(fields, func(i, j int) bool { return fields[i].name < fields[j].name })
 	parts := make([]string, len(fields))
@@ -667,9 +698,9 @@ func (g *TypeScriptGenerator) inspectRoute(rt *Route) routeTS {
 		case "path":
 			pathTypes[p.Name] = pType
 		case "query":
-			queryFields = append(queryFields, tsParamField{p.Name, pType, p.Required})
+			queryFields = upsertTSParamField(queryFields, tsParamField{p.Name, pType, p.Required})
 		case "header":
-			headerFields = append(headerFields, tsParamField{p.Name, "string", p.Required})
+			headerFields = upsertTSParamField(headerFields, tsParamField{p.Name, "string", p.Required})
 		}
 	}
 	for _, name := range extractPathParams(rt.path) {
@@ -693,7 +724,7 @@ func (g *TypeScriptGenerator) inspectRoute(rt *Route) routeTS {
 		bodyRequired = body.Required
 		mType := modelType(body.Model)
 		hasFields := mType != nil && mType.Kind() == reflect.Struct && mType.NumField() > 0
-		switch ct := body.ContentType; {
+		switch ct := normalizeMediaType(body.ContentType); {
 		case ct == "multipart/form-data":
 			r.bodyEncoding = "multipart"
 			if hasFields {
@@ -732,23 +763,28 @@ func (g *TypeScriptGenerator) inspectRoute(rt *Route) routeTS {
 
 	if len(successStatuses) > 0 {
 		code := successStatuses[0]
-		resp := doc.Responses[code]
-		mType := modelType(resp.Model)
-		switch {
-		case code == httpStatusNoContent || code == httpStatusResetContent:
-			r.responseTS = "void"
-		case resp.ContentType == "text/event-stream":
-			r.responseTS = "ReadableStream<string>"
-		case isRawContentType(resp.ContentType):
-			r.responseTS = "Blob"
-		case mType == nil || isEmptyStruct(mType):
-			if strings.HasPrefix(resp.ContentType, "text/") {
-				r.responseTS = "string"
-			} else {
+		if resp := doc.Responses[code]; resp != nil {
+			mType := modelType(resp.Model)
+			mt := normalizeMediaType(resp.ContentType)
+			switch {
+			case code == httpStatusNoContent || code == httpStatusResetContent:
 				r.responseTS = "void"
+			case mt == "text/event-stream":
+				r.responseTS = "ReadableStream<string>"
+			case isRawContentType(mt):
+				r.responseTS = "Blob"
+			case mType == nil || isEmptyStruct(mType):
+				switch {
+				case isTextContentType(mt):
+					r.responseTS = "string"
+				case mType == nil && isJSONContentType(mt):
+					r.responseTS = "unknown"
+				default:
+					r.responseTS = "void"
+				}
+			default:
+				r.responseTS = g.typeToTS(mType, map[reflect.Type]bool{})
 			}
-		default:
-			r.responseTS = g.typeToTS(mType, map[reflect.Type]bool{})
 		}
 	}
 

@@ -390,6 +390,41 @@ func TestTypeScript_NodeRuntimeE2E(t *testing.T) {
 		return Item{}, repr.NewHTTPError(http.StatusServiceUnavailable, "busy")
 	})
 
+	var retryDateAttempts atomic.Int32
+	repr.Get(app, "/retry-past-iso", func(ctx *repr.Context, _ repr.Empty) (Item, error) {
+		if retryDateAttempts.Add(1) == 1 {
+			ctx.SetHeader("Retry-After", "2020-01-01T00:00:00Z")
+			return Item{}, repr.NewHTTPError(http.StatusServiceUnavailable, "retry")
+		}
+		return Item{ID: "ok", Title: "Recovered"}, nil
+	})
+
+	var retryBoolAttempts atomic.Int32
+	repr.Get(app, "/retry-bool", func(_ *repr.Context, _ repr.Empty) (Item, error) {
+		if retryBoolAttempts.Add(1) < 3 {
+			return Item{}, repr.NewHTTPError(http.StatusServiceUnavailable, "try again")
+		}
+		return Item{ID: "ok-bool", Title: "Recovered"}, nil
+	})
+
+	var retryObjDefaultAttempts atomic.Int32
+	repr.Get(app, "/retry-obj-default", func(_ *repr.Context, _ repr.Empty) (Item, error) {
+		if retryObjDefaultAttempts.Add(1) < 3 {
+			return Item{}, repr.NewHTTPError(http.StatusServiceUnavailable, "try again")
+		}
+		return Item{ID: "ok-obj", Title: "Recovered"}, nil
+	})
+
+	app.HandleHTTP(http.MethodGet, "/upper-json", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "Application/JSON; charset=utf-8")
+		_, _ = w.Write([]byte(`{"id":"u1","title":"Upper"}`))
+	})).Tags("Items").Response(http.StatusOK, Item{})
+
+	app.HandleHTTP(http.MethodGet, "/bad-json", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{broken`))
+	})).Tags("Items").Response(http.StatusOK, Item{})
+
 	srv := httptest.NewServer(app)
 	defer srv.Close()
 
@@ -567,6 +602,46 @@ await assert.rejects(
   () => deadApi.fetch("GET /items/{id}", { params: { id: "1" }, retry: false }),
   (err) => !isAbortError(err) && parseGotaError(err).kind === "network"
 );
+
+// 14. Case-insensitive Content-Type parsing for Application/JSON
+const upperRes = await api.fetch("GET /upper-json");
+assert.equal(upperRes.id, "u1");
+assert.equal(upperRes.title, "Upper");
+
+// 15. clientOptions Content-Type: application/json does not break form-urlencoded requests
+const jsonDefaultApi = createGotaClient(baseUrl, { headers: { "Content-Type": "application/json" } });
+const formOverrideRes = await jsonDefaultApi.fetch("POST /form", {
+  body: { username: "bob", remember: false },
+});
+assert.equal(formOverrideRes.username, "bob");
+assert.ok(formOverrideRes.ctype.includes("application/x-www-form-urlencoded"), formOverrideRes.ctype);
+
+// 16. onError hook is invoked when response body fails to parse
+let parseErrHookCalls = 0;
+await assert.rejects(
+  () =>
+    api.fetch("GET /bad-json", {
+      onError: () => {
+        parseErrHookCalls++;
+      },
+    }),
+  (err) => err instanceof SyntaxError
+);
+assert.equal(parseErrHookCalls, 1);
+
+// 17. Retry-After starting with digits (ISO date in the past) is not parsed as 2020 seconds
+const pastStart = Date.now();
+const recovered = await api.fetch("GET /retry-past-iso", {
+  retry: { attempts: 1, delayMs: 1, methods: ["GET"] },
+});
+assert.equal(recovered.id, "ok");
+assert.ok(Date.now() - pastStart < 1000, "Retry-After ISO date should not sleep as integer seconds");
+
+// 18. retry: true and retry: { delayMs } without attempts default to DEFAULT_RETRY_ATTEMPTS (2)
+const boolRecovered = await api.fetch("GET /retry-bool", { retry: true });
+assert.equal(boolRecovered.id, "ok-bool");
+const objRecovered = await api.fetch("GET /retry-obj-default", { retry: { delayMs: 1 } });
+assert.equal(objRecovered.id, "ok-obj");
 `
 	runnerPath := filepath.Join(tmpDir, "run.mjs")
 	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0o644); err != nil {
@@ -927,6 +1002,105 @@ func TestTypeScript_ExportDirStaleCleanupAndCheck(t *testing.T) {
 	}
 	if handled, err := app.RunCodegen([]string{"--ts-import-ext=.bad"}); !handled || err == nil {
 		t.Errorf("expected invalid --ts-import-ext to return handled=true and error")
+	}
+}
+
+func TestTypeScript_EdgeCasesAndStrictTypeCheck(t *testing.T) {
+	type BaseA struct {
+		ID    string `json:"id"`
+		OnlyA string `json:"onlyA"`
+	}
+	type BaseB struct {
+		ID    int    `json:"id"`
+		OnlyB string `json:"onlyB"`
+	}
+	type Combined struct {
+		BaseA
+		BaseB
+	}
+
+	app := repr.New(repr.Config{Title: "Edge Cases API"})
+	repr.Get(app, "/combined", func(_ *repr.Context, _ repr.Empty) (Combined, error) {
+		return Combined{}, nil
+	}).Tags("Edge")
+
+	repr.Get(app, "/any-json", func(_ *repr.Context, _ repr.Empty) (any, error) {
+		return map[string]any{"ok": true}, nil
+	}).Tags("Edge")
+
+	app.Get("/dup-params", func(_ *repr.Context) error {
+		return nil
+	}).Tags("Edge").
+		Param("query", "q", "", false).
+		Param("query", "q", "", true).
+		Param("header", "X-Req", "", false).
+		Param("header", "X-Req", "", true).
+		ResponseMedia(http.StatusOK, "application/json", nil)
+
+	app.Get("/gzip", func(_ *repr.Context) error {
+		return nil
+	}).Tags("Edge").ResponseMedia(http.StatusOK, "application/gzip; charset=binary", nil)
+
+	app.Get("/xml", func(_ *repr.Context) error {
+		return nil
+	}).Tags("Edge").ResponseMedia(http.StatusOK, "Application/XML; charset=utf-8", nil)
+
+	files, err := app.GenerateTypeScriptSDK(repr.TypeScriptSDKOptions{ImportExtension: ".ts"})
+	if err != nil {
+		t.Fatalf("GenerateTypeScriptSDK failed: %v", err)
+	}
+
+	edgeTypes := files["types/edge.ts"]
+	if strings.Count(edgeTypes, "id: ") != 1 {
+		t.Errorf("expected deduplicated id property in Combined, got:\n%s", edgeTypes)
+	}
+
+	edgeEP := files["endpoints/edge.ts"]
+	for _, want := range []string{
+		"query: { q: string };",
+		`headers: { "X-Req": string };`,
+		`response: unknown;`,
+		`response: Blob;`,
+		`response: string;`,
+	} {
+		if !strings.Contains(edgeEP, want) {
+			t.Errorf("expected %q in endpoints/edge.ts, got:\n%s", want, edgeEP)
+		}
+	}
+
+	if denoPath, err := exec.LookPath("deno"); err == nil {
+		tmpDir := t.TempDir()
+		sdkDir := filepath.Join(tmpDir, "sdk")
+		if err := app.ExportTypeScriptSDK(sdkDir, repr.TypeScriptSDKOptions{ImportExtension: ".ts"}); err != nil {
+			t.Fatalf("ExportTypeScriptSDK failed: %v", err)
+		}
+		denoConfig := filepath.Join(tmpDir, "deno.json")
+		cfgJSON := `{"compilerOptions":{"strict":true,"exactOptionalPropertyTypes":true,"noUncheckedIndexedAccess":true,"erasableSyntaxOnly":true}}`
+		if err := os.WriteFile(denoConfig, []byte(cfgJSON), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		consumerPath := filepath.Join(tmpDir, "consumer.ts")
+		consumerTS := `import { createGotaClient } from "./sdk/index.ts";
+const api = createGotaClient("http://localhost", { retry: false });
+async function verify() {
+  const c = await api.fetch("GET /combined", { retry: false });
+  const c2 = await api.fetch("GET /combined", { retry: true });
+  const c3 = await api.fetch("GET /combined", { retry: { delayMs: 100 } });
+  const a: unknown = await api.fetch("GET /any-json");
+  const b: Blob = await api.fetch("GET /gzip");
+  const x: string = await api.fetch("GET /xml");
+  const d: unknown = await api.fetch("GET /dup-params", { query: { q: "1" }, headers: { "X-Req": "v" } });
+  void [c.id, c2.id, c3.id, c.onlyA, c.onlyB, a, b.size, x.length, d];
+}
+void verify;
+`
+		if err := os.WriteFile(consumerPath, []byte(consumerTS), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(denoPath, "check", "--config", denoConfig, consumerPath)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("deno check failed: %v\n%s", err, string(out))
+		}
 	}
 }
 

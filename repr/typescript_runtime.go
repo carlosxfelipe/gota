@@ -100,7 +100,7 @@ const tsRuntimeTypes = `export interface NextFetchRequestConfig {
 }
 
 export interface GotaRetryConfig {
-  /** Maximum number of retry attempts (in addition to the initial request). */
+  /** Maximum number of retry attempts in addition to the initial request (default: 2). */
   attempts?: number;
   /** Base delay in milliseconds for the exponential backoff (default: 300). */
   delayMs?: number;
@@ -140,7 +140,7 @@ export interface BaseRequestOptions {
   next?: NextFetchRequestConfig;
   duplex?: "half";
   timeoutMs?: number;
-  retry?: number | GotaRetryConfig;
+  retry?: boolean | number | GotaRetryConfig;
   onRequest?: (config: GotaRequestConfig) => void | Promise<void>;
   onResponse?: (response: Response, config: GotaResponseContext) => void | Promise<void>;
   onError?: (error: GotaHttpError | Error, config: GotaResponseContext) => void | Promise<void>;
@@ -161,7 +161,7 @@ export interface GotaClientOptions {
   /** Default request timeout in milliseconds. */
   timeoutMs?: number;
   /** Default retry policy (network errors or retryable status codes on idempotent methods). */
-  retry?: number | GotaRetryConfig;
+  retry?: boolean | number | GotaRetryConfig;
   onRequest?: (config: GotaRequestConfig) => void | Promise<void>;
   onResponse?: (response: Response, config: GotaResponseContext) => void | Promise<void>;
   onError?: (error: GotaHttpError | Error, config: GotaResponseContext) => void | Promise<void>;
@@ -239,6 +239,7 @@ export interface GotaErrorDetails {
 `
 
 const tsRuntimeImplementation = `
+const DEFAULT_RETRY_ATTEMPTS = 2;
 const DEFAULT_RETRY_STATUSES = [408, 429, 500, 502, 503, 504];
 export const DEFAULT_RETRY_METHODS: readonly string[] = ["GET", "HEAD", "OPTIONS", "PUT", "DELETE"];
 
@@ -504,8 +505,12 @@ function encodeBody(body: unknown, headers: Headers, encoding: BodyEncoding): Bo
     headers.delete("Content-Type"); // let fetch set the multipart boundary
     return body;
   }
+  const contentType = (headers.get("Content-Type") ?? "").toLowerCase();
+  if (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams) {
+    if (contentType.includes("json")) headers.delete("Content-Type");
+    return body;
+  }
   if (isBodyInit(body)) return body;
-  const contentType = headers.get("Content-Type") ?? "";
   if (body !== null && typeof body === "object") {
     if (encoding === "multipart" || contentType.includes("multipart/form-data") || hasBlobValue(body)) {
       const form = new FormData();
@@ -514,6 +519,7 @@ function encodeBody(body: unknown, headers: Headers, encoding: BodyEncoding): Bo
       return form;
     }
     if (encoding === "form" || contentType.includes("application/x-www-form-urlencoded")) {
+      if (contentType.includes("json")) headers.delete("Content-Type");
       const form = new URLSearchParams();
       for (const [key, value] of toEntries(body)) {
         if (typeof value === "string") form.append(key, value);
@@ -580,11 +586,10 @@ function combineSignals(a: AbortSignal | undefined, b: AbortSignal | undefined):
 
 function retryDelay(baseDelay: number, attempt: number, response?: Response): number {
   let delay = baseDelay * Math.pow(2, attempt - 1) * (0.5 + Math.random() * 0.5);
-  const retryAfter = response?.headers?.get("Retry-After");
+  const retryAfter = response?.headers?.get("Retry-After")?.trim();
   if (retryAfter) {
-    const seconds = parseInt(retryAfter, 10);
-    if (!isNaN(seconds)) {
-      delay = seconds * 1000;
+    if (/^\d+$/.test(retryAfter)) {
+      delay = Number(retryAfter) * 1000;
     } else {
       const dateMs = Date.parse(retryAfter);
       if (!isNaN(dateMs)) delay = Math.max(0, dateMs - Date.now());
@@ -629,7 +634,7 @@ async function readErrorBody(res: Response): Promise<unknown> {
 
 async function readBody(res: Response): Promise<unknown> {
   if (res.status === 204 || res.status === 205 || res.headers.get("content-length") === "0") return undefined;
-  const contentType = res.headers.get("content-type") ?? "";
+  const contentType = (res.headers.get("content-type") ?? "").toLowerCase();
   if (contentType.includes("application/json") || contentType.includes("+json")) {
     if (typeof res.text === "function") {
       const text = await res.text();
@@ -716,10 +721,13 @@ export function createGotaClientFor<E extends EndpointMap<E>>(
     let baseDelay = 300;
     let retryStatuses = DEFAULT_RETRY_STATUSES;
     let retryMethods = DEFAULT_RETRY_METHODS;
-    if (typeof retryOpt === "number" && retryOpt > 0) {
+    if (retryOpt === true) {
+      maxAttempts = 1 + DEFAULT_RETRY_ATTEMPTS;
+    } else if (typeof retryOpt === "number" && retryOpt > 0) {
       maxAttempts = 1 + retryOpt;
     } else if (typeof retryOpt === "object" && retryOpt !== null) {
-      if (typeof retryOpt.attempts === "number" && retryOpt.attempts > 0) maxAttempts = 1 + retryOpt.attempts;
+      const attempts = retryOpt.attempts ?? DEFAULT_RETRY_ATTEMPTS;
+      if (attempts > 0) maxAttempts = 1 + attempts;
       if (typeof retryOpt.delayMs === "number" && retryOpt.delayMs >= 0) baseDelay = retryOpt.delayMs;
       if (Array.isArray(retryOpt.statusCodes)) retryStatuses = retryOpt.statusCodes;
       if (Array.isArray(retryOpt.methods)) retryMethods = retryOpt.methods.map((m) => m.toUpperCase());
@@ -748,7 +756,7 @@ export function createGotaClientFor<E extends EndpointMap<E>>(
       }
       if (!res.ok && attempt < maxAttempts - 1 && retryStatuses.includes(res.status) && !init.signal?.aborted) {
         attempt++;
-        res.body?.cancel().catch(() => undefined); // release the connection before retrying
+        Promise.resolve(res.body?.cancel?.()).catch(() => undefined); // release the connection before retrying
         try {
           await sleep(retryDelay(baseDelay, attempt, res), init.signal);
         } catch (abortErr) {
@@ -766,7 +774,11 @@ export function createGotaClientFor<E extends EndpointMap<E>>(
       const data = await readErrorBody(res);
       return fail(new GotaHttpError(res.status, res.statusText, data, res.headers, res, endpoint));
     }
-    return readBody(res);
+    try {
+      return await readBody(res);
+    } catch (bodyErr) {
+      return fail(bodyErr);
+    }
   }
 
   const client: GotaClientFor<E> = {
