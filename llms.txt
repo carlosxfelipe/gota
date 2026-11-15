@@ -1,0 +1,327 @@
+# Gota Framework
+
+> Gota is a pragmatic Go (1.26+) web framework built around the REPR (Request-Endpoint-Response) design pattern on top of `net/http`, `go-chi/chi/v5`, and `go-playground/validator/v10`. It provides typed request binding and validation, automatic OpenAPI 3.1 specification generation, interactive Scalar API documentation, and zero-dependency TypeScript client SDK code generation.
+
+## Installation
+
+Requires Go 1.26 or newer.
+
+```bash
+go get github.com/carlosxfelipe/gota
+```
+
+Primary packages:
+- `github.com/carlosxfelipe/gota` — Top-level entry point (`gota.New`, `gota.App`, `gota.Config` aliases for `repr`).
+- `github.com/carlosxfelipe/gota/repr` — Core REPR router, endpoint helpers, request binding, validation, errors, streaming, OpenAPI, TypeScript codegen, and security auditing.
+- `github.com/carlosxfelipe/gota/scalar` — Standalone or integrated Scalar API Reference UI handler, themes, SRI, and CSP configuration.
+
+## Quick Start
+
+```go
+package main
+
+import (
+	"log"
+	"net/http"
+
+	"github.com/carlosxfelipe/gota"
+	"github.com/carlosxfelipe/gota/repr"
+	"github.com/carlosxfelipe/gota/scalar"
+	"github.com/go-chi/chi/v5/middleware"
+)
+
+type GetUserRequest struct {
+	ID string `param:"id" doc:"User ID" example:"usr_1" validate:"required"`
+}
+
+type UserResponse struct {
+	ID   string `json:"id" example:"usr_1"`
+	Name string `json:"name" example:"Ada Lovelace"`
+}
+
+func main() {
+	app := gota.New(repr.Config{
+		Title:                 "My API",
+		Version:               "1.0.0",
+		Description:           "Example Gota service.",
+		TypeScriptURL:         "/types.d.ts", // set "-" in production
+		TypeScriptSDKURL:      "/sdk.ts",     // set "-" in production
+		DisallowUnknownFields: true,
+		Scalar: scalar.Config{
+			Theme:      scalar.ThemeFastify,
+			Layout:     "classic",
+			CSPEnforce: true,
+		},
+	})
+
+	app.Use(middleware.RequestID, middleware.Logger, middleware.Recoverer)
+
+	repr.Get(app, "/users/{id}", func(ctx *repr.Context, req GetUserRequest) (UserResponse, error) {
+		return UserResponse{ID: req.ID, Name: "Ada Lovelace"}, nil
+	}).
+		Summary("Get user by ID").
+		Tags("Users").
+		ErrorResponse(http.StatusNotFound, "User not found")
+
+	if err := app.ListenGraceful(":3000"); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+## Configuration (`repr.Config`)
+
+`gota.New(cfg)` / `repr.New(cfg)` accepts `repr.Config`:
+
+- `Title` (`string`, default `"API Reference"`): OpenAPI `info.title` and Scalar page title.
+- `Version` (`string`, default `"1.0.0"`): OpenAPI `info.version`.
+- `Description` (`string`): OpenAPI `info.description` and TypeScript header comment.
+- `DocsURL` (`string`, default `"/docs"`): Scalar UI route.
+- `OpenAPIURL` (`string`, default `"/openapi.json"`): OpenAPI 3.1 JSON spec route.
+- `TypeScriptURL` (`string`, default `""`): HTTP route for `.d.ts` definitions (e.g. `"/types.d.ts"`). Empty or `"-"` disables serving over HTTP.
+- `TypeScriptSDKURL` (`string`, default `""`): HTTP route for the standalone `.ts` SDK (e.g. `"/sdk.ts"`). Empty or `"-"` disables serving over HTTP.
+- `DisableDocs` (`bool`): Disables `/docs`, `/openapi.json`, and runtime TypeScript routes.
+- `Scalar` (`scalar.Config`): Visual and security settings for Scalar UI.
+- `Servers` (`[]repr.OpenAPIServer`): OpenAPI `servers` entries.
+- `SecuritySchemes` (`map[string]repr.OpenAPISecurityScheme`): OpenAPI `components.securitySchemes`.
+- `DocsMiddlewares` (`[]func(http.Handler) http.Handler`): Middlewares applied ONLY to docs/OpenAPI/TypeScript routes (e.g. `middleware.BasicAuth`). Docs routes run on an isolated router (`docsMux`) and do not inherit `app.Use(...)` middlewares such as CORS.
+- `MaxBodyBytes` (`int64`, default `10 MiB`): Max request body read limit.
+- `MaxMultipartMemory` (`int64`, default `32 MiB`): Max memory for `ParseMultipartForm`.
+- `MaxHeaderBytes` (`int`, default `1 MiB`), `ReadTimeout` (`30s`), `WriteTimeout` (`30s`), `IdleTimeout` (`120s`): HTTP server limits (negative timeout disables that timeout).
+- `DisallowUnknownFields` (`bool`): Rejects unknown fields when decoding JSON request bodies.
+- `SilenceTagWarnings` (`bool`): Suppresses startup security warnings for sensitive field names without `json:"-"`.
+
+## Server Lifecycle
+
+- `app.Listen(addr)`: Starts `http.Server` (accepts `":3000"`, `"3000"`, or `"host:3000"`).
+- `app.ListenGraceful(addr, shutdownTimeout...)`: Starts the server and gracefully shuts down on `SIGINT` / `SIGTERM` (default shutdown timeout: `10s`).
+- `app.ServeHTTP(w, r)`: `App` implements `http.Handler` for custom server wiring or `httptest`.
+- `app.Router() *chi.Mux`: Exposes the underlying chi router.
+
+## Defining Endpoints
+
+### 1. Function-Based REPR Endpoints
+
+Register typed handlers with `repr.Get`, `repr.Post`, `repr.Put`, `repr.Patch`, or `repr.Delete`:
+
+```go
+repr.Post(app, "/todos", func(ctx *repr.Context, req CreateTodoRequest) (TodoResponse, error) {
+	return createTodo(req), nil
+}).
+	Status(http.StatusCreated).
+	Summary("Create a todo").
+	Tags("Todos")
+```
+
+Use `repr.Empty` (or `struct{}{}`) when an endpoint has no request input or no response body. Returning `repr.Empty{}` automatically writes `204 No Content`.
+
+### 2. Struct-Based REPR Endpoints
+
+Implement `repr.Endpoint[Req, Res]` (`Handle(ctx *repr.Context, req Req) (Res, error)`) and register with `repr.HandleEndpoint`:
+
+```go
+type GetTodoEndpoint struct {
+	Store *TodoStore
+}
+
+func (e *GetTodoEndpoint) Handle(_ *repr.Context, req GetTodoRequest) (TodoResponse, error) {
+	todo, ok := e.Store.Find(req.ID)
+	if !ok {
+		return TodoResponse{}, repr.NotFound("Todo not found")
+	}
+	return todo, nil
+}
+
+repr.HandleEndpoint(app, http.MethodGet, "/todos/{id}", &GetTodoEndpoint{Store: store}).
+	Summary("Get todo by ID").
+	Tags("Todos").
+	ErrorResponse(http.StatusNotFound, "Todo not found")
+```
+
+### 3. Non-REPR and Standard `net/http` Routes
+
+- `app.Get`, `app.Post`, `app.Put`, `app.Patch`, `app.Delete`, `app.Route(method, path, handler)` — Register `func(ctx *repr.Context) error` handlers that can still be documented in OpenAPI/Scalar/TypeScript using `.Request(...)`, `.Param(...)`, `.Response(...)`, and `.ResponseMedia(...)`.
+- `app.HandleHTTP(method, path, httpHandler)` — Register a standard `http.Handler` exposed in OpenAPI/Scalar/TypeScript.
+- `app.Handle(method, path, httpHandler)` — Register an undocumented standard `http.Handler` directly on chi.
+
+```go
+app.Get("/health", func(ctx *repr.Context) error {
+	return ctx.JSON(HealthStatus{Status: "ok"})
+}).
+	Summary("Health check").
+	Tags("System").
+	Response(http.StatusOK, HealthStatus{}, "Service health status")
+```
+
+## Route Metadata Builders (`*repr.Route`)
+
+All REPR and documented non-REPR registration methods return `*repr.Route`:
+
+- `.Summary(s)` / `.Description(d)` / `.OperationID(id)`
+- `.Tags(tags...)`
+- `.Security(schemes...)` — Adds OpenAPI security requirements. Known names `BearerAuth`/`bearerAuth` and `BasicAuth`/`basicAuth` are auto-populated in `components.securitySchemes` if not explicitly defined in `Config.SecuritySchemes`.
+- `.Deprecated()` / `.Hidden()` — Marks deprecated or omits from OpenAPI & TypeScript output.
+- `.Status(code)` — Overrides the default `200` success status code in OpenAPI and at runtime (unless `ctx.Status(...)` is called explicitly).
+- `.ErrorResponse(status, description, model...)` — Documents an error status (defaults to `repr.ErrorResponse{}`).
+- `.Response(status, model, description...)` / `.ResponseMedia(status, contentType, model, description...)` — Documents responses (mainly for non-REPR routes or multiple status codes).
+- `.Request(model, description...)` / `.Param(in, name, model, required, description...)` — Documents inputs on non-REPR routes (`in`: `"path"`, `"query"`, or `"header"`).
+
+## Middlewares & Route Groups
+
+Gota uses standard `func(http.Handler) http.Handler` middlewares and chi's ordering rule (`Use` must be called before registering routes).
+
+```go
+app.Use(middleware.RequestID, middleware.Logger, middleware.Recoverer)
+
+api := app.Group("/api/v1").Security("BearerAuth")
+api.Use(authMiddleware)
+
+repr.Get(api, "/me", getProfileHandler)
+
+admin := api.Group("/admin", adminOnlyMiddleware)
+repr.Delete(admin, "/users/{id}", deleteUserHandler)
+```
+
+- `Group` supports `Use`, `Security`, `Group` (nested), `Route`, `Get`, `Post`, `Put`, `Patch`, `Delete`, `HandleHTTP`, and all `repr.Get`/`Post`/`Put`/`Patch`/`Delete`/`HandleEndpoint` functions.
+
+## Request Binding & Struct Tags
+
+Gota binds request structs from URL path parameters, query parameters, headers, forms/multipart uploads, and JSON bodies:
+
+| Tag | Source | Notes |
+| --- | --- | --- |
+| `param:"id"` | URL path param `{id}` | Required automatically. Panics at startup if `{id}` is missing from route path. Do NOT use `path:"..."`. |
+| `query:"page"` | Query string | Supports slices via repeated keys (`?tag=a&tag=b`) or comma-separated values. |
+| `header:"X-Api-Key"` | Request header | Bound from `r.Header.Get(...)`. |
+| `form:"avatar"` | Form / Multipart | Sets OpenAPI content type to `application/x-www-form-urlencoded`, or `multipart/form-data` when a field is `*multipart.FileHeader` or `[]*multipart.FileHeader`. Use `form:"-"` to ignore. |
+| `json:"title"` | JSON body | Use `json:"-"` to exclude from JSON, OpenAPI, and TypeScript. |
+| `validate:"..."` | Validation rules | `go-playground/validator/v10` rules (`required`, `min=3`, `max=50`, `len=6`, `oneof=low normal high`, `email`, `url`, `uuid`, `omitempty`, `nowarn`). Reflected in OpenAPI (`minLength`, `minimum`, `enum`, `format`, `required`) and TypeScript (`oneof` on strings becomes a literal union). |
+| `msg:"..."` | Custom error messages | Single message (`msg:"Todo ID is required"`) or pipe-delimited per-rule (`msg:"required:Title is required|min:Too short"`). Requires a `validate` tag. Do NOT use `message:"..."`. |
+| `doc:"..."` | Description | Populates OpenAPI description and TypeScript JSDoc. |
+| `example:"..."` | Example value | Typed OpenAPI example and `@example` JSDoc tag. |
+| `default:"..."` | Default value | OpenAPI `default` and `@default` JSDoc tag. |
+| `format:"..."` | OpenAPI format | Overrides OpenAPI `format` and `@format` JSDoc tag. |
+| `deprecated:"true"` | Deprecation flag | Adds `@deprecated` in TypeScript JSDoc. |
+
+Supported scalar types for `param`/`query`/`header`/`form`: `string`, `int*`, `uint*`, `float*`, `bool` (`true/1/t/yes/y`, `false/0/f/no/n`), `time.Time` (`RFC3339Nano`, `RFC3339`, `YYYY-MM-DD`), `encoding.TextUnmarshaler`, pointers, slices, and anonymous embedded structs.
+
+Security guarantee: fields tagged exclusively with `param`, `query`, `header`, or `form` (without `json`) are zeroed after JSON decoding so JSON payloads cannot spoof path/query/header fields.
+
+Startup tag checks fail fast (panic on route registration) for common mistakes such as `path:"..."`, `message:"..."`, `msg` without `validate`, options on `param`/`query`/`header`/`form` (like `query:"id,omitempty"`), invalid `validate` tags, or `param` tags absent from the route path.
+
+### Response Headers
+
+Fields on a response struct tagged with `header:"X-Total-Count"` write that HTTP header on non-zero values and are documented in OpenAPI `responses.<status>.headers`.
+
+## Validation & Error Handling
+
+### Validation
+
+- Automatic validation runs before the handler and returns `422 Unprocessable Entity` with `repr.ValidationError`:
+  ```json
+  { "message": "Validation failed", "errors": { "title": ["Title is required"] }, "status": 422 }
+  ```
+- Register custom validator rules with `repr.RegisterValidation(tag, fn)`.
+- Implement `repr.Validator` (`Validate() error`) or `repr.ContextValidator` (`Validate(ctx *repr.Context) error`) on request structs for cross-field validation.
+
+### Error Helpers & Custom Error Handler
+
+Return typed HTTP errors from handlers:
+- `repr.BadRequest(msg)` (400)
+- `repr.Unauthorized(msg)` (401)
+- `repr.Forbidden(msg)` (403)
+- `repr.NotFound(msg)` (404)
+- `repr.Conflict(msg)` (409)
+- `repr.UnprocessableEntity(msg)` (422)
+- `repr.InternalServerError(msg)` (500)
+- `repr.NewHTTPError(status, msg)`
+
+`*repr.HTTPError` renders as `repr.ErrorResponse` (`{"error": "...", "status": 404, "requestId": "..."}`). Any custom error implementing `HTTPStatus() int` is serialized directly as JSON with that HTTP status. Unhandled errors return `500`. Override `app.ErrorHandler = func(ctx *repr.Context, err error) { ... }` to customize.
+
+## Streaming & Server-Sent Events (SSE)
+
+Return `repr.SSEStream` (or a custom `repr.Streamer` / `repr.StreamFunc`) from a REPR endpoint. Gota clears the HTTP write deadline automatically, sets OpenAPI media type to `text/event-stream` (`application/octet-stream` for generic `Streamer`), and types the TypeScript SDK response as `ReadableStream<string>`.
+
+```go
+repr.Get(app, "/events", func(ctx *repr.Context, _ repr.Empty) (repr.SSEStream, error) {
+	ch := make(chan repr.SSEvent)
+	go func() {
+		defer close(ch)
+		ch <- repr.SSEvent{Event: "update", Data: map[string]string{"status": "ready"}}
+	}()
+	return repr.SSEStream{Events: ch}, nil
+})
+```
+
+Imperative helpers on `*repr.Context`: `ctx.SSEvent(event, data)` and `ctx.Stream(func(w io.Writer) bool)`.
+
+## `*repr.Context` Reference
+
+- Request info: `ctx.Context()`, `ctx.Param(name)`, `ctx.Header(key)`, `ctx.RequestID()`, `ctx.Cookie(name)`, `ctx.Body()`, `ctx.DecodeJSON(data, target)`
+- Response writing: `ctx.Status(code)`, `ctx.SetHeader(key, val)`, `ctx.SetCookie(cookie)`, `ctx.JSON(data)`, `ctx.NoContent()`, `ctx.Redirect(url, code...)`, `ctx.RedirectLocal(target, code...)`, `ctx.Stream(...)`, `ctx.SSEvent(event, data)`
+- State checks: `ctx.StatusCode()`, `ctx.StatusExplicit()`, `ctx.Written()`
+
+## OpenAPI 3.1 & Scalar Docs
+
+- OpenAPI 3.1 spec is available at `Config.OpenAPIURL` (default `/openapi.json`), programmatically via `app.OpenAPISpec()`, or exported via `app.ExportOpenAPI("openapi.json")`.
+- Scalar API Reference UI is served at `Config.DocsURL` (default `/docs`) using `@scalar/api-reference` pinned with Subresource Integrity (SRI) and security headers (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, and `Content-Security-Policy`).
+- Available `scalar.Theme` constants: `ThemeDefault`, `ThemeAlternate`, `ThemeMoon`, `ThemePurple`, `ThemeSolarized`, `ThemeBluePlanet`, `ThemeDeepSpace`, `ThemeSaturn`, `ThemeKepler`, `ThemeElysiaJS`, `ThemeFastify` (default), `ThemeMars`, `ThemeLaserwave`, `ThemeNone`.
+- `scalar.Handler(cfg)` can also be mounted standalone on any `http.ServeMux` or `chi` router.
+
+## TypeScript SDK & Offline Codegen
+
+Gota generates both `.d.ts` type declarations and a zero-dependency `fetch` client (`createGotaClient`) typed via `GotaEndpoints`.
+
+### Programmatic Export & CLI Codegen
+
+In production, set `TypeScriptURL: "-"` and `TypeScriptSDKURL: "-"` and generate the SDK during CI/CD:
+
+```go
+if handled, err := app.RunCodegen(os.Args[1:]); handled {
+	if err != nil {
+		log.Fatal(err)
+	}
+	return
+}
+```
+
+Supported `RunCodegen` CLI flags:
+- `--ts-sdk` (defaults to `./dist/sdk.ts`) / `--ts-sdk=<path>`
+- `--ts-types` (defaults to `./dist/types.d.ts`) / `--ts-types=<path>`
+- `--stdout` (prints full SDK, or `.d.ts` when combined with `--types-only`)
+
+Direct export methods: `app.GenerateTypeScript()`, `app.GenerateTypeScriptSDK()`, `app.ExportTypeScript(path)`, `app.ExportTypeScriptSDK(path)`.
+
+### Using the Generated TypeScript SDK
+
+```ts
+import { createGotaClient, isGotaHttpError } from "./sdk";
+
+const api = createGotaClient("http://localhost:3000", {
+  headers: async () => ({ Authorization: `Bearer ${getToken()}` }),
+  timeoutMs: 5000,
+  retry: 2,
+});
+
+try {
+  const todos = await api.fetch("GET /todos");
+  const created = await api.fetch("POST /todos", {
+    body: { title: "Ship release", priority: "high" },
+  });
+  const todo = await api.fetch("GET /todos/{id}", {
+    params: { id: created.id },
+  });
+} catch (err) {
+  if (isGotaHttpError(err)) {
+    console.error(err.status, err.data);
+  }
+}
+```
+
+Client features: dynamic async `headers`, `credentials`, `cache`, Next.js `next` (`revalidate` / `tags`), `timeoutMs`, `retry` (exponential backoff with `Retry-After` support on idempotent methods), `onRequest`/`onResponse`/`onError` hooks, automatic `FormData` (when `Blob`/`File` is present) and `URLSearchParams` encoding, and `ReadableStream<string>` for SSE responses.
+
+## Security & Auditing Utilities
+
+- **Sensitive field detection**: `repr.AuditModel(model)`, `app.AuditRoutes()`, and `repr.IsSensitiveFieldName(name)` check for exposed secret-like fields (`Password`, `PasswordHash`, `Secret`, `PrivateKey`, `AuthToken`, `CVV`, etc.) missing `json:"-"` / `form:"-"`. Use `validate:"nowarn"` on a specific field or `Config.SilenceTagWarnings: true` to suppress logs.
+- **Upload filename sanitization**: `repr.SanitizeFilename(header.Filename)` strips directory traversal paths, control characters, and hidden dotfiles.
+- **Safe local redirects**: `ctx.RedirectLocal(target, code...)` and `repr.IsLocalRedirectTarget(target)` reject external URLs, protocol-relative URLs (`//`), and backslashes with `400 Bad Request`.

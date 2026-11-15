@@ -58,6 +58,10 @@ Export the TypeScript SDK and types to `examples/codegen/dist/`:
 go run ./examples/codegen/main.go
 ```
 
+## Documentation for LLMs
+
+A complete framework usage reference for AI coding assistants is available in [llms.txt](llms.txt).
+
 ## Development
 
 Format Go, JavaScript, and shell files ([fmt.sh](fmt.sh)):
