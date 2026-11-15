@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/carlosxfelipe/gota"
+	"github.com/carlosxfelipe/gota/repr"
 )
 
 type TodoStore struct {

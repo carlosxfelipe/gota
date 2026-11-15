@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/carlosxfelipe/gota"
+	"github.com/carlosxfelipe/gota/repr"
 )
 
 func TestTypeScriptGenerator_ModelsAndEndpoints(t *testing.T) {
@@ -146,7 +146,7 @@ func TestTypeScript_ReservedNameCollision(t *testing.T) {
 	if strings.Contains(dts, "export interface Promise {") {
 		t.Errorf("generated schema shadowed reserved global Promise:\n%s", dts)
 	}
-	if !strings.Contains(dts, "export interface gota_test_Promise {") && !strings.Contains(dts, "export interface Promise_2 {") {
+	if !strings.Contains(dts, "export interface repr_test_Promise {") && !strings.Contains(dts, "export interface Promise_2 {") {
 		t.Errorf("expected disambiguated Promise interface name in:\n%s", dts)
 	}
 }

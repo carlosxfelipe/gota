@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/carlosxfelipe/gota"
+	"github.com/carlosxfelipe/gota/repr"
 	"github.com/carlosxfelipe/gota/scalar"
 )
 

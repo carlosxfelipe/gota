@@ -7,6 +7,7 @@ import (
 	"github.com/carlosxfelipe/gota"
 	"github.com/carlosxfelipe/gota/examples/system"
 	"github.com/carlosxfelipe/gota/examples/todos"
+	"github.com/carlosxfelipe/gota/repr"
 )
 
 // Example demonstrating offline TypeScript SDK code generation (e.g. for CI/CD or build scripts).
@@ -20,7 +21,7 @@ import (
 //	go run ./examples/codegen/main.go --ts-sdk=./dist/sdk.ts --ts-types=./dist/types.d.ts
 //	go run ./examples/codegen/main.go --stdout
 func main() {
-	app := repr.New(repr.Config{
+	app := gota.New(repr.Config{
 		Title:            "Gota API",
 		Version:          "1.0.0",
 		Description:      "Simple API for managing todo items.",

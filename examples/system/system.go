@@ -5,7 +5,7 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/carlosxfelipe/gota"
+	"github.com/carlosxfelipe/gota/repr"
 )
 
 type HealthStatus struct {

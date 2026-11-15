@@ -8,6 +8,7 @@ import (
 	"github.com/carlosxfelipe/gota"
 	"github.com/carlosxfelipe/gota/examples/system"
 	"github.com/carlosxfelipe/gota/examples/todos"
+	"github.com/carlosxfelipe/gota/repr"
 	"github.com/carlosxfelipe/gota/scalar"
 	"github.com/go-chi/chi/v5/middleware"
 )
@@ -42,7 +43,7 @@ func main() {
 		docsPassword = "admin123"
 	}
 
-	app := repr.New(repr.Config{
+	app := gota.New(repr.Config{
 		Title:                 "Gota API",
 		Version:               "1.0.0",
 		Description:           "Simple API for managing todo items.",
