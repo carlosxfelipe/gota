@@ -76,6 +76,12 @@ export interface GotaClientOptions {
   onRequest?: (config: GotaRequestConfig) => void | Promise<void>;
   onResponse?: (response: Response, config: GotaResponseContext) => void | Promise<void>;
   onError?: (error: GotaHttpError | Error, config: GotaResponseContext) => void | Promise<void>;
+  /**
+   * Hook invoked at most once per request when the API responds with HTTP 401.
+   * Return true (after refreshing credentials) to rebuild headers and retry once;
+   * return false to preserve and raise the original 401 GotaHttpError.
+   */
+  onUnauthorized?: (config: GotaResponseContext) => boolean | Promise<boolean>;
   /** Custom fetch implementation (defaults to the global fetch). */
   fetch?: typeof fetch;
 }
@@ -586,11 +592,16 @@ export function createGotaClientFor<E extends EndpointMap<E>>(
       if (qs) url += (url.includes("?") ? "&" : "?") + qs;
     }
 
-    const baseHeaders = typeof clientOptions.headers === "function" ? await clientOptions.headers() : clientOptions.headers;
-    const headers = new Headers(baseHeaders);
-    if (options.headers) {
-      for (const [key, value] of Object.entries(options.headers)) headers.set(key, String(value));
-    }
+    const buildHeaders = async (): Promise<Headers> => {
+      const baseHeaders = typeof clientOptions.headers === "function" ? await clientOptions.headers() : clientOptions.headers;
+      const nextHeaders = new Headers(baseHeaders);
+      if (options.headers) {
+        for (const [key, value] of Object.entries(options.headers)) nextHeaders.set(key, String(value));
+      }
+      return nextHeaders;
+    };
+
+    const headers = await buildHeaders();
 
     const init: GotaRequestInit = { method, headers };
     if (options.body !== undefined) {
@@ -611,9 +622,6 @@ export function createGotaClientFor<E extends EndpointMap<E>>(
     const signal = combineSignals(options.signal, createTimeoutSignal(options.timeoutMs ?? clientOptions.timeoutMs));
     if (signal) init.signal = signal;
 
-    if (clientOptions.onRequest) await clientOptions.onRequest({ endpoint, url, init });
-    if (options.onRequest) await options.onRequest({ endpoint, url, init });
-
     const context: GotaResponseContext = { endpoint, url };
     const fail = async (err: unknown): Promise<never> => {
       // Cancellations requested by the caller (e.g. effect cleanup) are expected: skip onError hooks.
@@ -624,6 +632,13 @@ export function createGotaClientFor<E extends EndpointMap<E>>(
       }
       throw err;
     };
+
+    const runOnRequest = async (): Promise<void> => {
+      if (clientOptions.onRequest) await clientOptions.onRequest({ endpoint, url, init });
+      if (options.onRequest) await options.onRequest({ endpoint, url, init });
+    };
+
+    await runOnRequest();
 
     const retryOpt = options.retry ?? clientOptions.retry;
     let maxAttempts = 1;
@@ -646,6 +661,7 @@ export function createGotaClientFor<E extends EndpointMap<E>>(
     const fetchFn = clientOptions.fetch ?? globalThis.fetch.bind(globalThis);
     let res: Response;
     let attempt = 0;
+    let retriedAuth = false;
     while (true) {
       try {
         res = await fetchFn(url, init);
@@ -662,6 +678,36 @@ export function createGotaClientFor<E extends EndpointMap<E>>(
           continue;
         }
         return fail(fetchErr);
+      }
+      if (
+        res.status === 401 &&
+        !retriedAuth &&
+        clientOptions.onUnauthorized &&
+        !init.signal?.aborted &&
+        !isReadableStream(init.body)
+      ) {
+        retriedAuth = true;
+        let shouldRetry = false;
+        try {
+          shouldRetry = await clientOptions.onUnauthorized(context);
+        } catch (refreshErr) {
+          Promise.resolve(res.body?.cancel?.()).catch(() => undefined);
+          return fail(refreshErr);
+        }
+        if (init.signal?.aborted) {
+          Promise.resolve(res.body?.cancel?.()).catch(() => undefined);
+          return fail(init.signal.reason);
+        }
+        if (shouldRetry) {
+          Promise.resolve(res.body?.cancel?.()).catch(() => undefined);
+          const freshHeaders = await buildHeaders();
+          init.headers = freshHeaders;
+          if (options.body !== undefined) {
+            init.body = encodeBody(options.body, freshHeaders, bodyEncodings[endpoint] ?? "json");
+          }
+          await runOnRequest();
+          continue;
+        }
       }
       if (!res.ok && attempt < maxAttempts - 1 && retryStatuses.includes(res.status) && !init.signal?.aborted) {
         attempt++;

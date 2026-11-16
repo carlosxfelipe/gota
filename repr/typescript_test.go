@@ -1081,7 +1081,12 @@ func TestTypeScript_EdgeCasesAndStrictTypeCheck(t *testing.T) {
 		}
 		consumerPath := filepath.Join(tmpDir, "consumer.ts")
 		consumerTS := `import { createGotaClient } from "./sdk/index.ts";
-const api = createGotaClient("http://localhost", { retry: false });
+const api = createGotaClient("http://localhost", {
+  retry: false,
+  async onUnauthorized() {
+    return false;
+  },
+});
 async function verify() {
   const c = await api.fetch("GET /combined", { retry: false });
   const c2 = await api.fetch("GET /combined", { retry: true });
@@ -1101,6 +1106,115 @@ void verify;
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("deno check failed: %v\n%s", err, string(out))
 		}
+	}
+}
+
+func TestTypeScript_OnUnauthorizedRefresh(t *testing.T) {
+	nodePath, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not found on PATH; skipping Node E2E SDK execution")
+	}
+
+	type CreateReq struct {
+		Title string `json:"title" validate:"required"`
+	}
+	type ItemRes struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	}
+
+	app := repr.New(repr.Config{Title: "Auth Refresh API"})
+	repr.Post(app, "/items", func(_ *repr.Context, req CreateReq) (ItemRes, error) {
+		return ItemRes{ID: "1", Title: req.Title}, nil
+	}).Status(http.StatusCreated)
+	repr.Get(app, "/items", func(_ *repr.Context, _ repr.Empty) ([]ItemRes, error) {
+		return nil, nil
+	})
+
+	tmpDir := t.TempDir()
+	sdkDir := filepath.Join(tmpDir, "sdk")
+	if err := app.ExportTypeScriptSDK(sdkDir, repr.TypeScriptSDKOptions{ImportExtension: ".ts"}); err != nil {
+		t.Fatalf("ExportTypeScriptSDK failed: %v", err)
+	}
+
+	script := `import assert from "node:assert/strict";
+import { createGotaClient, isGotaHttpError } from "./sdk/index.ts";
+
+let token = "expired";
+let refreshCalls = 0;
+let onRequestCalls = 0;
+let onErrorCalls = 0;
+const seenBodies: string[] = [];
+
+const client = createGotaClient("https://example.test", {
+  headers: () => ({ Authorization: "Bearer " + token }),
+  onRequest() {
+    onRequestCalls++;
+  },
+  onError() {
+    onErrorCalls++;
+  },
+  async onUnauthorized() {
+    refreshCalls++;
+    if (token === "reject-refresh") return false;
+    if (token === "throw-refresh") throw new Error("Refresh failed");
+    token = "fresh";
+    return true;
+  },
+  async fetch(_url, init) {
+    const auth = init.headers.get("Authorization");
+    if (init.body) seenBodies.push(String(init.body));
+    const mode = init.headers.get("X-Case");
+    if (mode === "still401" || auth === "Bearer expired") {
+      return new Response(JSON.stringify({ message: "Token expired" }), {
+        status: 401,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({ id: "1", title: "Ship" }), {
+      status: 201,
+      headers: { "content-type": "application/json" },
+    });
+  },
+});
+
+const created = await client.fetch("POST /items", { body: { title: "Ship" } });
+assert.equal(created.id, "1");
+assert.equal(refreshCalls, 1);
+assert.equal(onRequestCalls, 2);
+assert.equal(seenBodies.length, 2);
+assert.equal(seenBodies[0], seenBodies[1]);
+
+token = "fresh";
+await assert.rejects(
+  () => client.fetch("GET /items", { headers: { "X-Case": "still401" } }),
+  (err) => isGotaHttpError(err) && err.status === 401 && (err.data as { message?: string }).message === "Token expired",
+);
+assert.equal(refreshCalls, 2);
+
+token = "reject-refresh";
+await assert.rejects(
+  () => client.fetch("GET /items", { headers: { "X-Case": "still401" } }),
+  (err) => isGotaHttpError(err) && err.status === 401 && (err.data as { message?: string }).message === "Token expired",
+);
+assert.equal(refreshCalls, 3);
+
+token = "throw-refresh";
+const beforeErrors = onErrorCalls;
+await assert.rejects(
+  () => client.fetch("GET /items", { headers: { "X-Case": "still401" } }),
+  (err) => err instanceof Error && err.message === "Refresh failed",
+);
+assert.equal(onErrorCalls, beforeErrors + 1);
+`
+	runnerPath := filepath.Join(tmpDir, "refresh_test.mts")
+	if err := os.WriteFile(runnerPath, []byte(script), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(nodePath, "--experimental-strip-types", runnerPath)
+	cmd.Dir = tmpDir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("node refresh E2E failed: %v\n%s", err, string(out))
 	}
 }
 
