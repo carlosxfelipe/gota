@@ -1,16 +1,28 @@
-package repr
+package typescript
 
 import (
+	"bytes"
 	"fmt"
+	"log"
+	"mime/multipart"
+	"os"
 	"path"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 var (
+	timeType       = reflect.TypeOf(time.Time{})
+	fileHeaderType = reflect.TypeOf(multipart.FileHeader{})
+
+	loggedSensitiveWarnings sync.Map
+
 	tsSchemaNamePathPrefix = regexp.MustCompile(`[A-Za-z0-9_.\-]+/`)
 	tsSchemaNamePkgQual    = regexp.MustCompile(`\b[A-Za-z_][A-Za-z0-9_]*\.`)
 	tsSchemaNameInvalid    = regexp.MustCompile(`[^A-Za-z0-9_]+`)
@@ -30,8 +42,8 @@ func sanitizeTSTypeName(name string) string {
 	return strings.Trim(name, "_")
 }
 
-// TypeScriptGenerator inspects registered gota routes and types to produce TypeScript declarations and SDKs.
-type TypeScriptGenerator struct {
+// Generator inspects API route specs and Go types to produce TypeScript declarations and SDKs.
+type Generator struct {
 	config       Config
 	schemas      map[string]string
 	schemaTypes  map[string]reflect.Type
@@ -45,14 +57,14 @@ type TypeScriptGenerator struct {
 	reserved map[string]bool
 }
 
-// NewTypeScriptGenerator initializes a new TypeScriptGenerator.
-func NewTypeScriptGenerator(cfg Config) *TypeScriptGenerator {
-	g := &TypeScriptGenerator{config: cfg}
+// NewGenerator initializes a new TypeScript SDK Generator.
+func NewGenerator(cfg Config) *Generator {
+	g := &Generator{config: cfg}
 	g.reset()
 	return g
 }
 
-func (g *TypeScriptGenerator) reset() {
+func (g *Generator) reset() {
 	g.schemas = make(map[string]string)
 	g.schemaTypes = make(map[string]reflect.Type)
 	g.typeNames = make(map[reflect.Type]string)
@@ -60,6 +72,111 @@ func (g *TypeScriptGenerator) reset() {
 	g.schemaDeps = make(map[string]map[string]bool)
 	g.refSink = nil
 	g.reserved = make(map[string]bool)
+}
+
+func embeddedStructType(f reflect.StructField) (reflect.Type, bool) {
+	if !f.Anonymous {
+		return nil, false
+	}
+	if name, _, _ := strings.Cut(f.Tag.Get("json"), ","); name != "" {
+		return nil, false
+	}
+	for _, tag := range [...]string{"form", "param", "query", "header"} {
+		if f.Tag.Get(tag) != "" {
+			return nil, false
+		}
+	}
+
+	ft := f.Type
+	isPtr := ft.Kind() == reflect.Pointer
+	if isPtr {
+		ft = ft.Elem()
+	}
+	if ft.Kind() != reflect.Struct || ft == timeType || ft == fileHeaderType {
+		return nil, false
+	}
+	if isPtr && !f.IsExported() {
+		return nil, false
+	}
+	return ft, true
+}
+
+func hasValidateRule(tag, target string) bool {
+	for _, rule := range strings.Split(tag, ",") {
+		if strings.TrimSpace(rule) == target {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRequiredRule(tag string) bool {
+	return hasValidateRule(tag, "required")
+}
+
+func pathParamName(segment string) (string, bool) {
+	if strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}") && len(segment) > 2 {
+		inner := segment[1 : len(segment)-1]
+		name, _, _ := strings.Cut(inner, ":")
+		return name, name != ""
+	}
+	return "", false
+}
+
+func extractPathParams(p string) []string {
+	var params []string
+	for _, seg := range strings.Split(p, "/") {
+		if name, ok := pathParamName(seg); ok {
+			params = append(params, name)
+		}
+	}
+	return params
+}
+
+func isSensitiveFieldName(name string) (bool, string) {
+	lower := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(name, "_", ""), "-", ""))
+	switch {
+	case lower == "password" || lower == "passwd":
+		return true, "plaintext password"
+	case strings.Contains(lower, "passwordhash") || strings.Contains(lower, "passwdhash") || strings.Contains(lower, "pwdhash") || strings.Contains(lower, "passhash"):
+		return true, "password hash"
+	case strings.Contains(lower, "passwordsalt") || lower == "salt":
+		return true, "cryptographic salt"
+	case strings.Contains(lower, "clientsecret") || strings.Contains(lower, "apisecret") || strings.Contains(lower, "jwtsecret") || lower == "secret":
+		return true, "secret key"
+	case strings.Contains(lower, "privatekey") || strings.Contains(lower, "signingkey") || strings.Contains(lower, "encryptionkey") || strings.Contains(lower, "masterkey"):
+		return true, "private/cryptographic key"
+	case strings.Contains(lower, "resettoken") || strings.Contains(lower, "refreshtoken") || strings.Contains(lower, "authtoken") || strings.Contains(lower, "sessiontoken") || strings.Contains(lower, "bearertoken"):
+		return true, "authentication/session token"
+	case lower == "cvv" || lower == "cvc" || lower == "cardcvv" || lower == "cardpin" || lower == "securitycode" || lower == "cardsecuritycode":
+		return true, "payment security code"
+	default:
+		return false, ""
+	}
+}
+
+func warnIfSensitiveField(structType reflect.Type, field reflect.StructField, silence bool) {
+	if silence || hasValidateRule(field.Tag.Get("validate"), "nowarn") {
+		return
+	}
+	if isSens, reason := isSensitiveFieldName(field.Name); isSens {
+		warnKey := fmt.Sprintf("%s.%s", structType.String(), field.Name)
+		if _, loaded := loggedSensitiveWarnings.LoadOrStore(warnKey, true); !loaded {
+			log.Printf("typescript [SECURITY]: field %q in struct %s appears to contain a %s without `json:\"-\"`", field.Name, structType.String(), reason)
+		}
+	}
+}
+
+func writeExportFile(outPath string, data []byte) error {
+	if existing, err := os.ReadFile(outPath); err == nil && bytes.Equal(existing, data) {
+		return nil
+	}
+	if dir := filepath.Dir(outPath); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	return os.WriteFile(outPath, data, 0o644)
 }
 
 // buildTSReservedNames returns identifiers that generated schema types must never shadow.
@@ -165,7 +282,7 @@ func writeTSDoc(sb *strings.Builder, lines []string, indent string) {
 	sb.WriteString(" */\n")
 }
 
-func (g *TypeScriptGenerator) schemaName(t reflect.Type) string {
+func (g *Generator) schemaName(t reflect.Type) string {
 	if name, ok := g.typeNames[t]; ok {
 		return name
 	}
@@ -287,20 +404,20 @@ func isEmptyStruct(t reflect.Type) bool {
 
 // analyzeRoutes identifies struct types reachable only from responses so they use
 // serialization semantics (non-pointer fields always present, pointers nullable).
-func (g *TypeScriptGenerator) analyzeRoutes(routes []*Route) {
+func (g *Generator) analyzeRoutes(routes []Route) {
 	requestTypes := make(map[reflect.Type]bool)
 	responseTypes := make(map[reflect.Type]bool)
 	for _, rt := range routes {
-		if !tsVisibleRoute(rt) || rt.doc == nil {
+		if rt.Hidden {
 			continue
 		}
-		for _, p := range rt.doc.Parameters {
+		for _, p := range rt.Parameters {
 			walkTSTypes(reflect.TypeOf(p.Model), requestTypes)
 		}
-		if rt.doc.RequestBody != nil {
-			walkTSTypes(reflect.TypeOf(rt.doc.RequestBody.Model), requestTypes)
+		if rt.RequestBody != nil {
+			walkTSTypes(reflect.TypeOf(rt.RequestBody.Model), requestTypes)
 		}
-		for _, resp := range rt.doc.Responses {
+		for _, resp := range rt.Responses {
 			if resp != nil {
 				walkTSTypes(reflect.TypeOf(resp.Model), responseTypes)
 			}
@@ -341,11 +458,7 @@ func walkTSTypes(t reflect.Type, seen map[reflect.Type]bool) {
 	}
 }
 
-func tsVisibleRoute(rt *Route) bool {
-	return rt.doc == nil || !rt.doc.Hidden
-}
-
-func (g *TypeScriptGenerator) typeToTS(t reflect.Type, seen map[reflect.Type]bool) string {
+func (g *Generator) typeToTS(t reflect.Type, seen map[reflect.Type]bool) string {
 	if t == nil {
 		return "void"
 	}
@@ -414,7 +527,7 @@ type structFieldDoc struct {
 	doc      []string
 }
 
-func (g *TypeScriptGenerator) collectStructFields(t reflect.Type, fields *[]structFieldDoc, seen map[reflect.Type]bool, embedding map[reflect.Type]bool, isResponse bool) {
+func (g *Generator) collectStructFields(t reflect.Type, fields *[]structFieldDoc, seen map[reflect.Type]bool, embedding map[reflect.Type]bool, isResponse bool) {
 	if embedding[t] {
 		return
 	}
@@ -524,7 +637,7 @@ func fieldDocLines(field reflect.StructField) []string {
 	return lines
 }
 
-func (g *TypeScriptGenerator) inlineStructTS(t reflect.Type, seen map[reflect.Type]bool) string {
+func (g *Generator) inlineStructTS(t reflect.Type, seen map[reflect.Type]bool) string {
 	if seen[t] {
 		return "Record<string, any>"
 	}
@@ -585,7 +698,7 @@ func structDocLines(t reflect.Type) []string {
 	return nil
 }
 
-func (g *TypeScriptGenerator) generateInterface(name string, t reflect.Type, seen map[reflect.Type]bool) {
+func (g *Generator) generateInterface(name string, t reflect.Type, seen map[reflect.Type]bool) {
 	deps := make(map[string]bool)
 	g.schemaDeps[name] = deps
 	prevSink := g.refSink
@@ -668,12 +781,15 @@ func anyRequired(fields []tsParamField) bool {
 	return false
 }
 
-func (g *TypeScriptGenerator) inspectRoute(rt *Route) routeTS {
-	method := strings.ToUpper(rt.method)
+func (g *Generator) inspectRoute(rt Route) routeTS {
+	method := strings.ToUpper(rt.Method)
 	r := routeTS{
 		method:       method,
-		path:         rt.path,
+		path:         rt.Path,
 		key:          tsRouteKey(rt),
+		summary:      rt.Summary,
+		description:  rt.Description,
+		deprecated:   rt.Deprecated,
 		paramsTS:     "void",
 		queryTS:      "void",
 		bodyTS:       "void",
@@ -686,17 +802,9 @@ func (g *TypeScriptGenerator) inspectRoute(rt *Route) routeTS {
 	g.refSink = r.refs
 	defer func() { g.refSink = prevSink }()
 
-	doc := rt.doc
-	if doc == nil {
-		doc = &RouteDoc{}
-	}
-	r.summary = doc.Summary
-	r.description = doc.Description
-	r.deprecated = doc.Deprecated
-
 	pathTypes := make(map[string]string)
 	var queryFields, headerFields []tsParamField
-	for _, p := range doc.Parameters {
+	for _, p := range rt.Parameters {
 		pType := "string"
 		if p.Model != nil {
 			pType = oneOfUnion(p.Validate, reflect.TypeOf(p.Model))
@@ -713,7 +821,7 @@ func (g *TypeScriptGenerator) inspectRoute(rt *Route) routeTS {
 			headerFields = upsertTSParamField(headerFields, tsParamField{p.Name, "string", p.Required})
 		}
 	}
-	for _, name := range extractPathParams(rt.path) {
+	for _, name := range extractPathParams(rt.Path) {
 		if _, ok := pathTypes[name]; !ok {
 			pathTypes[name] = "string"
 		}
@@ -730,7 +838,7 @@ func (g *TypeScriptGenerator) inspectRoute(rt *Route) routeTS {
 	}
 
 	bodyRequired := false
-	if body := doc.RequestBody; body != nil && body.Model != nil {
+	if body := rt.RequestBody; body != nil && body.Model != nil {
 		bodyRequired = body.Required
 		mType := modelType(body.Model)
 		hasFields := mType != nil && mType.Kind() == reflect.Struct && mType.NumField() > 0
@@ -760,7 +868,7 @@ func (g *TypeScriptGenerator) inspectRoute(rt *Route) routeTS {
 	}
 
 	var successStatuses, errorStatuses []int
-	for code := range doc.Responses {
+	for code := range rt.Responses {
 		switch {
 		case code >= 200 && code < 300:
 			successStatuses = append(successStatuses, code)
@@ -773,7 +881,7 @@ func (g *TypeScriptGenerator) inspectRoute(rt *Route) routeTS {
 
 	if len(successStatuses) > 0 {
 		code := successStatuses[0]
-		if resp := doc.Responses[code]; resp != nil {
+		if resp := rt.Responses[code]; resp != nil {
 			mType := modelType(resp.Model)
 			mt := normalizeMediaType(resp.ContentType)
 			switch {
@@ -801,7 +909,7 @@ func (g *TypeScriptGenerator) inspectRoute(rt *Route) routeTS {
 	var errorTypes []string
 	seenErrorTypes := make(map[string]bool)
 	for _, code := range errorStatuses {
-		resp := doc.Responses[code]
+		resp := rt.Responses[code]
 		if resp == nil {
 			continue
 		}

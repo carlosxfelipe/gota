@@ -85,6 +85,15 @@ type Route struct {
 	inheritedTags int
 }
 
+// Method returns the HTTP method of the route.
+func (r *Route) Method() string { return r.method }
+
+// Path returns the registered route path pattern.
+func (r *Route) Path() string { return r.path }
+
+// Doc returns the route's OpenAPI/documentation metadata.
+func (r *Route) Doc() *RouteDoc { return r.doc }
+
 func (r *Route) Summary(s string) *Route     { r.doc.Summary = s; r.app.invalidateSpec(); return r }
 func (r *Route) Description(d string) *Route { r.doc.Description = d; r.app.invalidateSpec(); return r }
 func (r *Route) OperationID(id string) *Route {
@@ -94,8 +103,8 @@ func (r *Route) OperationID(id string) *Route {
 }
 
 // Tags appends OpenAPI tags to the route. Explicit route tags are placed before inherited
-// group tags so the TypeScript SDK groups routes by their most specific tag while preserving
-// all tags in OpenAPI.
+// group tags so downstream SDK generators can group routes by their most specific tag while
+// preserving all tags in OpenAPI.
 func (r *Route) Tags(tags ...string) *Route {
 	if len(tags) == 0 {
 		return r
@@ -151,7 +160,7 @@ func (r *Route) ErrorResponse(status int, description string, model ...any) *Rou
 	return r
 }
 
-// Response documents an HTTP response status and optional JSON model for OpenAPI and TypeScript.
+// Response documents an HTTP response status and optional JSON model in route metadata and OpenAPI.
 func (r *Route) Response(status int, model any, description ...string) *Route {
 	cType := ""
 	if model != nil {
@@ -180,7 +189,7 @@ func (r *Route) ResponseMedia(status int, contentType string, model any, descrip
 	return r
 }
 
-// Request documents a JSON request body model for OpenAPI and TypeScript on non-REPR routes.
+// Request documents a JSON request body model in route metadata and OpenAPI on non-REPR routes.
 func (r *Route) Request(model any, description ...string) *Route {
 	if model == nil {
 		r.doc.RequestBody = nil
@@ -201,7 +210,7 @@ func (r *Route) Request(model any, description ...string) *Route {
 	return r
 }
 
-// Param documents a path, query, or header parameter for OpenAPI and TypeScript on non-REPR routes.
+// Param documents a path, query, or header parameter in route metadata and OpenAPI on non-REPR routes.
 func (r *Route) Param(in, name string, model any, required bool, description ...string) *Route {
 	desc := ""
 	if len(description) > 0 {

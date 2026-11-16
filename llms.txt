@@ -11,9 +11,10 @@ go get github.com/carlosxfelipe/gota
 ```
 
 Primary packages:
-- `github.com/carlosxfelipe/gota` — Top-level entry point (`gota.New`, `gota.App`, `gota.Config` aliases for `repr`).
-- `github.com/carlosxfelipe/gota/repr` — Core REPR router, endpoint helpers, request binding, validation, errors, streaming, OpenAPI, TypeScript codegen, and security auditing.
+- `github.com/carlosxfelipe/gota` — Top-level entry point (`gota.New`, `gota.App`, `gota.Config` aliases for `repr`, plus `gota.TypeScriptSpec` and TypeScript SDK helpers bridging `repr` and `typescript`).
+- `github.com/carlosxfelipe/gota/repr` — Core REPR router, endpoint helpers, request binding, validation, errors, streaming, OpenAPI, and security auditing.
 - `github.com/carlosxfelipe/gota/scalar` — Standalone or integrated Scalar API Reference UI handler, themes, SRI, and CSP configuration.
+- `github.com/carlosxfelipe/gota/typescript` — Standalone, `repr`-independent TypeScript client SDK generator (`typescript.Spec`, `typescript.Generate`, `typescript.Export`, `typescript.Check`, `typescript.RunCodegen`).
 
 ## Quick Start
 
@@ -71,9 +72,9 @@ func main() {
 
 `gota.New(cfg)` / `repr.New(cfg)` accepts `repr.Config`:
 
-- `Title` (`string`, default `"API Reference"`): OpenAPI `info.title` and Scalar page title.
-- `Version` (`string`, default `"1.0.0"`): OpenAPI `info.version`.
-- `Description` (`string`): OpenAPI `info.description` and TypeScript header comment.
+- `Title` (`string`, default `"API Reference"`): OpenAPI `info.title`, Scalar page title (when `Scalar.Title` is empty), and TypeScript SDK header comment (via `gota.TypeScriptSpec`).
+- `Version` (`string`, default `"1.0.0"`): OpenAPI `info.version` and TypeScript SDK header comment.
+- `Description` (`string`): OpenAPI `info.description` and TypeScript SDK header comment.
 - `DocsURL` (`string`, default `"/docs"`): Scalar UI route.
 - `OpenAPIURL` (`string`, default `"/openapi.json"`): OpenAPI 3.1 JSON spec route.
 - `DisableDocs` (`bool`): Disables `/docs` and `/openapi.json` routes.
@@ -93,6 +94,7 @@ func main() {
 - `app.ListenGraceful(addr, shutdownTimeout...)`: Starts the server and gracefully shuts down on `SIGINT` / `SIGTERM` (default shutdown timeout: `10s`).
 - `app.ServeHTTP(w, r)`: `App` implements `http.Handler` for custom server wiring or `httptest`.
 - `app.Router() *chi.Mux`: Exposes the underlying chi router.
+- `app.Config() repr.Config` / `app.Routes() []*repr.Route`: Read-only accessors for registered configuration and routes (`rt.Method()`, `rt.Path()`, `rt.Doc()`).
 
 ## Defining Endpoints
 
@@ -136,9 +138,10 @@ repr.HandleEndpoint(app, http.MethodGet, "/todos/{id}", &GetTodoEndpoint{Store: 
 
 ### 3. Non-REPR and Standard `net/http` Routes
 
-- `app.Get`, `app.Post`, `app.Put`, `app.Patch`, `app.Delete`, `app.Route(method, path, handler)` — Register `func(ctx *repr.Context) error` handlers that can still be documented in OpenAPI/Scalar/TypeScript using `.Request(...)`, `.Param(...)`, `.Response(...)`, and `.ResponseMedia(...)`.
-- `app.HandleHTTP(method, path, httpHandler)` — Register a standard `http.Handler` exposed in OpenAPI/Scalar/TypeScript.
+- `app.Get`, `app.Post`, `app.Put`, `app.Patch`, `app.Delete`, `app.Route(method, path, handler)` — Register `func(ctx *repr.Context) error` handlers that expose route metadata in OpenAPI, Scalar, and SDK codegen using `.Request(...)`, `.Param(...)`, `.Response(...)`, and `.ResponseMedia(...)`.
+- `app.HandleHTTP(method, path, httpHandler)` — Register a standard `http.Handler` exposed in OpenAPI, Scalar, and SDK codegen.
 - `app.Handle(method, path, httpHandler)` — Register an undocumented standard `http.Handler` directly on chi.
+- Non-REPR routes start with an empty `200 OK` placeholder response; calling `.Response(2xx, ...)` / `.ResponseMedia(2xx, ...)` with another `2xx` status or `.Status(code)` replaces that placeholder.
 
 ```go
 app.Get("/health", func(ctx *repr.Context) error {
@@ -189,7 +192,7 @@ Gota binds request structs from URL path parameters, query parameters, headers, 
 | `param:"id"` | URL path param `{id}` | Required automatically. Panics at startup if `{id}` is missing from route path. Do NOT use `path:"..."`. |
 | `query:"page"` | Query string | Supports slices via repeated keys (`?tag=a&tag=b`) or comma-separated values. |
 | `header:"X-Api-Key"` | Request header | Bound from `r.Header.Get(...)`. |
-| `form:"avatar"` | Form / Multipart | Sets OpenAPI content type to `application/x-www-form-urlencoded`, or `multipart/form-data` when a field is `*multipart.FileHeader` or `[]*multipart.FileHeader`. Use `form:"-"` to ignore. |
+| `form:"avatar"` | Form / Multipart | Sets OpenAPI content type to `application/x-www-form-urlencoded`, or `multipart/form-data` when a field is `*multipart.FileHeader` or `[]*multipart.FileHeader`. Use `form:"-"` to ignore from binding, OpenAPI, and TypeScript. |
 | `json:"title"` | JSON body | Use `json:"-"` to exclude from JSON, OpenAPI, and TypeScript. |
 | `validate:"..."` | Validation rules | `go-playground/validator/v10` rules (`required`, `min=3`, `max=50`, `len=6`, `oneof=low normal high`, `email`, `url`, `uuid`, `omitempty`, `nowarn`). Reflected in OpenAPI (`minLength`, `minimum`, `enum`, `format`, `required`) and TypeScript (`oneof` on strings becomes a literal union). |
 | `msg:"..."` | Custom error messages | Single message (`msg:"Todo ID is required"`) or pipe-delimited per-rule (`msg:"required:Title is required|min:Too short"`). Requires a `validate` tag. Do NOT use `message:"..."`. |
@@ -199,7 +202,7 @@ Gota binds request structs from URL path parameters, query parameters, headers, 
 | `format:"..."` | OpenAPI format | Overrides OpenAPI `format` and `@format` JSDoc tag. |
 | `deprecated:"true"` | Deprecation flag | Adds `@deprecated` in TypeScript JSDoc. |
 
-Supported scalar types for `param`/`query`/`header`/`form`: `string`, `int*`, `uint*`, `float*`, `bool` (`true/1/t/yes/y`, `false/0/f/no/n`), `time.Time` (`RFC3339Nano`, `RFC3339`, `YYYY-MM-DD`), `encoding.TextUnmarshaler`, pointers, slices, and anonymous embedded structs.
+Supported types for `param`/`query`/`header`/`form`: `string`, `int*`, `uint*`, `float*`, `bool` (`true/1/t/yes/y`, `false/0/f/no/n`), `time.Time` (`RFC3339Nano`, `RFC3339`, `2006-01-02`), addressable `encoding.TextUnmarshaler` (pointer receiver), pointers, slices (comma-separated, or repeated keys for `query`/`form`), anonymous embedded structs, plus `*multipart.FileHeader` / `[]*multipart.FileHeader` for `form`.
 
 Security guarantee: fields tagged exclusively with `param`, `query`, `header`, or `form` (without `json`) are zeroed after JSON decoding so JSON payloads cannot spoof path/query/header fields.
 
@@ -217,8 +220,9 @@ Fields on a response struct tagged with `header:"X-Total-Count"` write that HTTP
   ```json
   { "message": "Validation failed", "errors": { "title": ["Title is required"] }, "status": 422 }
   ```
+  Field keys in `errors` use the first non-ignored struct tag in priority order `json`, `form`, `query`, `param`, `header`, falling back to the Go field name (nested structs use dotted paths such as `"address.city"`).
 - Register custom validator rules with `repr.RegisterValidation(tag, fn)`.
-- Implement `repr.Validator` (`Validate() error`) or `repr.ContextValidator` (`Validate(ctx *repr.Context) error`) on request structs for cross-field validation.
+- Implement `repr.Validator` (`Validate() error`) or `repr.ContextValidator` (`Validate(ctx *repr.Context) error`) on request structs for cross-field validation. Returning `*repr.ValidationError` merges its `Errors` map per field; any other `error` is recorded under key `"_"`.
 
 ### Error Helpers & Custom Error Handler
 
@@ -232,11 +236,11 @@ Return typed HTTP errors from handlers:
 - `repr.InternalServerError(msg)` (500)
 - `repr.NewHTTPError(status, msg)`
 
-`*repr.HTTPError` renders as `repr.ErrorResponse` (`{"error": "...", "status": 404, "requestId": "..."}`). Any custom error implementing `HTTPStatus() int` is serialized directly as JSON with that HTTP status. Unhandled errors return `500`. Override `app.ErrorHandler = func(ctx *repr.Context, err error) { ... }` to customize.
+`*repr.HTTPError` renders as `repr.ErrorResponse` (`{"error": "...", "status": 404, "requestId": "..."}`). Any custom error implementing `HTTPStatus() int` is serialized directly as JSON with that HTTP status. Unhandled errors return `500`. If response headers/body were already written (`ctx.Written()`), `defaultErrorHandler` logs the error without overwriting the response. Override `app.ErrorHandler = func(ctx *repr.Context, err error) { ... }` to customize.
 
 ## Streaming & Server-Sent Events (SSE)
 
-Return `repr.SSEStream` (or a custom `repr.Streamer` / `repr.StreamFunc`) from a REPR endpoint. Gota clears the HTTP write deadline automatically, sets OpenAPI media type to `text/event-stream` (`application/octet-stream` for generic `Streamer`), and types the TypeScript SDK response as `ReadableStream<string>`.
+Return `repr.SSEStream` (or a custom `repr.Streamer` / `repr.StreamFunc`) from a REPR endpoint. When a `Streamer` is returned, Gota clears the HTTP write deadline before calling `Stream(ctx)`, sets OpenAPI media type to `text/event-stream` (`application/octet-stream` for generic `Streamer`), and types the TypeScript SDK response as `ReadableStream<string>`. Inside `ctx.SSEvent`, each frame is written with a `10s` (`repr.DefaultSSEWriteTimeout`) deadline that is cleared again after the write. (Calling `ctx.Stream(...)` directly in a non-REPR handler does not clear the server's `WriteTimeout` automatically.)
 
 ```go
 repr.Get(app, "/events", func(ctx *repr.Context, _ repr.Empty) (repr.SSEStream, error) {
@@ -253,70 +257,96 @@ Imperative helpers on `*repr.Context`: `ctx.SSEvent(event, data)` and `ctx.Strea
 
 ## `*repr.Context` Reference
 
+- Construction & raw HTTP: `repr.NewContext(w, r)` (for unit tests), `ctx.Writer` (`http.ResponseWriter`), `ctx.Request` (`*http.Request`).
 - Request info: `ctx.Context()`, `ctx.Param(name)`, `ctx.Header(key)`, `ctx.RequestID()`, `ctx.Cookie(name)`, `ctx.Body()`, `ctx.DecodeJSON(data, target)`
-- Response writing: `ctx.Status(code)`, `ctx.SetHeader(key, val)`, `ctx.SetCookie(cookie)`, `ctx.JSON(data)`, `ctx.NoContent()`, `ctx.Redirect(url, code...)`, `ctx.RedirectLocal(target, code...)`, `ctx.Stream(...)`, `ctx.SSEvent(event, data)`
+- Response writing: `ctx.Status(code)`, `ctx.SetHeader(key, val)`, `ctx.SetCookie(cookie)`, `ctx.JSON(data)` (sets `Content-Type: application/json; charset=utf-8`), `ctx.NoContent()` (writes `204`), `ctx.Redirect(url, code...)` (defaults to `302`), `ctx.RedirectLocal(target, code...)`, `ctx.Stream(...)`, `ctx.SSEvent(event, data)`
 - State checks: `ctx.StatusCode()`, `ctx.StatusExplicit()`, `ctx.Written()`
 
 ## OpenAPI 3.1 & Scalar Docs
 
 - OpenAPI 3.1 spec is available at `Config.OpenAPIURL` (default `/openapi.json`), programmatically via `app.OpenAPISpec()`, or exported via `app.ExportOpenAPI("openapi.json")`.
-- Scalar API Reference UI is served at `Config.DocsURL` (default `/docs`) using `@scalar/api-reference` pinned with Subresource Integrity (SRI) and security headers (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, and `Content-Security-Policy`).
+- Scalar API Reference UI is served at `Config.DocsURL` (default `/docs`) using `@scalar/api-reference` (pinned at `scalar.DefaultVersion` `"1.76.0"` with `scalar.DefaultSRI`) and security headers (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, and CSP).
+- `scalar.Config` fields: `Title`, `SpecURL`, `Theme`, `Layout` (`"classic"` default or `"modern"`), `DarkMode *bool`, `ShowSidebar *bool`, `ProxyURL`, `CustomCSS`, `SearchHotKey`, `Metadata map[string]string`, `ScriptURL`, `SRI` (applied only when `ScriptURL` is non-empty; default CDN always uses `DefaultSRI`), `CSP` (`""` uses `scalar.ContentSecurityPolicy(ScriptURL)`; `"-"` omits the CSP header), and `CSPEnforce` (`false` sends `Content-Security-Policy-Report-Only`; `true` sends enforcing `Content-Security-Policy`).
 - Available `scalar.Theme` constants: `ThemeDefault`, `ThemeAlternate`, `ThemeMoon`, `ThemePurple`, `ThemeSolarized`, `ThemeBluePlanet`, `ThemeDeepSpace`, `ThemeSaturn`, `ThemeKepler`, `ThemeElysiaJS`, `ThemeFastify` (default), `ThemeMars`, `ThemeLaserwave`, `ThemeNone`.
-- `scalar.Handler(cfg)` can also be mounted standalone on any `http.ServeMux` or `chi` router.
+- Helpers: `scalar.Handler(cfg)` (mounts standalone on `http.ServeMux` or `chi`), `scalar.RenderHTML(cfg)`, `scalar.ContentSecurityPolicy(scriptURL)`, `scalar.CDNURL(version)`.
 
 ## TypeScript SDK & Offline Codegen
 
-Gota generates a modular, zero-dependency `fetch` client (`createGotaClient`) typed via `GotaEndpoints`.
+`github.com/carlosxfelipe/gota/typescript` is a standalone, zero-external-dependency package that generates a modular, zero-dependency TypeScript `fetch` client (`createClient`) typed via `ApiEndpoints`. It has no dependency on `repr` and can be used with any Go router (`chi`, `net/http`, `Echo`, etc.) or bridged from a Gota `repr.App` via `gota.TypeScriptSpec(app)`.
 
-### Programmatic Export & CLI Codegen
+### Using `typescript` with Gota (`gota.TypeScriptSpec`) or Standalone (`typescript.Spec`)
 
-Generate the modular SDK during development or CI/CD via `RunCodegen`:
+Generate the modular SDK during development or CI/CD via `typescript.RunCodegen` (or `gota.RunCodegen(app, os.Args[1:])`):
 
 ```go
-if handled, err := app.RunCodegen(os.Args[1:]); handled {
+// With Gota / repr.App:
+if handled, err := typescript.RunCodegen(gota.TypeScriptSpec(app), os.Args[1:]); handled {
 	if err != nil {
 		log.Fatal(err)
 	}
 	return
 }
+
+// Standalone (without repr, e.g., pure chi or net/http):
+spec := typescript.Spec{
+	Config: typescript.Config{Title: "My API", Version: "1.0.0"},
+	Routes: []typescript.Route{
+		{
+			Method:      http.MethodPost,
+			Path:        "/todos",
+			Tags:        []string{"Todos"},
+			RequestBody: &typescript.RequestBody{ContentType: "application/json", Required: true, Model: CreateTodoRequest{}},
+			Responses:   map[int]*typescript.Response{http.StatusCreated: {ContentType: "application/json", Model: TodoResponse{}}},
+		},
+	},
+}
+_ = typescript.Export(spec, "./dist", typescript.Options{ImportExtension: "auto"})
 ```
 
 Supported `RunCodegen` CLI flags:
 - `--ts-sdk` (defaults to `./dist`) / `--ts-sdk=<dir>` — modular TypeScript client SDK directory (`index.ts`, `runtime.ts`, `types/<module>.ts`, `types/_shared.ts`, `endpoints/<module>.ts`)
 - `--ts-import-ext=<ext>` — relative import suffix in `--ts-sdk`: `""`/`none` (default, bundlers), `".js"` (`node16`/`nodenext` ESM), `".ts"` (Node type stripping, Deno, Bun), or `"auto"` (autodetect from nearest `deno.json(c)`, `tsconfig.json`, or `package.json`)
-- `--check` — CI verification mode; verifies exported SDK matches current routes (no missing, modified, or stale managed files) without writing to disk
+- `--check` — CI verification mode (requires `--ts-sdk`); verifies exported SDK matches current routes (no missing, modified, or stale managed files) without writing to disk
 
-Direct export & utility methods: `app.GenerateTypeScriptSDK(opts...)`, `app.ExportTypeScriptSDK(dir, opts...)`, `app.CheckTypeScriptSDK(dir, opts...)`, and `repr.DetectTypeScriptImportExtension(dir)`.
+`typescript` API: `typescript.Spec`, `typescript.Config`, `typescript.Route`, `typescript.Param`, `typescript.RequestBody`, `typescript.Response`, `typescript.Options`, `typescript.NewGenerator(cfg)`, `typescript.Generate(spec, opts...)`, `typescript.Export(spec, dir, opts...)`, `typescript.Check(spec, dir, opts...)`, `typescript.RunCodegen(spec, args)`, `typescript.DetectImportExtension(dir)`.
 
-### Modular Layout & Project Extensions
+Root `gota` bridge helpers: `gota.TypeScriptSpec(app)`, `gota.GenerateTypeScriptSDK(app, opts...)`, `gota.ExportTypeScriptSDK(app, dir, opts...)`, `gota.CheckTypeScriptSDK(app, dir, opts...)`, `gota.RunCodegen(app, args)`.
 
-Running `--ts-sdk=./src/lib/sdk` splits schemas and `GotaEndpoints` by module (`types/<module>.ts`, `types/_shared.ts`, `endpoints/<module>.ts`), using the route's first tag (inherited from `Group.Tags(...)` or set via `route.Tags(...)`) or falling back to the first meaningful static path segment (skipping leading `api` / `v[0-9]+`, falling back to `default` only for `/` or param-only paths). It isolates the route-independent core in `runtime.ts` and removes stale Gota-managed files on regeneration while preserving determinism for clean Git diffs.
+### Modular Layout, Schema Rules & Project Extensions
+
+Running `--ts-sdk=./src/lib/sdk` splits schemas and `ApiEndpoints` by module (`types/<module>.ts`, `types/_shared.ts`, `endpoints/<module>.ts`), using the route's first tag (inherited from `Group.Tags(...)` or set via `route.Tags(...)`) or falling back to the first meaningful static path segment (skipping leading `api` / `v[0-9]+`, falling back to `default` only for `/` or param-only paths). It isolates the route-independent core in `runtime.ts` and removes stale managed files on regeneration while preserving determinism for clean Git diffs.
+
+Schema generation rules:
+- Structs reachable only from responses use serialization semantics (fields without `omitempty`/`omitzero` are required, and pointer fields become `T | null`); structs used in requests (or shared across requests and responses) use input optionality (fields without `validate:"required"` are optional `?`).
+- Struct-level JSDoc is read from `Doc() string`, `Description() string`, or `_ struct{} \`doc:"..."\``.
 
 Keep project-specific client configuration and domain helpers in a separate wrapper outside the generated directory (e.g., `src/lib/api.ts` importing from `./sdk`), so regenerating the SDK overwrites only the generated directory. In CI, run your codegen binary with `--ts-sdk=... --check` to catch forgotten SDK updates.
 
 ### Using the Generated TypeScript SDK
 
+Generated `index.ts` exports: `createClient`, `isEndpointError`, `ApiClient`, `ApiEndpoints`, `EndpointKey`, `RequestParams<K>`, `RequestQuery<K>`, `RequestBody<K>`, `ResponseData<K>`, `ResponseError<K>`, `RequestOptions<K>`, plus everything from `runtime.ts` (`HttpError`, `isHttpError`, `isAbortError`, `parseError`, `ApiErrorKind`, `ApiErrorDetails`, `ClientOptions`, `RetryConfig`, `RequestConfig`, `ResponseContext`, `QueryOptions`, `DEFAULT_RETRY_METHODS`, `createClientFor`).
+
 ```ts
 // src/lib/api.ts (project wrapper outside the generated ./sdk directory)
 import {
-  createGotaClient,
+  createClient,
   isAbortError,
   isEndpointError,
-  parseGotaError,
+  parseError,
 } from "./sdk";
 
-export const api = createGotaClient(process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000", {
+export const api = createClient(process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000", {
   headers: async () => ({ Authorization: `Bearer ${getToken()}` }),
   timeoutMs: 8000,
   retry: 2,
 });
 
-export { isAbortError, isEndpointError, parseGotaError };
+export { isAbortError, isEndpointError, parseError };
 ```
 
 #### Error Parsing & Narrowing
 
-Use `parseGotaError(err)` instead of custom error parsers to normalize HTTP errors, Gota `ValidationError` (`kind === "validation"` with `fieldErrors`), `ErrorResponse` (`requestId`), timeouts (`kind === "timeout"`), caller cancellations (`kind === "abort"`), and network failures (`kind === "network"`):
+Use `parseError(err)` instead of custom error parsers to normalize HTTP errors, Gota `ValidationError` (`kind === "validation"` with `fieldErrors`), `ErrorResponse` (`requestId`), timeouts (`kind === "timeout"`), caller cancellations (`kind === "abort"`), and network failures (`kind === "network"`):
 
 ```ts
 try {
@@ -327,7 +357,7 @@ try {
   if (isEndpointError(err, "POST /todos")) {
     // err.data is narrowed to ResponseError<"POST /todos">
   }
-  const parsed = parseGotaError(err);
+  const parsed = parseError(err);
   if (parsed.kind === "validation") {
     console.error(parsed.fieldErrors); // Record<string, string[]>
   } else {
@@ -360,13 +390,13 @@ useEffect(() => {
     .then(setTodos)
     .catch((err) => {
       if (isAbortError(err)) return;
-      setError(parseGotaError(err).message);
+      setError(parseError(err).message);
     });
   return () => controller.abort();
 }, []);
 ```
 
-Client features: dynamic async `headers`, `credentials`, `cache`, Next.js `next` (`revalidate` / `tags`), `timeoutMs`, `retry` (exponential backoff with `Retry-After` support on idempotent methods), `onRequest`/`onResponse`/`onError` hooks, `AbortSignal` cancellation, `queryOptions` helper, `parseGotaError` / `isAbortError` / `isEndpointError`, automatic `FormData` (when `Blob`/`File` is present) and `URLSearchParams` encoding, and `ReadableStream<string>` for SSE responses.
+Client features: dynamic sync/async `headers`, `credentials`, `cache`, Next.js `next` (`revalidate` / `tags`), `timeoutMs`, `retry` (exponential backoff with `Retry-After` support on idempotent methods), `onRequest`/`onResponse`/`onError` hooks, `onUnauthorized` (runs at most once on HTTP `401` for non-stream bodies; return `true` to rebuild headers and retry once, `false` to raise the `401` `HttpError`), `AbortSignal` cancellation, `queryOptions` helper, `parseError` / `isHttpError` / `isAbortError` / `isEndpointError`, automatic `FormData` (from `FormData` or plain objects with `Blob`/`File`) and `URLSearchParams` encoding, and `ReadableStream<string>` for SSE responses.
 
 ## Security & Auditing Utilities
 

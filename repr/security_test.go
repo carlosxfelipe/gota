@@ -201,3 +201,30 @@ func TestDocsSecurityHeadersAndCSPEnforce(t *testing.T) {
 		t.Errorf("expected nosniff on /openapi.json")
 	}
 }
+
+func TestAuditRoutes(t *testing.T) {
+	type LeakyRes struct {
+		ID           string `json:"id"`
+		PasswordHash string `json:"passwordHash"`
+	}
+	type CleanRes struct {
+		ID           string `json:"id"`
+		PasswordHash string `json:"-"`
+	}
+
+	app := repr.New(repr.Config{SilenceTagWarnings: true})
+	repr.Get(app, "/leaky", func(_ *repr.Context, _ repr.Empty) (LeakyRes, error) {
+		return LeakyRes{}, nil
+	})
+	repr.Get(app, "/clean", func(_ *repr.Context, _ repr.Empty) (CleanRes, error) {
+		return CleanRes{}, nil
+	})
+
+	warnings := app.AuditRoutes()
+	if len(warnings) != 1 {
+		t.Fatalf("expected 1 AuditRoutes warning, got %d: %v", len(warnings), warnings)
+	}
+	if !strings.Contains(warnings[0], "/leaky") || !strings.Contains(warnings[0], "PasswordHash") {
+		t.Errorf("unexpected AuditRoutes warning: %q", warnings[0])
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"github.com/carlosxfelipe/gota/examples/system"
 	"github.com/carlosxfelipe/gota/examples/todos"
 	"github.com/carlosxfelipe/gota/repr"
+	"github.com/carlosxfelipe/gota/typescript"
 )
 
 // Example demonstrating offline TypeScript SDK code generation (e.g. for CI/CD or build scripts).
@@ -29,7 +30,8 @@ func main() {
 	todos.RegisterRoutes(app, store)
 	system.RegisterRoutes(app)
 
-	if handled, err := app.RunCodegen(os.Args[1:]); handled {
+	spec := gota.TypeScriptSpec(app)
+	if handled, err := typescript.RunCodegen(spec, os.Args[1:]); handled {
 		if err != nil {
 			log.Fatalf("Codegen failed: %v", err)
 		}
@@ -41,7 +43,7 @@ func main() {
 		distDir = "./examples/codegen/dist"
 	}
 
-	if err := app.ExportTypeScriptSDK(distDir); err != nil {
+	if err := typescript.Export(spec, distDir); err != nil {
 		log.Fatalf("Failed to export TypeScript SDK: %v", err)
 	}
 	log.Printf("✅ Successfully exported TypeScript SDK to %s", distDir)

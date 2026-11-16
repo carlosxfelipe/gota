@@ -1,4 +1,4 @@
-package repr
+package typescript
 
 // TypeScript runtime templates emitted into the generated modular SDK.
 //
@@ -12,15 +12,15 @@ package repr
 //
 // The runtime is split in two layers:
 //   - the generic core (tsRuntimeTypes + tsRuntimeImplementation) knows nothing about the API
-//     routes and is emitted verbatim as runtime.ts, so it only changes when Gota itself changes;
+//     routes and is emitted verbatim as runtime.ts, so it only changes when the runtime changes;
 //   - the bindings (tsBindingTypes + tsBindingImplementation) specialize the core in index.ts
-//     for the generated GotaEndpoints map and BODY_ENCODINGS table.
+//     for the generated ApiEndpoints map and BODY_ENCODINGS table.
 
 // tsRuntimeExportedNames lists every name exported (or declared at top level) by the runtime
 // and the bindings. Generated schema types must never shadow them.
 var tsRuntimeExportedNames = []string{
 	// Bindings.
-	"GotaEndpoints",
+	"ApiEndpoints",
 	"EndpointKey",
 	"RequestParams",
 	"RequestQuery",
@@ -28,68 +28,68 @@ var tsRuntimeExportedNames = []string{
 	"ResponseData",
 	"ResponseError",
 	"RequestOptions",
-	"GotaClient",
-	"createGotaClient",
+	"ApiClient",
+	"createClient",
 	"isEndpointError",
 	"BODY_ENCODINGS",
 	// Generic runtime core.
 	"NextFetchRequestConfig",
-	"GotaRetryConfig",
-	"GotaRequestInit",
-	"GotaRequestConfig",
-	"GotaResponseContext",
+	"RetryConfig",
+	"ClientRequestInit",
+	"RequestConfig",
+	"ResponseContext",
 	"BaseRequestOptions",
 	"BodyEncoding",
 	"BodyEncodingMap",
-	"GotaClientOptions",
+	"ClientOptions",
 	"EndpointDefinition",
 	"EndpointMap",
 	"RequestOptionsFor",
 	"RequestArgs",
-	"GotaQueryKeyArgs",
-	"GotaQueryOptions",
-	"GotaClientFor",
-	"GotaErrorKind",
-	"GotaErrorDetails",
-	"GotaHttpError",
-	"isGotaHttpError",
+	"QueryKeyArgs",
+	"QueryOptions",
+	"ApiClientFor",
+	"ApiErrorKind",
+	"ApiErrorDetails",
+	"HttpError",
+	"isHttpError",
 	"isAbortError",
-	"parseGotaError",
+	"parseError",
 	"DEFAULT_RETRY_METHODS",
-	"createGotaClientFor",
+	"createClientFor",
 	// Internal (non-exported) runtime identifiers.
 	"RawRequestOptions",
 	"FormEntry",
 	"NETWORK_ERRORS",
-	"GOTA_ERROR_BRAND",
+	"HTTP_ERROR_BRAND",
 }
 
-// tsBindingTypes specializes the generic runtime types for the generated GotaEndpoints map.
-const tsBindingTypes = `export type EndpointKey = keyof GotaEndpoints;
+// tsBindingTypes specializes the generic runtime types for the generated ApiEndpoints map.
+const tsBindingTypes = `export type EndpointKey = keyof ApiEndpoints;
 
-export type RequestParams<K extends EndpointKey> = GotaEndpoints[K]["params"];
-export type RequestQuery<K extends EndpointKey> = GotaEndpoints[K]["query"];
-export type RequestBody<K extends EndpointKey> = GotaEndpoints[K]["body"];
-export type ResponseData<K extends EndpointKey> = GotaEndpoints[K]["response"];
-export type ResponseError<K extends EndpointKey> = GotaEndpoints[K]["error"];
+export type RequestParams<K extends EndpointKey> = ApiEndpoints[K]["params"];
+export type RequestQuery<K extends EndpointKey> = ApiEndpoints[K]["query"];
+export type RequestBody<K extends EndpointKey> = ApiEndpoints[K]["body"];
+export type ResponseData<K extends EndpointKey> = ApiEndpoints[K]["response"];
+export type ResponseError<K extends EndpointKey> = ApiEndpoints[K]["error"];
 
-export type RequestOptions<K extends EndpointKey> = RequestOptionsFor<GotaEndpoints, K>;
+export type RequestOptions<K extends EndpointKey> = RequestOptionsFor<ApiEndpoints, K>;
 
-export type GotaClient = GotaClientFor<GotaEndpoints>;
+export type ApiClient = ApiClientFor<ApiEndpoints>;
 `
 
 const tsBindingImplementation = `
 /** Creates a typed client for this API. */
-export function createGotaClient(baseUrl = "", clientOptions: GotaClientOptions = {}): GotaClient {
-  return createGotaClientFor<GotaEndpoints>(baseUrl, clientOptions, BODY_ENCODINGS);
+export function createClient(baseUrl = "", clientOptions: ClientOptions = {}): ApiClient {
+  return createClientFor<ApiEndpoints>(baseUrl, clientOptions, BODY_ENCODINGS);
 }
 
 /** Narrows an error to the documented error payload of a specific endpoint. */
 export function isEndpointError<K extends EndpointKey>(
   error: unknown,
   endpoint: K,
-): error is GotaHttpError<ResponseError<K>> {
-  return isGotaHttpError(error) && error.endpoint === endpoint;
+): error is HttpError<ResponseError<K>> {
+  return isHttpError(error) && error.endpoint === endpoint;
 }
 `
 
@@ -99,7 +99,7 @@ const tsRuntimeTypes = `export interface NextFetchRequestConfig {
   tags?: string[];
 }
 
-export interface GotaRetryConfig {
+export interface RetryConfig {
   /** Maximum number of retry attempts in addition to the initial request (default: 2). */
   attempts?: number;
   /** Base delay in milliseconds for the exponential backoff (default: 300). */
@@ -111,19 +111,19 @@ export interface GotaRetryConfig {
 }
 
 /** The RequestInit handed to fetch (headers are always a Headers instance). */
-export interface GotaRequestInit extends RequestInit {
+export interface ClientRequestInit extends RequestInit {
   headers: Headers;
   next?: NextFetchRequestConfig;
   duplex?: "half";
 }
 
-export interface GotaRequestConfig {
+export interface RequestConfig {
   endpoint: string;
   url: string;
-  init: GotaRequestInit;
+  init: ClientRequestInit;
 }
 
-export interface GotaResponseContext {
+export interface ResponseContext {
   endpoint: string;
   url: string;
 }
@@ -140,10 +140,10 @@ export interface BaseRequestOptions {
   next?: NextFetchRequestConfig;
   duplex?: "half";
   timeoutMs?: number;
-  retry?: boolean | number | GotaRetryConfig;
-  onRequest?: (config: GotaRequestConfig) => void | Promise<void>;
-  onResponse?: (response: Response, config: GotaResponseContext) => void | Promise<void>;
-  onError?: (error: GotaHttpError | Error, config: GotaResponseContext) => void | Promise<void>;
+  retry?: boolean | number | RetryConfig;
+  onRequest?: (config: RequestConfig) => void | Promise<void>;
+  onResponse?: (response: Response, config: ResponseContext) => void | Promise<void>;
+  onError?: (error: HttpError | Error, config: ResponseContext) => void | Promise<void>;
 }
 
 export type BodyEncoding = "json" | "form" | "multipart" | "raw";
@@ -151,7 +151,7 @@ export type BodyEncoding = "json" | "form" | "multipart" | "raw";
 /** Request body encodings of endpoints that do not send JSON, keyed by "METHOD /path". */
 export type BodyEncodingMap = Readonly<Record<string, BodyEncoding | undefined>>;
 
-export interface GotaClientOptions {
+export interface ClientOptions {
   /** Static headers, or a (sync/async) callback evaluated on every request (e.g. JWT). */
   headers?: Record<string, string> | (() => Record<string, string> | Promise<Record<string, string>>);
   credentials?: RequestCredentials;
@@ -161,21 +161,21 @@ export interface GotaClientOptions {
   /** Default request timeout in milliseconds. */
   timeoutMs?: number;
   /** Default retry policy (network errors or retryable status codes on idempotent methods). */
-  retry?: boolean | number | GotaRetryConfig;
-  onRequest?: (config: GotaRequestConfig) => void | Promise<void>;
-  onResponse?: (response: Response, config: GotaResponseContext) => void | Promise<void>;
-  onError?: (error: GotaHttpError | Error, config: GotaResponseContext) => void | Promise<void>;
+  retry?: boolean | number | RetryConfig;
+  onRequest?: (config: RequestConfig) => void | Promise<void>;
+  onResponse?: (response: Response, config: ResponseContext) => void | Promise<void>;
+  onError?: (error: HttpError | Error, config: ResponseContext) => void | Promise<void>;
   /**
    * Hook invoked at most once per request when the API responds with HTTP 401.
    * Return true (after refreshing credentials) to rebuild headers and retry once;
-   * return false to preserve and raise the original 401 GotaHttpError.
+   * return false to preserve and raise the original 401 HttpError.
    */
-  onUnauthorized?: (config: GotaResponseContext) => boolean | Promise<boolean>;
+  onUnauthorized?: (config: ResponseContext) => boolean | Promise<boolean>;
   /** Custom fetch implementation (defaults to the global fetch). */
   fetch?: typeof fetch;
 }
 
-/** Shape of one entry of a generated endpoint map (such as GotaEndpoints). */
+/** Shape of one entry of a generated endpoint map (such as ApiEndpoints). */
 export interface EndpointDefinition {
   method: string;
   path: string;
@@ -198,7 +198,7 @@ export type RequestArgs<E extends EndpointMap<E>, K extends keyof E> =
     ? [options?: RequestOptionsFor<E, K>]
     : [options: RequestOptionsFor<E, K>];
 
-export interface GotaQueryKeyArgs {
+export interface QueryKeyArgs {
   params?: unknown;
   query?: unknown;
   body?: unknown;
@@ -209,25 +209,25 @@ export interface GotaQueryKeyArgs {
  * prefetchQuery) or use queryKey/queryFn with SWR. The query key always starts with the
  * endpoint, so invalidateQueries({ queryKey: ["GET /todos"] }) matches every variant.
  */
-export interface GotaQueryOptions<K extends string, R> {
-  queryKey: readonly [K, GotaQueryKeyArgs];
+export interface QueryOptions<K extends string, R> {
+  queryKey: readonly [K, QueryKeyArgs];
   queryFn: (context?: { signal?: AbortSignal | undefined }) => Promise<R>;
 }
 
-export interface GotaClientFor<E extends EndpointMap<E>> {
+export interface ApiClientFor<E extends EndpointMap<E>> {
   readonly baseUrl: string;
   fetch<K extends keyof E & string>(endpoint: K, ...args: RequestArgs<E, K>): Promise<E[K]["response"]>;
   queryOptions<K extends keyof E & string>(
     endpoint: K,
     ...args: RequestArgs<E, K>
-  ): GotaQueryOptions<K, E[K]["response"]>;
+  ): QueryOptions<K, E[K]["response"]>;
 }
 
-export type GotaErrorKind = "http" | "validation" | "timeout" | "abort" | "network" | "unknown";
+export type ApiErrorKind = "http" | "validation" | "timeout" | "abort" | "network" | "unknown";
 
-/** Normalized error information returned by parseGotaError. */
-export interface GotaErrorDetails {
-  kind: GotaErrorKind;
+/** Normalized error information returned by parseError. */
+export interface ApiErrorDetails {
+  kind: ApiErrorKind;
   /** Human-readable message, safe to display. */
   message: string;
   /** HTTP status code (only for HTTP errors). */
@@ -251,9 +251,9 @@ export const DEFAULT_RETRY_METHODS: readonly string[] = ["GET", "HEAD", "OPTIONS
 
 /** Errors thrown by fetch itself (connection refused, DNS failure, CORS...). */
 const NETWORK_ERRORS: WeakSet<object> = /* @__PURE__ */ new WeakSet<object>();
-const GOTA_ERROR_BRAND = Symbol.for("gota.httpError");
+const HTTP_ERROR_BRAND = Symbol.for("api.httpError");
 
-export class GotaHttpError<T = unknown> extends Error {
+export class HttpError<T = unknown> extends Error {
   readonly status: number;
   readonly statusText: string;
   readonly data: T;
@@ -263,22 +263,22 @@ export class GotaHttpError<T = unknown> extends Error {
 
   constructor(status: number, statusText: string, data: T, headers?: Headers, response?: Response, endpoint?: string) {
     super(errorMessage(data, statusText || "HTTP Error " + status));
-    this.name = "GotaHttpError";
+    this.name = "HttpError";
     this.status = status;
     this.statusText = statusText;
     this.data = data;
     this.headers = headers ?? new Headers();
     this.response = response;
     this.endpoint = endpoint;
-    Object.defineProperty(this, GOTA_ERROR_BRAND, { value: true });
-    Object.setPrototypeOf(this, GotaHttpError.prototype);
+    Object.defineProperty(this, HTTP_ERROR_BRAND, { value: true });
+    Object.setPrototypeOf(this, HttpError.prototype);
   }
 }
 
-export function isGotaHttpError<T = unknown>(error: unknown): error is GotaHttpError<T> {
+export function isHttpError<T = unknown>(error: unknown): error is HttpError<T> {
   return (
-    error instanceof GotaHttpError ||
-    (error !== null && typeof error === "object" && (error as Record<symbol, unknown>)[GOTA_ERROR_BRAND] === true)
+    error instanceof HttpError ||
+    (error !== null && typeof error === "object" && (error as Record<symbol, unknown>)[HTTP_ERROR_BRAND] === true)
   );
 }
 
@@ -289,12 +289,12 @@ export function isAbortError(error: unknown): boolean {
 
 /**
  * Normalizes anything thrown by the client into a display-friendly structure, including
- * per-field validation messages (Gota ValidationError) and the request ID (Gota ErrorResponse).
+ * per-field validation messages (e.g. errors/detail) and the request ID.
  */
-export function parseGotaError(error: unknown): GotaErrorDetails {
-  if (isGotaHttpError(error)) {
+export function parseError(error: unknown): ApiErrorDetails {
+  if (isHttpError(error)) {
     const fieldErrors = extractFieldErrors(error.data);
-    const details: GotaErrorDetails = {
+    const details: ApiErrorDetails = {
       kind: Object.keys(fieldErrors).length > 0 ? "validation" : "http",
       message: error.message,
       status: error.status,
@@ -660,13 +660,13 @@ async function readBody(res: Response): Promise<unknown> {
 
 /**
  * Creates a client for any generated endpoint map. Generated SDKs expose a pre-bound
- * createGotaClient; use this directly only to target several APIs with one runtime.
+ * createClient; use this directly only to target several APIs with one runtime.
  */
-export function createGotaClientFor<E extends EndpointMap<E>>(
+export function createClientFor<E extends EndpointMap<E>>(
   baseUrl = "",
-  clientOptions: GotaClientOptions = {},
+  clientOptions: ClientOptions = {},
   bodyEncodings: BodyEncodingMap = {},
-): GotaClientFor<E> {
+): ApiClientFor<E> {
   const root = baseUrl.replace(/\/+$/, "");
 
   async function request(endpoint: string, options: RawRequestOptions): Promise<unknown> {
@@ -694,7 +694,7 @@ export function createGotaClientFor<E extends EndpointMap<E>>(
 
     const headers = await buildHeaders();
 
-    const init: GotaRequestInit = { method, headers };
+    const init: ClientRequestInit = { method, headers };
     if (options.body !== undefined) {
       init.body = encodeBody(options.body, headers, bodyEncodings[endpoint] ?? "json");
     }
@@ -713,7 +713,7 @@ export function createGotaClientFor<E extends EndpointMap<E>>(
     const signal = combineSignals(options.signal, createTimeoutSignal(options.timeoutMs ?? clientOptions.timeoutMs));
     if (signal) init.signal = signal;
 
-    const context: GotaResponseContext = { endpoint, url };
+    const context: ResponseContext = { endpoint, url };
     const fail = async (err: unknown): Promise<never> => {
       // Cancellations requested by the caller (e.g. effect cleanup) are expected: skip onError hooks.
       if (!options.signal?.aborted) {
@@ -818,7 +818,7 @@ export function createGotaClientFor<E extends EndpointMap<E>>(
 
     if (!res.ok) {
       const data = await readErrorBody(res);
-      return fail(new GotaHttpError(res.status, res.statusText, data, res.headers, res, endpoint));
+      return fail(new HttpError(res.status, res.statusText, data, res.headers, res, endpoint));
     }
     try {
       return await readBody(res);
@@ -827,7 +827,7 @@ export function createGotaClientFor<E extends EndpointMap<E>>(
     }
   }
 
-  const client: GotaClientFor<E> = {
+  const client: ApiClientFor<E> = {
     baseUrl: root,
     fetch(endpoint, ...args) {
       const [options] = args as unknown as [RawRequestOptions?];
@@ -836,7 +836,7 @@ export function createGotaClientFor<E extends EndpointMap<E>>(
     queryOptions(endpoint, ...args) {
       const [options] = args as unknown as [RawRequestOptions?];
       const base: RawRequestOptions = options ?? {};
-      const keyArgs: GotaQueryKeyArgs = {};
+      const keyArgs: QueryKeyArgs = {};
       if (base.params !== undefined) keyArgs.params = base.params;
       if (base.query !== undefined) keyArgs.query = base.query;
       if (base.body !== undefined) keyArgs.body = base.body;

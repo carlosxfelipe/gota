@@ -317,7 +317,7 @@ func (a *App) Delete(path string, h HandlerFunc) *Route {
 	return registerRawRoute(a, http.MethodDelete, path, h)
 }
 
-// HandleHTTP registers a standard net/http http.Handler and exposes it in OpenAPI, Scalar, and TypeScript.
+// HandleHTTP registers a standard net/http http.Handler and exposes its route metadata in OpenAPI, Scalar, and SDK codegen.
 func (a *App) HandleHTTP(method, path string, h http.Handler) *Route {
 	return registerRawRoute(a, method, path, adaptStdHandler(h))
 }
@@ -353,7 +353,7 @@ func (g *Group) Security(schemes ...string) *Group {
 }
 
 // Tags declares OpenAPI tags inherited by routes in this Group. Child group tags and route-level
-// Tags calls take precedence ahead of parent group tags for TypeScript SDK module grouping.
+// Tags calls take precedence ahead of parent group tags for module grouping.
 func (g *Group) Tags(tags ...string) *Group {
 	g.ownTags = append(g.ownTags, tags...)
 	return g
@@ -427,7 +427,7 @@ func (g *Group) Delete(path string, h HandlerFunc) *Route {
 	return registerRawRoute(g, http.MethodDelete, path, h)
 }
 
-// HandleHTTP registers a standard net/http http.Handler under this Group and exposes it in OpenAPI, Scalar, and TypeScript.
+// HandleHTTP registers a standard net/http http.Handler under this Group and exposes its route metadata in OpenAPI, Scalar, and SDK codegen.
 func (g *Group) HandleHTTP(method, path string, h http.Handler) *Route {
 	return registerRawRoute(g, method, path, adaptStdHandler(h))
 }
@@ -494,6 +494,18 @@ func writeExportFile(outPath string, data []byte) error {
 	return os.WriteFile(outPath, data, 0o644)
 }
 
+// Config returns a copy of the application's configuration.
+func (a *App) Config() Config {
+	return a.config
+}
+
+// Routes returns a snapshot slice of all registered routes on the application.
+func (a *App) Routes() []*Route {
+	a.specMu.RLock()
+	defer a.specMu.RUnlock()
+	return append([]*Route(nil), a.routes...)
+}
+
 // ExportOpenAPI writes the OpenAPI 3.1 JSON specification to disk without starting a server.
 func (a *App) ExportOpenAPI(outPath string) error {
 	data, err := json.MarshalIndent(a.OpenAPISpec(), "", "  ")
@@ -501,105 +513,6 @@ func (a *App) ExportOpenAPI(outPath string) error {
 		return err
 	}
 	return writeExportFile(outPath, append(data, '\n'))
-}
-
-// GenerateTypeScriptSDK generates the modular TypeScript client SDK files keyed by
-// slash-separated paths relative to the SDK directory (index.ts, runtime.ts, types/*.ts, endpoints/*.ts).
-func (a *App) GenerateTypeScriptSDK(opts ...TypeScriptSDKOptions) (map[string]string, error) {
-	a.specMu.RLock()
-	routes := append([]*Route(nil), a.routes...)
-	a.specMu.RUnlock()
-	return NewTypeScriptGenerator(a.config).GenerateSDK(routes, opts...)
-}
-
-// ExportTypeScriptSDK writes the modular TypeScript client SDK into outDir, updating changed
-// files and removing stale files previously created by Gota codegen.
-func (a *App) ExportTypeScriptSDK(outDir string, opts ...TypeScriptSDKOptions) error {
-	resolved, err := resolveTSOptionsForDir(outDir, opts)
-	if err != nil {
-		return err
-	}
-	files, err := a.GenerateTypeScriptSDK(resolved)
-	if err != nil {
-		return err
-	}
-	return exportTSDir(outDir, files)
-}
-
-// CheckTypeScriptSDK verifies that outDir matches the modular TypeScript SDK for the current routes
-// with no missing, modified, or stale generated files.
-func (a *App) CheckTypeScriptSDK(outDir string, opts ...TypeScriptSDKOptions) error {
-	resolved, err := resolveTSOptionsForDir(outDir, opts)
-	if err != nil {
-		return err
-	}
-	files, err := a.GenerateTypeScriptSDK(resolved)
-	if err != nil {
-		return err
-	}
-	return checkTSDir(outDir, files)
-}
-
-// RunCodegen processes CLI arguments (e.g. from os.Args[1:]) to export or verify the TypeScript SDK.
-// Supported flags:
-//
-//	--ts-sdk[=<dir>]        writes modular client SDK directory to dir (default ./dist)
-//	--ts-import-ext=<ext>   sets relative import suffix in --ts-sdk ("", ".js", ".ts", or "auto")
-//	--check                 verifies exported SDK directory is up to date without modifying disk (for CI)
-func (a *App) RunCodegen(args []string) (bool, error) {
-	sdkDir := ""
-	importExt := ""
-	hasImportExt := false
-	check := false
-	matched := false
-
-	for _, arg := range args {
-		switch {
-		case strings.HasPrefix(arg, "--ts-sdk="):
-			sdkDir = strings.TrimPrefix(arg, "--ts-sdk=")
-			matched = true
-		case arg == "--ts-sdk":
-			sdkDir = "./dist"
-			matched = true
-		case strings.HasPrefix(arg, "--ts-import-ext="):
-			importExt = strings.TrimPrefix(arg, "--ts-import-ext=")
-			hasImportExt = true
-			matched = true
-		case arg == "--check":
-			check = true
-			matched = true
-		}
-	}
-
-	if !matched {
-		return false, nil
-	}
-
-	if hasImportExt {
-		if _, err := normalizeTSImportExtension(importExt); err != nil {
-			return true, err
-		}
-	}
-
-	sdkOpts := TypeScriptSDKOptions{ImportExtension: importExt}
-
-	if check {
-		if sdkDir == "" {
-			return true, fmt.Errorf("gota codegen: --check requires --ts-sdk")
-		}
-		if err := a.CheckTypeScriptSDK(sdkDir, sdkOpts); err != nil {
-			return true, err
-		}
-		return true, nil
-	}
-
-	if sdkDir != "" {
-		if err := a.ExportTypeScriptSDK(sdkDir, sdkOpts); err != nil {
-			return true, fmt.Errorf("failed to export TypeScript SDK: %w", err)
-		}
-	}
-
-	return true, nil
 }
 
 func (a *App) newHTTPServer(addr string) *http.Server {
