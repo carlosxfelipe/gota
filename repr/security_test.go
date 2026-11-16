@@ -142,9 +142,18 @@ func TestAuditModelAndSanitizeFilename(t *testing.T) {
 	type safeUser struct {
 		ID           string `json:"id"`
 		PasswordHash string `json:"-"`
+		PublicSalt   string `json:"publicSalt" validate:"nowarn"`
 	}
 	if safeWarnings := repr.AuditModel(safeUser{}); len(safeWarnings) != 0 {
 		t.Errorf("expected 0 warnings for safeUser, got %v", safeWarnings)
+	}
+
+	app := repr.New(repr.Config{DisableDocs: true})
+	repr.Get(app, "/safe", func(_ *repr.Context, _ repr.Empty) (safeUser, error) {
+		return safeUser{}, nil
+	})
+	if routeWarnings := app.AuditRoutes(); len(routeWarnings) != 0 {
+		t.Errorf("expected 0 AuditRoutes warnings when nowarn is set, got %v", routeWarnings)
 	}
 
 	cases := map[string]string{

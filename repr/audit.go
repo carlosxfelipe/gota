@@ -74,11 +74,13 @@ func auditModelRecursive(t reflect.Type, seen map[reflect.Type]bool, warnings *[
 		if f.Tag.Get("json") == "-" || f.Tag.Get("form") == "-" {
 			continue
 		}
-		if isSens, reason := IsSensitiveFieldName(f.Name); isSens {
-			*warnings = append(*warnings, fmt.Sprintf(
-				"field %q in struct %s appears to contain a %s and lacks `json:\"-\"`",
-				f.Name, t.Name(), reason,
-			))
+		if !hasValidateRule(f.Tag.Get("validate"), "nowarn") {
+			if isSens, reason := IsSensitiveFieldName(f.Name); isSens {
+				*warnings = append(*warnings, fmt.Sprintf(
+					"field %q in struct %s appears to contain a %s and lacks `json:\"-\"`",
+					f.Name, t.Name(), reason,
+				))
+			}
 		}
 		ft := f.Type
 		for ft.Kind() == reflect.Pointer || ft.Kind() == reflect.Slice {
@@ -91,7 +93,7 @@ func auditModelRecursive(t reflect.Type, seen map[reflect.Type]bool, warnings *[
 }
 
 func warnIfSensitiveField(structType reflect.Type, field reflect.StructField, silence bool) {
-	if silence || strings.Contains(field.Tag.Get("validate"), "nowarn") {
+	if silence || hasValidateRule(field.Tag.Get("validate"), "nowarn") {
 		return
 	}
 	if isSens, reason := IsSensitiveFieldName(field.Name); isSens {

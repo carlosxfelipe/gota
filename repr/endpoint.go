@@ -385,13 +385,17 @@ func writeResponseHeaders(ctx *Context, val reflect.Value) {
 	}
 }
 
-func hasRequiredRule(tag string) bool {
+func hasValidateRule(tag, target string) bool {
 	for _, rule := range strings.Split(tag, ",") {
-		if strings.TrimSpace(rule) == "required" {
+		if strings.TrimSpace(rule) == target {
 			return true
 		}
 	}
 	return false
+}
+
+func hasRequiredRule(tag string) bool {
+	return hasValidateRule(tag, "required")
 }
 
 func introspectEndpoint[Req any, Res any](defaultStatus int) *RouteDoc {
