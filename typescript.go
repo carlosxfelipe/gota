@@ -1,6 +1,10 @@
 package gota
 
-import "github.com/carlosxfelipe/gota/typescript"
+import (
+	"slices"
+
+	"github.com/carlosxfelipe/gota/typescript"
+)
 
 // TypeScriptSpec converts a registered gota/repr App into a decoupled typescript.Spec.
 func TypeScriptSpec(app *App) typescript.Spec {
@@ -21,7 +25,7 @@ func TypeScriptSpec(app *App) typescript.Spec {
 		if doc := rt.Doc(); doc != nil {
 			tr.Summary = doc.Summary
 			tr.Description = doc.Description
-			tr.Tags = append([]string(nil), doc.Tags...)
+			tr.Tags = slices.Clone(doc.Tags)
 			tr.Deprecated = doc.Deprecated
 			tr.Hidden = doc.Hidden
 			if len(doc.Parameters) > 0 {

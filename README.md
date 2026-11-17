@@ -6,11 +6,11 @@
 
 <div align="center">
 
-[![Go Version](https://img.shields.io/badge/go-1.26%2B-00ADD8?logo=go&logoColor=white)](go.mod)
+[![Go Version](https://img.shields.io/badge/go-1.27%2B-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Pattern](https://img.shields.io/badge/pattern-REPR-blue)](https://deviq.com/design-patterns/repr-design-pattern/)
 [![OpenAPI](https://img.shields.io/badge/OpenAPI-3.1-6BA539)](#examples)
-[![Scalar Docs](https://img.shields.io/badge/Scalar-Classic%20Layout-purple)](#examples)
+[![Scalar Docs](https://img.shields.io/badge/Docs-Scalar-purple)](#examples)
 
 </div>
 
@@ -18,10 +18,10 @@
 
 ## Features
 
-- **Typed REPR Endpoints**: `Endpoint[Req, Res]` / `EndpointFunc[Req, Res]` with `param`, `query`, `header`, `form`, and JSON binding, validation, typed responses, and SSE streams.
-- **OpenAPI 3.1 & Scalar**: Automatic spec at `/openapi.json`, interactive UI at `/docs` (with SRI, themes, CSP, and isolated `Config.DocsMiddlewares`), plus `app.ExportOpenAPI()`.
-- **TypeScript SDK**: Generates a modular, zero-dependency, tree-shakeable `fetch` client (`createClient`, `parseError`, `isAbortError`, `queryOptions`) via the standalone `typescript` package (`typescript.Export(gota.TypeScriptSpec(app), ...)` / `typescript.RunCodegen(...)` or `gota.ExportTypeScriptSDK(app, ...)` / `gota.RunCodegen(app, ...)`), split by tag (`group.Tags()` / `route.Tags()`, with path-segment fallback), with `--ts-import-ext=auto` and CI drift verification (`--check`).
-- **`net/http` & `chi` Native**: Standard `func(http.Handler) http.Handler` middlewares via `app.Use(...)` and `group.Use(...)`, with safe body/header limits and startup tag checks.
+- **Typed REPR Endpoints**: Define endpoints with Go request and response structs, automatic binding (`param`, `query`, `header`, `form`, and JSON), validation, structured errors, and SSE streaming.
+- **OpenAPI 3.1 & Scalar Docs**: Automatic OpenAPI spec at `/openapi.json` and interactive Scalar documentation at `/docs` with built-in security headers (CSP, SRI), themes, and isolated docs middlewares.
+- **TypeScript SDK Codegen**: Generates a modular, zero-dependency `fetch` client directly from your Go routes, with automatic import-extension detection and CI drift checks (`--check`).
+- **Standard Go Ecosystem**: Built on `net/http` and `chi`, supporting standard middlewares, route groups, safe server defaults, and fail-fast startup checks.
 
 ## Installation
 
@@ -37,7 +37,7 @@ Install Gota:
 go get github.com/carlosxfelipe/gota
 ```
 
-Requires Go 1.26 or newer.
+Requires Go 1.27 or newer.
 
 ## Examples
 
@@ -61,6 +61,12 @@ go run ./examples/codegen/main.go
 ## Documentation for LLMs
 
 A complete framework usage reference for AI coding assistants is available in [llms.txt](llms.txt).
+
+To keep AI coding assistants aligned with modern Go idioms matching [go.mod](go.mod), you can install the [go-modern-guidelines](https://github.com/JetBrains/go-modern-guidelines) skill globally:
+
+```bash
+npx skills add JetBrains/go-modern-guidelines -g
+```
 
 ## Development
 

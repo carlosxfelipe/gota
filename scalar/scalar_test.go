@@ -41,6 +41,12 @@ func TestRenderHTMLDefaults(t *testing.T) {
 	if !strings.Contains(out, `crossorigin="anonymous"`) {
 		t.Errorf("expected crossorigin attribute when SRI is set")
 	}
+	if !strings.Contains(out, `"theme":"default"`) && !strings.Contains(out, `&#34;theme&#34;:&#34;default&#34;`) {
+		t.Errorf("expected default theme %q in output", ThemeDefault)
+	}
+	if !strings.Contains(out, `"layout":"modern"`) && !strings.Contains(out, `&#34;layout&#34;:&#34;modern&#34;`) {
+		t.Errorf("expected default layout %q in output", "modern")
+	}
 }
 
 func TestRenderHTMLCustomScriptAndSRI(t *testing.T) {
@@ -101,7 +107,7 @@ func TestConstantsConsistency(t *testing.T) {
 }
 
 func TestHandlerSecurityHeaders(t *testing.T) {
-	h := Handler(Config{Title: "My API", CSPEnforce: true})
+	h := Handler(Config{Title: "My API"})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/docs", nil)
 	h.ServeHTTP(rec, req)
@@ -114,5 +120,15 @@ func TestHandlerSecurityHeaders(t *testing.T) {
 	}
 	if got := rec.Header().Get("Content-Security-Policy"); !strings.Contains(got, "cdn.jsdelivr.net") {
 		t.Errorf("expected enforcing CSP header with cdn.jsdelivr.net, got %q", got)
+	}
+
+	roHandler := Handler(Config{Title: "My API", CSPReportOnly: true})
+	roRec := httptest.NewRecorder()
+	roHandler.ServeHTTP(roRec, httptest.NewRequest(http.MethodGet, "/docs", nil))
+	if got := roRec.Header().Get("Content-Security-Policy-Report-Only"); !strings.Contains(got, "cdn.jsdelivr.net") {
+		t.Errorf("expected report-only CSP header with cdn.jsdelivr.net, got %q", got)
+	}
+	if got := roRec.Header().Get("Content-Security-Policy"); got != "" {
+		t.Errorf("expected no enforcing CSP header in report-only mode, got %q", got)
 	}
 }

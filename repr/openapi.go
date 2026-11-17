@@ -1,12 +1,14 @@
 package repr
 
 import (
+	"cmp"
 	"fmt"
+	"maps"
 	"net/http"
 	"path"
 	"reflect"
 	"regexp"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -148,9 +150,7 @@ type openAPIGenerator struct {
 
 func newOpenAPIGenerator(cfg Config) *openAPIGenerator {
 	sec := make(map[string]OpenAPISecurityScheme, len(cfg.SecuritySchemes))
-	for k, v := range cfg.SecuritySchemes {
-		sec[k] = v
-	}
+	maps.Copy(sec, cfg.SecuritySchemes)
 	return &openAPIGenerator{
 		config:          cfg,
 		schemas:         make(map[string]map[string]any),
@@ -240,7 +240,7 @@ func toOpenAPIPath(p string) string {
 
 func extractPathParams(p string) []string {
 	var params []string
-	for _, seg := range strings.Split(p, "/") {
+	for seg := range strings.SplitSeq(p, "/") {
 		if name, ok := pathParamName(seg); ok {
 			params = append(params, name)
 		}
@@ -336,10 +336,7 @@ func (g *openAPIGenerator) buildOperation(rt *Route) OpenAPIOp {
 	}
 
 	if doc.RequestBody != nil && doc.RequestBody.Model != nil {
-		cType := doc.RequestBody.ContentType
-		if cType == "" {
-			cType = "application/json"
-		}
+		cType := cmp.Or(doc.RequestBody.ContentType, "application/json")
 		op.RequestBody = &OpenAPIRequestBody{
 			Description: doc.RequestBody.Description,
 			Required:    doc.RequestBody.Required,
@@ -356,10 +353,7 @@ func (g *openAPIGenerator) buildOperation(rt *Route) OpenAPIOp {
 		}
 		resp := OpenAPIResponse{Description: desc}
 		if respDoc.Model != nil {
-			cType := respDoc.ContentType
-			if cType == "" {
-				cType = "application/json"
-			}
+			cType := cmp.Or(respDoc.ContentType, "application/json")
 			if hdrs := g.extractResponseHeaders(reflect.TypeOf(respDoc.Model), map[reflect.Type]bool{}); len(hdrs) > 0 {
 				resp.Headers = hdrs
 			}
@@ -395,7 +389,7 @@ func (g *openAPIGenerator) extractResponseHeaders(t reflect.Type, seen map[refle
 	defer delete(seen, t)
 
 	var headers map[string]OpenAPIHeader
-	for i := 0; i < t.NumField(); i++ {
+	for i := range t.NumField() {
 		f := t.Field(i)
 		if ft, ok := embeddedStructType(f); ok {
 			for k, v := range g.extractResponseHeaders(ft, seen) {
@@ -451,12 +445,7 @@ func (g *openAPIGenerator) structToSchema(t reflect.Type) map[string]any {
 		"properties": properties,
 	}
 	if len(required) > 0 {
-		names := make([]string, 0, len(required))
-		for n := range required {
-			names = append(names, n)
-		}
-		sort.Strings(names)
-		schema["required"] = names
+		schema["required"] = slices.Sorted(maps.Keys(required))
 	}
 	return schema
 }
@@ -472,7 +461,7 @@ func (g *openAPIGenerator) collectStructFields(t reflect.Type, properties map[st
 	promotedReq := make(map[string]bool)
 	own := make(map[string]bool)
 
-	for i := 0; i < t.NumField(); i++ {
+	for i := range t.NumField() {
 		field := t.Field(i)
 		jsonTag := field.Tag.Get("json")
 		formTag := field.Tag.Get("form")
@@ -604,9 +593,7 @@ func (g *openAPIGenerator) schemaForType(t reflect.Type) map[string]any {
 		if _, exists := g.schemas[typeName]; !exists {
 			placeholder := map[string]any{"type": "object"}
 			g.schemas[typeName] = placeholder
-			for k, v := range g.structToSchema(t) {
-				placeholder[k] = v
-			}
+			maps.Copy(placeholder, g.structToSchema(t))
 		}
 		return map[string]any{"$ref": "#/components/schemas/" + typeName}
 	default:
@@ -653,7 +640,7 @@ func applyValidationRulesToSchema(schema map[string]any, t reflect.Type, valTag 
 		t = t.Elem()
 	}
 
-	for _, rawRule := range strings.Split(valTag, ",") {
+	for rawRule := range strings.SplitSeq(valTag, ",") {
 		rawRule = strings.TrimSpace(rawRule)
 		if rawRule == "" {
 			continue

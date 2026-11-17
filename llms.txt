@@ -1,20 +1,22 @@
 # Gota Framework
 
-> Gota is a pragmatic Go (1.26+) web framework built around the REPR (Request-Endpoint-Response) design pattern on top of `net/http`, `go-chi/chi/v5`, and `go-playground/validator/v10`. It provides typed request binding and validation, automatic OpenAPI 3.1 specification generation, interactive Scalar API documentation, and zero-dependency TypeScript client SDK code generation.
+> Gota is a pragmatic Go (1.27+) web framework built around the REPR (Request-Endpoint-Response) design pattern on top of `net/http`, `go-chi/chi/v5`, and `go-playground/validator/v10`. It provides typed request binding and validation, automatic OpenAPI 3.1 specification generation, interactive Scalar API documentation, and zero-dependency TypeScript client SDK code generation.
 
 ## Installation
 
-Requires Go 1.26 or newer.
+Requires Go 1.27 or newer.
 
 ```bash
 go get github.com/carlosxfelipe/gota
 ```
 
 Primary packages:
-- `github.com/carlosxfelipe/gota` — Top-level entry point (`gota.New`, `gota.App`, `gota.Config` aliases for `repr`, plus `gota.TypeScriptSpec` and TypeScript SDK helpers bridging `repr` and `typescript`).
+- `github.com/carlosxfelipe/gota` — Top-level entry point (`gota.New`, `gota.App`, `gota.Config` aliases for `repr`, plus `gota.TypeScriptSpec`, `gota.GenerateTypeScriptSDK`, `gota.ExportTypeScriptSDK`, `gota.CheckTypeScriptSDK`, and `gota.RunCodegen` bridging `repr` and `typescript`).
 - `github.com/carlosxfelipe/gota/repr` — Core REPR router, endpoint helpers, request binding, validation, errors, streaming, OpenAPI, and security auditing.
-- `github.com/carlosxfelipe/gota/scalar` — Standalone or integrated Scalar API Reference UI handler, themes, SRI, and CSP configuration.
+- `github.com/carlosxfelipe/gota/scalar` — Standalone or integrated Scalar API Reference UI handler, themes, SRI, and CSP configuration (not re-exported by `gota`; import directly when setting `Config.Scalar` or `scalar.Theme*`).
 - `github.com/carlosxfelipe/gota/typescript` — Standalone, `repr`-independent TypeScript client SDK generator (`typescript.Spec`, `typescript.Generate`, `typescript.Export`, `typescript.Check`, `typescript.RunCodegen`).
+
+> **Imports note:** Go does not have wildcard imports (`import *`), so each subpackage you reference directly must be imported by its path. Use `gota` alone when you only need `gota.New`, `gota.Config`, `gota.App`, or the `gota.*TypeScriptSDK` / `gota.RunCodegen` helpers (such as in a dedicated codegen entrypoint); import `repr` for route builders/helpers (`repr.Get`, `repr.Context`, HTTP error helpers), `scalar` for `scalar.Config` / `scalar.Theme*`, and `typescript` only when using the generator standalone without `repr`.
 
 ## Quick Start
 
@@ -41,15 +43,14 @@ type UserResponse struct {
 }
 
 func main() {
-	app := gota.New(repr.Config{
+	app := gota.New(gota.Config{
 		Title:                 "My API",
 		Version:               "1.0.0",
 		Description:           "Example Gota service.",
 		DisallowUnknownFields: true,
 		Scalar: scalar.Config{
-			Theme:      scalar.ThemeFastify,
-			Layout:     "classic",
-			CSPEnforce: true,
+			Theme:  scalar.ThemeFastify,
+			Layout: "classic",
 		},
 	})
 
@@ -86,7 +87,7 @@ func main() {
 - `MaxMultipartMemory` (`int64`, default `32 MiB`): Max memory for `ParseMultipartForm`.
 - `MaxHeaderBytes` (`int`, default `1 MiB`), `ReadTimeout` (`30s`), `WriteTimeout` (`30s`), `IdleTimeout` (`120s`): HTTP server limits (negative timeout disables that timeout).
 - `DisallowUnknownFields` (`bool`): Rejects unknown fields when decoding JSON request bodies.
-- `SilenceTagWarnings` (`bool`): Suppresses startup security warnings for sensitive field names without `json:"-"`.
+- `SilenceTagWarnings` (`bool`): Suppresses security log warnings during OpenAPI spec and TypeScript SDK generation for sensitive field names without `json:"-"` or `form:"-"`.
 
 ## Server Lifecycle
 
@@ -158,9 +159,9 @@ All REPR and documented non-REPR registration methods return `*repr.Route`:
 
 - `.Summary(s)` / `.Description(d)` / `.OperationID(id)`
 - `.Tags(tags...)` — Adds OpenAPI tags. All tags appear in OpenAPI; the TypeScript SDK uses the first tag as the module name (falling back to the first meaningful static path segment, or `default` when none exists). Explicit route/child-group tags take precedence ahead of parent `Group.Tags(...)`.
-- `.Security(schemes...)` — Adds OpenAPI security requirements. Known names `BearerAuth`/`bearerAuth` and `BasicAuth`/`basicAuth` are auto-populated in `components.securitySchemes` if not explicitly defined in `Config.SecuritySchemes`.
+- `.Security(schemes...)` — Adds OpenAPI security requirements. If not explicitly defined in `Config.SecuritySchemes`, `BearerAuth`/`bearerAuth` auto-populates as HTTP Bearer (`JWT`), `BasicAuth`/`basicAuth` as HTTP Basic, and any other name defaults to HTTP Bearer.
 - `.Deprecated()` / `.Hidden()` — Marks deprecated or omits from OpenAPI & TypeScript output.
-- `.Status(code)` — Overrides the default `200` success status code in OpenAPI and at runtime (unless `ctx.Status(...)` is called explicitly).
+- `.Status(code)` — Overrides the default `200` success status code in OpenAPI, and at runtime for REPR endpoints (unless `ctx.Status(...)` is called explicitly; non-REPR handlers must still call `ctx.Status(...)` at runtime).
 - `.ErrorResponse(status, description, model...)` — Documents an error status (defaults to `repr.ErrorResponse{}`).
 - `.Response(status, model, description...)` / `.ResponseMedia(status, contentType, model, description...)` — Documents responses (mainly for non-REPR routes or multiple status codes).
 - `.Request(model, description...)` / `.Param(in, name, model, required, description...)` — Documents inputs on non-REPR routes (`in`: `"path"`, `"query"`, or `"header"`).
@@ -240,14 +241,17 @@ Return typed HTTP errors from handlers:
 
 ## Streaming & Server-Sent Events (SSE)
 
-Return `repr.SSEStream` (or a custom `repr.Streamer` / `repr.StreamFunc`) from a REPR endpoint. When a `Streamer` is returned, Gota clears the HTTP write deadline before calling `Stream(ctx)`, sets OpenAPI media type to `text/event-stream` (`application/octet-stream` for generic `Streamer`), and types the TypeScript SDK response as `ReadableStream<string>`. Inside `ctx.SSEvent`, each frame is written with a `10s` (`repr.DefaultSSEWriteTimeout`) deadline that is cleared again after the write. (Calling `ctx.Stream(...)` directly in a non-REPR handler does not clear the server's `WriteTimeout` automatically.)
+Return `repr.SSEStream` (or a custom `repr.Streamer` / `repr.StreamFunc`) from a REPR endpoint. When a `Streamer` is returned, Gota clears the HTTP write deadline before calling `Stream(ctx)`. `repr.SSEStream` sets OpenAPI media type to `text/event-stream` and types the TypeScript SDK response as `ReadableStream<string>`; a generic `Streamer` sets `application/octet-stream` and types the TypeScript SDK response as `Blob`. Inside `ctx.SSEvent`, each frame is written with a `10s` (`repr.DefaultSSEWriteTimeout`) deadline that is cleared again after the write. (Calling `ctx.Stream(...)` directly in a non-REPR handler does not clear the server's `WriteTimeout` automatically.)
 
 ```go
 repr.Get(app, "/events", func(ctx *repr.Context, _ repr.Empty) (repr.SSEStream, error) {
 	ch := make(chan repr.SSEvent)
 	go func() {
 		defer close(ch)
-		ch <- repr.SSEvent{Event: "update", Data: map[string]string{"status": "ready"}}
+		select {
+		case ch <- repr.SSEvent{Event: "update", Data: map[string]string{"status": "ready"}}:
+		case <-ctx.Context().Done():
+		}
 	}()
 	return repr.SSEStream{Events: ch}, nil
 })
@@ -266,8 +270,8 @@ Imperative helpers on `*repr.Context`: `ctx.SSEvent(event, data)` and `ctx.Strea
 
 - OpenAPI 3.1 spec is available at `Config.OpenAPIURL` (default `/openapi.json`), programmatically via `app.OpenAPISpec()`, or exported via `app.ExportOpenAPI("openapi.json")`.
 - Scalar API Reference UI is served at `Config.DocsURL` (default `/docs`) using `@scalar/api-reference` (pinned at `scalar.DefaultVersion` `"1.76.0"` with `scalar.DefaultSRI`) and security headers (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, and CSP).
-- `scalar.Config` fields: `Title`, `SpecURL`, `Theme`, `Layout` (`"classic"` default or `"modern"`), `DarkMode *bool`, `ShowSidebar *bool`, `ProxyURL`, `CustomCSS`, `SearchHotKey`, `Metadata map[string]string`, `ScriptURL`, `SRI` (applied only when `ScriptURL` is non-empty; default CDN always uses `DefaultSRI`), `CSP` (`""` uses `scalar.ContentSecurityPolicy(ScriptURL)`; `"-"` omits the CSP header), and `CSPEnforce` (`false` sends `Content-Security-Policy-Report-Only`; `true` sends enforcing `Content-Security-Policy`).
-- Available `scalar.Theme` constants: `ThemeDefault`, `ThemeAlternate`, `ThemeMoon`, `ThemePurple`, `ThemeSolarized`, `ThemeBluePlanet`, `ThemeDeepSpace`, `ThemeSaturn`, `ThemeKepler`, `ThemeElysiaJS`, `ThemeFastify` (default), `ThemeMars`, `ThemeLaserwave`, `ThemeNone`.
+- `scalar.Config` fields: `Title`, `SpecURL`, `Theme`, `Layout` (`"modern"` default or `"classic"`), `DarkMode *bool`, `ShowSidebar *bool`, `ProxyURL`, `CustomCSS`, `SearchHotKey`, `Metadata map[string]string`, `ScriptURL`, `SRI` (applied only when `ScriptURL` is non-empty; default CDN always uses `DefaultSRI`), `CSP` (`""` uses `scalar.ContentSecurityPolicy(ScriptURL)`; `"-"` omits the CSP header), and `CSPReportOnly` (`false` default sends enforcing `Content-Security-Policy`; `true` sends `Content-Security-Policy-Report-Only`).
+- Available `scalar.Theme` constants: `ThemeDefault` (default), `ThemeAlternate`, `ThemeMoon`, `ThemePurple`, `ThemeSolarized`, `ThemeBluePlanet`, `ThemeDeepSpace`, `ThemeSaturn`, `ThemeKepler`, `ThemeElysiaJS`, `ThemeFastify`, `ThemeMars`, `ThemeLaserwave`, `ThemeNone`.
 - Helpers: `scalar.Handler(cfg)` (mounts standalone on `http.ServeMux` or `chi`), `scalar.RenderHTML(cfg)`, `scalar.ContentSecurityPolicy(scriptURL)`, `scalar.CDNURL(version)`.
 
 ## TypeScript SDK & Offline Codegen
@@ -276,11 +280,11 @@ Imperative helpers on `*repr.Context`: `ctx.SSEvent(event, data)` and `ctx.Strea
 
 ### Using `typescript` with Gota (`gota.TypeScriptSpec`) or Standalone (`typescript.Spec`)
 
-Generate the modular SDK during development or CI/CD via `typescript.RunCodegen` (or `gota.RunCodegen(app, os.Args[1:])`):
+Generate the modular SDK during development or CI/CD via `gota.RunCodegen(app, os.Args[1:])` (or decoupled via `typescript.RunCodegen(gota.TypeScriptSpec(app), os.Args[1:])`):
 
 ```go
-// With Gota / repr.App:
-if handled, err := typescript.RunCodegen(gota.TypeScriptSpec(app), os.Args[1:]); handled {
+// With Gota / repr.App (no need to import repr or typescript):
+if handled, err := gota.RunCodegen(app, os.Args[1:]); handled {
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -403,3 +407,15 @@ Client features: dynamic sync/async `headers`, `credentials`, `cache`, Next.js `
 - **Sensitive field detection**: `repr.AuditModel(model)`, `app.AuditRoutes()`, and `repr.IsSensitiveFieldName(name)` check for exposed secret-like fields (`Password`, `PasswordHash`, `Secret`, `PrivateKey`, `AuthToken`, `CVV`, etc.) missing `json:"-"` / `form:"-"`. Use `validate:"nowarn"` on a specific field or `Config.SilenceTagWarnings: true` to suppress logs.
 - **Upload filename sanitization**: `repr.SanitizeFilename(header.Filename)` strips directory traversal paths, control characters, and hidden dotfiles.
 - **Safe local redirects**: `ctx.RedirectLocal(target, code...)` and `repr.IsLocalRedirectTarget(target)` reject external URLs, protocol-relative URLs (`//`), and backslashes with `400 Bad Request`.
+
+## Modern Go Conventions (Go 1.27+)
+
+When writing or modifying code in Gota or services built with it, follow modern Go idioms instead of legacy patterns:
+
+- **Defaults & fallbacks**: Prefer `cmp.Or(val, fallback)` over repetitive zero-value `if` blocks (note that all arguments to `cmp.Or` are evaluated before the call, so keep an `if` when the fallback has side effects or is expensive).
+- **Typed error matching**: Prefer `if e, ok := errors.AsType[*repr.HTTPError](err); ok` (and `errors.Is`) over `var e *T; errors.As(err, &e)` in custom `ErrorHandler`s and middlewares.
+- **Pointer literals**: Use `new(value)` for pointer fields/arguments (e.g., `DarkMode: new(true)` in `scalar.Config` or pointer request fields) instead of temporary variables or `ptr` helpers.
+- **Slices, maps & sorting**: Prefer `slices.Clone`, `slices.Concat`, `slices.Delete`, `slices.Contains`, `slices.Sort`, `slices.SortFunc` (with `cmp.Compare`), `slices.Sorted(maps.Keys(m))`, `maps.Copy`, and `clear(m)` over manual loops, `append` cloning tricks, or `sort.Slice` / `sort.Strings`.
+- **Strings & loops**: Prefer `strings.SplitSeq` / `strings.FieldsSeq` when iterating over split parts, `strings.Cut` / `strings.CutPrefix` / `strings.CutSuffix` / `strings.CutLast` over `Index` + slicing, and `for i := range n` for simple zero-based count loops.
+- **JSON tags & `encoding/json`**: Use `omitzero` on `bool`, numeric, struct, and `time.Time` fields whose zero value should be omitted (keeping `omitempty` for empty strings, slices, and maps). Leave existing `encoding/json` code unchanged unless migrating deliberately to `encoding/json/v2`, as wire defaults differ (e.g., nil slices/maps and stricter UTF-8/duplicate-key checks).
+- **Concurrency, reflection & tests**: Prefer `wg.Go(...)` (`sync.WaitGroup.Go`), typed atomics (`atomic.Bool`, `atomic.Int64`, `atomic.Pointer[T]`), `any` over `interface{}`, `reflect.TypeFor[T]()` over `reflect.TypeOf((*T)(nil)).Elem()`, `t.Context()` in tests, and `b.Loop()` in benchmarks.

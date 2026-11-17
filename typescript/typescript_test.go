@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -897,9 +898,5 @@ assert.equal(onErrorCalls, beforeErrors + 1);
 }
 
 func keysOf(m map[string]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	return out
+	return slices.Sorted(maps.Keys(m))
 }

@@ -11,7 +11,7 @@ import (
 type HealthStatus struct {
 	Status        string `json:"status" doc:"Service health state" example:"ok"`
 	UptimeSeconds int64  `json:"uptimeSeconds" doc:"Process uptime in seconds" example:"42"`
-	GoVersion     string `json:"goVersion" doc:"Go runtime version" example:"go1.26.1"`
+	GoVersion     string `json:"goVersion" doc:"Go runtime version" example:"go1.27.4"`
 }
 
 // RegisterRoutes registers non-REPR system routes that still appear in OpenAPI, Scalar, and the TypeScript SDK.

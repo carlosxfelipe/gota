@@ -3,6 +3,7 @@ package repr
 import (
 	"encoding"
 	"fmt"
+	"maps"
 	"mime/multipart"
 	"net/url"
 	"reflect"
@@ -13,10 +14,10 @@ import (
 )
 
 var (
-	timeType             = reflect.TypeOf(time.Time{})
-	fileHeaderType       = reflect.TypeOf(multipart.FileHeader{})
-	fileHeaderPtrType    = reflect.TypeOf((*multipart.FileHeader)(nil))
-	fileHeaderSliceType  = reflect.TypeOf(([]*multipart.FileHeader)(nil))
+	timeType             = reflect.TypeFor[time.Time]()
+	fileHeaderType       = reflect.TypeFor[multipart.FileHeader]()
+	fileHeaderPtrType    = reflect.TypeFor[*multipart.FileHeader]()
+	fileHeaderSliceType  = reflect.TypeFor[[]*multipart.FileHeader]()
 	compiledBindingCache sync.Map // map[reflect.Type]*bindingPlan
 )
 
@@ -119,7 +120,7 @@ func buildClearPlan(t reflect.Type, seen map[reflect.Type]bool) *clearFieldPlan 
 	defer delete(seen, t)
 
 	p := &clearFieldPlan{}
-	for i := 0; i < t.NumField(); i++ {
+	for i := range t.NumField() {
 		field := t.Field(i)
 		if ft, ok := embeddedStructType(field); ok {
 			sub := buildClearPlan(ft, seen)
@@ -172,10 +173,8 @@ func buildBindingPlan(typ reflect.Type, shadowed map[string]bool, seen map[refle
 	defer delete(seen, typ)
 
 	mergedShadowed := make(map[string]bool, len(shadowed)+typ.NumField()*4)
-	for k, v := range shadowed {
-		mergedShadowed[k] = v
-	}
-	for i := 0; i < typ.NumField(); i++ {
+	maps.Copy(mergedShadowed, shadowed)
+	for i := range typ.NumField() {
 		f := typ.Field(i)
 		if _, ok := embeddedStructType(f); ok {
 			continue
@@ -193,7 +192,7 @@ func buildBindingPlan(typ reflect.Type, shadowed map[string]bool, seen map[refle
 	}
 
 	plan := &bindingPlan{clear: clearPlan}
-	for i := 0; i < typ.NumField(); i++ {
+	for i := range typ.NumField() {
 		field := typ.Field(i)
 		if ft, ok := embeddedStructType(field); ok {
 			embPlan := buildBindingPlan(ft, mergedShadowed, seen)

@@ -2,6 +2,7 @@ package repr
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -73,36 +75,18 @@ type App struct {
 
 // New creates and configures a new gota App instance.
 func New(cfg Config) *App {
-	if cfg.Title == "" {
-		cfg.Title = "API Reference"
-	}
-	if cfg.Version == "" {
-		cfg.Version = "1.0.0"
-	}
-	if cfg.DocsURL == "" {
-		cfg.DocsURL = "/docs"
-	}
-	if cfg.OpenAPIURL == "" {
-		cfg.OpenAPIURL = "/openapi.json"
-	}
-	if cfg.MaxBodyBytes == 0 {
-		cfg.MaxBodyBytes = DefaultMaxBodyBytes
-	}
-	if cfg.MaxMultipartMemory == 0 {
-		cfg.MaxMultipartMemory = DefaultMaxMultipartMemory
-	}
+	cfg.Title = cmp.Or(cfg.Title, "API Reference")
+	cfg.Version = cmp.Or(cfg.Version, "1.0.0")
+	cfg.DocsURL = cmp.Or(cfg.DocsURL, "/docs")
+	cfg.OpenAPIURL = cmp.Or(cfg.OpenAPIURL, "/openapi.json")
+	cfg.MaxBodyBytes = cmp.Or(cfg.MaxBodyBytes, DefaultMaxBodyBytes)
+	cfg.MaxMultipartMemory = cmp.Or(cfg.MaxMultipartMemory, DefaultMaxMultipartMemory)
 	if cfg.MaxHeaderBytes <= 0 {
 		cfg.MaxHeaderBytes = DefaultMaxHeaderBytes
 	}
-	if cfg.ReadTimeout == 0 {
-		cfg.ReadTimeout = DefaultReadTimeout
-	}
-	if cfg.WriteTimeout == 0 {
-		cfg.WriteTimeout = DefaultWriteTimeout
-	}
-	if cfg.IdleTimeout == 0 {
-		cfg.IdleTimeout = DefaultIdleTimeout
-	}
+	cfg.ReadTimeout = cmp.Or(cfg.ReadTimeout, DefaultReadTimeout)
+	cfg.WriteTimeout = cmp.Or(cfg.WriteTimeout, DefaultWriteTimeout)
+	cfg.IdleTimeout = cmp.Or(cfg.IdleTimeout, DefaultIdleTimeout)
 
 	app := &App{
 		config:       cfg,
@@ -135,12 +119,8 @@ func (a *App) registerDocsRoutes() {
 	}
 
 	scalarCfg := a.config.Scalar
-	if scalarCfg.Title == "" {
-		scalarCfg.Title = a.config.Title
-	}
-	if scalarCfg.SpecURL == "" {
-		scalarCfg.SpecURL = a.config.OpenAPIURL
-	}
+	scalarCfg.Title = cmp.Or(scalarCfg.Title, a.config.Title)
+	scalarCfg.SpecURL = cmp.Or(scalarCfg.SpecURL, a.config.OpenAPIURL)
 
 	a.docsMux.Get(a.config.DocsURL, scalar.Handler(scalarCfg))
 	a.docsMux.Get(a.config.OpenAPIURL, func(w http.ResponseWriter, r *http.Request) {
@@ -163,8 +143,7 @@ func defaultErrorHandler(ctx *Context, err error) {
 		return
 	}
 
-	var httpErr *HTTPError
-	if errors.As(err, &httpErr) {
+	if httpErr, ok := errors.AsType[*HTTPError](err); ok {
 		_ = ctx.Status(httpErr.Status).JSON(ErrorResponse{
 			Error:     httpErr.Message,
 			Status:    httpErr.Status,
@@ -174,10 +153,10 @@ func defaultErrorHandler(ctx *Context, err error) {
 	}
 
 	type statusError interface {
+		error
 		HTTPStatus() int
 	}
-	var se statusError
-	if errors.As(err, &se) {
+	if se, ok := errors.AsType[statusError](err); ok {
 		_ = ctx.Status(se.HTTPStatus()).JSON(se)
 		return
 	}
@@ -327,7 +306,7 @@ func (a *App) Group(prefix string, mws ...func(http.Handler) http.Handler) *Grou
 	return &Group{
 		app:         a,
 		prefix:      normalizePrefix(prefix),
-		middlewares: append([]func(http.Handler) http.Handler(nil), mws...),
+		middlewares: slices.Clone(mws),
 	}
 }
 
@@ -371,14 +350,11 @@ func (g *Group) effectiveTags() []string {
 
 // Group creates a nested sub-group inheriting prefix, middlewares, security schemes, and tags.
 func (g *Group) Group(prefix string, mws ...func(http.Handler) http.Handler) *Group {
-	combined := make([]func(http.Handler) http.Handler, 0, len(g.middlewares)+len(mws))
-	combined = append(combined, g.middlewares...)
-	combined = append(combined, mws...)
 	return &Group{
 		app:         g.app,
 		prefix:      joinPaths(g.prefix, normalizePrefix(prefix)),
-		middlewares: combined,
-		security:    append([]string(nil), g.security...),
+		middlewares: slices.Concat(g.middlewares, mws),
+		security:    slices.Clone(g.security),
 		parentTags:  g.effectiveTags(),
 	}
 }
@@ -386,7 +362,7 @@ func (g *Group) Group(prefix string, mws ...func(http.Handler) http.Handler) *Gr
 func (g *Group) registerRoute(method, path string, h HandlerFunc, doc *RouteDoc) *Route {
 	fullPath := joinPaths(g.prefix, path)
 	if len(g.security) > 0 {
-		doc.Security = append(append([]string(nil), g.security...), doc.Security...)
+		doc.Security = slices.Concat(g.security, doc.Security)
 	}
 	effective := g.effectiveTags()
 	if len(effective) > 0 {
@@ -503,7 +479,7 @@ func (a *App) Config() Config {
 func (a *App) Routes() []*Route {
 	a.specMu.RLock()
 	defer a.specMu.RUnlock()
-	return append([]*Route(nil), a.routes...)
+	return slices.Clone(a.routes)
 }
 
 // ExportOpenAPI writes the OpenAPI 3.1 JSON specification to disk without starting a server.

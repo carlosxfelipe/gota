@@ -60,7 +60,7 @@ func auditModelRecursive(t reflect.Type, seen map[reflect.Type]bool, warnings *[
 	seen[t] = true
 	defer delete(seen, t)
 
-	for i := 0; i < t.NumField(); i++ {
+	for i := range t.NumField() {
 		f := t.Field(i)
 		if ft, ok := embeddedStructType(f); ok {
 			if f.Tag.Get("json") != "-" && f.Tag.Get("form") != "-" {

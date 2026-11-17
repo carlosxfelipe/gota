@@ -7,8 +7,6 @@ import (
 	"github.com/carlosxfelipe/gota"
 	"github.com/carlosxfelipe/gota/examples/system"
 	"github.com/carlosxfelipe/gota/examples/todos"
-	"github.com/carlosxfelipe/gota/repr"
-	"github.com/carlosxfelipe/gota/typescript"
 )
 
 // Example demonstrating offline TypeScript SDK code generation (e.g. for CI/CD or build scripts).
@@ -20,7 +18,7 @@ import (
 //	go run ./examples/codegen/main.go --ts-sdk=./dist --ts-import-ext=auto
 //	go run ./examples/codegen/main.go --ts-sdk=./dist --check
 func main() {
-	app := gota.New(repr.Config{
+	app := gota.New(gota.Config{
 		Title:       "Gota API",
 		Version:     "1.0.0",
 		Description: "Simple API for managing todo items.",
@@ -30,8 +28,7 @@ func main() {
 	todos.RegisterRoutes(app, store)
 	system.RegisterRoutes(app)
 
-	spec := gota.TypeScriptSpec(app)
-	if handled, err := typescript.RunCodegen(spec, os.Args[1:]); handled {
+	if handled, err := gota.RunCodegen(app, os.Args[1:]); handled {
 		if err != nil {
 			log.Fatalf("Codegen failed: %v", err)
 		}
@@ -43,7 +40,7 @@ func main() {
 		distDir = "./examples/codegen/dist"
 	}
 
-	if err := typescript.Export(spec, distDir); err != nil {
+	if err := gota.ExportTypeScriptSDK(app, distDir); err != nil {
 		log.Fatalf("Failed to export TypeScript SDK: %v", err)
 	}
 	log.Printf("✅ Successfully exported TypeScript SDK to %s", distDir)

@@ -57,8 +57,7 @@ func ValidateStruct(ctx *Context, target any) *ValidationError {
 	errMap := make(map[string][]string)
 
 	if err := validateEngine.Struct(target); err != nil {
-		var valErrs validator.ValidationErrors
-		if errors.As(err, &valErrs) {
+		if valErrs, ok := errors.AsType[validator.ValidationErrors](err); ok {
 			fieldMsgs := customMessagesForType(reflect.TypeOf(target))
 			for _, fe := range valErrs {
 				fieldKey := fe.Field()
@@ -99,8 +98,7 @@ func ValidateStruct(ctx *Context, target any) *ValidationError {
 }
 
 func mergeCustomValidatorError(errMap map[string][]string, err error) {
-	var ve *ValidationError
-	if errors.As(err, &ve) {
+	if ve, ok := errors.AsType[*ValidationError](err); ok {
 		for k, msgs := range ve.Errors {
 			errMap[k] = append(errMap[k], msgs...)
 		}
@@ -166,7 +164,7 @@ func collectCustomMessages(t reflect.Type, out map[string]map[string]string, see
 	seen[t] = true
 	defer delete(seen, t)
 
-	for i := 0; i < t.NumField(); i++ {
+	for i := range t.NumField() {
 		f := t.Field(i)
 		if ft, ok := embeddedStructType(f); ok {
 			collectCustomMessages(ft, out, seen)
@@ -190,7 +188,7 @@ func collectCustomMessages(t reflect.Type, out map[string]map[string]string, see
 
 func parseMessageTag(tag string) map[string]string {
 	msgs := make(map[string]string)
-	for _, part := range strings.Split(tag, "|") {
+	for part := range strings.SplitSeq(tag, "|") {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
@@ -219,7 +217,7 @@ func checkStructTags(t reflect.Type, seen map[reflect.Type]bool) error {
 	seen[t] = true
 	defer delete(seen, t)
 
-	for i := 0; i < t.NumField(); i++ {
+	for i := range t.NumField() {
 		f := t.Field(i)
 		if !f.IsExported() && !f.Anonymous {
 			continue

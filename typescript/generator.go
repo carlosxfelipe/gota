@@ -2,6 +2,7 @@ package typescript
 
 import (
 	"bytes"
+	"cmp"
 	"fmt"
 	"log"
 	"mime/multipart"
@@ -10,7 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,8 +19,8 @@ import (
 )
 
 var (
-	timeType       = reflect.TypeOf(time.Time{})
-	fileHeaderType = reflect.TypeOf(multipart.FileHeader{})
+	timeType       = reflect.TypeFor[time.Time]()
+	fileHeaderType = reflect.TypeFor[multipart.FileHeader]()
 
 	loggedSensitiveWarnings sync.Map
 
@@ -102,7 +103,7 @@ func embeddedStructType(f reflect.StructField) (reflect.Type, bool) {
 }
 
 func hasValidateRule(tag, target string) bool {
-	for _, rule := range strings.Split(tag, ",") {
+	for rule := range strings.SplitSeq(tag, ",") {
 		if strings.TrimSpace(rule) == target {
 			return true
 		}
@@ -125,7 +126,7 @@ func pathParamName(segment string) (string, bool) {
 
 func extractPathParams(p string) []string {
 	var params []string
-	for _, seg := range strings.Split(p, "/") {
+	for seg := range strings.SplitSeq(p, "/") {
 		if name, ok := pathParamName(seg); ok {
 			params = append(params, name)
 		}
@@ -316,7 +317,7 @@ func parseOneOfChoices(validateTag string) []string {
 	if validateTag == "" {
 		return nil
 	}
-	for _, rule := range strings.Split(validateTag, ",") {
+	for rule := range strings.SplitSeq(validateTag, ",") {
 		rule = strings.TrimSpace(rule)
 		if val, ok := strings.CutPrefix(rule, "oneof="); ok {
 			return strings.Fields(val)
@@ -443,7 +444,7 @@ func walkTSTypes(t reflect.Type, seen map[reflect.Type]bool) {
 		return
 	}
 	seen[t] = true
-	for i := 0; i < t.NumField(); i++ {
+	for i := range t.NumField() {
 		field := t.Field(i)
 		if field.Tag.Get("json") == "-" || field.Tag.Get("form") == "-" {
 			continue
@@ -538,7 +539,7 @@ func (g *Generator) collectStructFields(t reflect.Type, fields *[]structFieldDoc
 	var ownFields []structFieldDoc
 	var promotedFields []structFieldDoc
 
-	for i := 0; i < t.NumField(); i++ {
+	for i := range t.NumField() {
 		field := t.Field(i)
 		jsonTag := field.Tag.Get("json")
 		formTag := field.Tag.Get("form")
@@ -689,7 +690,7 @@ func structDocLines(t reflect.Type) []string {
 			return tsDocLines(str)
 		}
 	}
-	for i := 0; i < t.NumField(); i++ {
+	for i := range t.NumField() {
 		f := t.Field(i)
 		if f.Name == "_" && f.Tag.Get("doc") != "" {
 			return tsDocLines(f.Tag.Get("doc"))
@@ -760,7 +761,7 @@ func upsertTSParamField(fields []tsParamField, field tsParamField) []tsParamFiel
 }
 
 func joinTSFields(fields []tsParamField) string {
-	sort.Slice(fields, func(i, j int) bool { return fields[i].name < fields[j].name })
+	slices.SortFunc(fields, func(a, b tsParamField) int { return cmp.Compare(a.name, b.name) })
 	parts := make([]string, len(fields))
 	for i, f := range fields {
 		opt := "?"
@@ -876,8 +877,8 @@ func (g *Generator) inspectRoute(rt Route) routeTS {
 			errorStatuses = append(errorStatuses, code)
 		}
 	}
-	sort.Ints(successStatuses)
-	sort.Ints(errorStatuses)
+	slices.Sort(successStatuses)
+	slices.Sort(errorStatuses)
 
 	if len(successStatuses) > 0 {
 		code := successStatuses[0]

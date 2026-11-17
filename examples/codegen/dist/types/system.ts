@@ -18,7 +18,7 @@ export interface HealthStatus {
   uptimeSeconds: number;
   /**
    * Go runtime version
-   * @example go1.26.1
+   * @example go1.27.4
    */
   goVersion: string;
 }

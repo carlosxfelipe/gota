@@ -1,7 +1,9 @@
 package todos
 
 import (
+	"cmp"
 	"net/http"
+	"slices"
 	"sync"
 
 	"github.com/carlosxfelipe/gota/repr"
@@ -25,8 +27,8 @@ func NewTodoStore() *TodoStore {
 }
 
 type ListTodosRequest struct {
-	Done     *bool  `query:"done" doc:"Filter by completion status" example:"false"`
-	Priority string `query:"priority" doc:"Filter by task priority" example:"high" validate:"omitempty,oneof=low normal high" msg:"Priority must be low, normal, or high"`
+	Done     *bool  `query:"done" doc:"Filter by completion status"`
+	Priority string `query:"priority" doc:"Filter by task priority" validate:"omitempty,oneof=low normal high" msg:"Priority must be low, normal, or high"`
 }
 
 type GetTodoRequest struct {
@@ -105,10 +107,7 @@ type CreateTodoEndpoint struct {
 }
 
 func (e *CreateTodoEndpoint) Handle(_ *repr.Context, req CreateTodoRequest) (TodoResponse, error) {
-	priority := req.Priority
-	if priority == "" {
-		priority = "normal"
-	}
+	priority := cmp.Or(req.Priority, "normal")
 
 	e.Store.mu.Lock()
 	defer e.Store.mu.Unlock()
@@ -178,7 +177,7 @@ func (e *DeleteTodoEndpoint) Handle(_ *repr.Context, req DeleteTodoRequest) (rep
 
 	for i := range e.Store.items {
 		if e.Store.items[i].ID == req.ID {
-			e.Store.items = append(e.Store.items[:i], e.Store.items[i+1:]...)
+			e.Store.items = slices.Delete(e.Store.items, i, i+1)
 			return repr.Empty{}, nil
 		}
 	}

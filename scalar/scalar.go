@@ -1,6 +1,7 @@
 package scalar
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -49,7 +50,7 @@ type Config struct {
 	Title        string            `json:"title,omitempty"`
 	SpecURL      string            `json:"specUrl,omitempty"`
 	Theme        Theme             `json:"theme,omitempty"`
-	Layout       string            `json:"layout,omitempty"` // "classic" (default) or "modern"
+	Layout       string            `json:"layout,omitempty"` // "modern" (default) or "classic"
 	DarkMode     *bool             `json:"darkMode,omitempty"`
 	ShowSidebar  *bool             `json:"showSidebar,omitempty"`
 	ProxyURL     string            `json:"proxyUrl,omitempty"`
@@ -63,31 +64,16 @@ type Config struct {
 	// Empty uses ContentSecurityPolicy; "-" omits the CSP header.
 	CSP string `json:"-"`
 
-	// CSPEnforce sends Content-Security-Policy instead of Content-Security-Policy-Report-Only.
-	CSPEnforce bool `json:"-"`
+	// CSPReportOnly sends Content-Security-Policy-Report-Only instead of enforcing Content-Security-Policy.
+	CSPReportOnly bool `json:"-"`
 }
 
 // RenderHTML generates the standalone HTML page for Scalar API Reference.
 func RenderHTML(cfg Config) (string, error) {
-	title := cfg.Title
-	if title == "" {
-		title = "API Reference"
-	}
-
-	specURL := cfg.SpecURL
-	if specURL == "" {
-		specURL = "/openapi.json"
-	}
-
-	theme := cfg.Theme
-	if theme == "" {
-		theme = ThemeFastify
-	}
-
-	layout := cfg.Layout
-	if layout == "" {
-		layout = "classic"
-	}
+	title := cmp.Or(cfg.Title, "API Reference")
+	specURL := cmp.Or(cfg.SpecURL, "/openapi.json")
+	theme := cmp.Or(cfg.Theme, ThemeDefault)
+	layout := cmp.Or(cfg.Layout, "modern")
 
 	scalarOptions := map[string]any{
 		"theme":  theme,
@@ -162,9 +148,7 @@ func RenderHTML(cfg Config) (string, error) {
 
 // ContentSecurityPolicy builds a Scalar-compatible Content-Security-Policy for the given script URL.
 func ContentSecurityPolicy(scriptURL string) string {
-	if scriptURL == "" {
-		scriptURL = DefaultCDN
-	}
+	scriptURL = cmp.Or(scriptURL, DefaultCDN)
 	scriptSrc := "'self'"
 	if u, err := url.Parse(scriptURL); err == nil && u.Host != "" && (u.Scheme == "https" || u.Scheme == "http") {
 		scriptSrc += " " + u.Scheme + "://" + u.Host
@@ -201,9 +185,9 @@ func Handler(cfg Config) http.HandlerFunc {
 			if csp == "" {
 				csp = ContentSecurityPolicy(cfg.ScriptURL)
 			}
-			headerName := "Content-Security-Policy-Report-Only"
-			if cfg.CSPEnforce {
-				headerName = "Content-Security-Policy"
+			headerName := "Content-Security-Policy"
+			if cfg.CSPReportOnly {
+				headerName = "Content-Security-Policy-Report-Only"
 			}
 			h.Set(headerName, csp)
 		}

@@ -1,12 +1,14 @@
 package typescript
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -287,7 +289,7 @@ func tsModuleSlug(rt Route) string {
 		}
 	}
 	var staticSegs []string
-	for _, seg := range strings.Split(rt.Path, "/") {
+	for seg := range strings.SplitSeq(rt.Path, "/") {
 		if seg == "" || seg == "*" || (strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "}")) {
 			continue
 		}
@@ -306,7 +308,7 @@ func tsModuleSlug(rt Route) string {
 
 func tsPascal(slug string) string {
 	var b strings.Builder
-	for _, part := range strings.Split(slug, "-") {
+	for part := range strings.SplitSeq(slug, "-") {
 		if part == "" {
 			continue
 		}
@@ -345,8 +347,8 @@ func (g *Generator) build(routes []Route) *tsBuild {
 			visible = append(visible, rt)
 		}
 	}
-	sort.SliceStable(visible, func(i, j int) bool {
-		return tsRouteKey(visible[i]) < tsRouteKey(visible[j])
+	slices.SortStableFunc(visible, func(a, b Route) int {
+		return cmp.Compare(tsRouteKey(a), tsRouteKey(b))
 	})
 	g.analyzeRoutes(visible)
 
@@ -362,7 +364,7 @@ func (g *Generator) build(routes []Route) *tsBuild {
 	for _, m := range bySlug {
 		b.modules = append(b.modules, m)
 	}
-	sort.Slice(b.modules, func(i, j int) bool { return b.modules[i].slug < b.modules[j].slug })
+	slices.SortFunc(b.modules, func(a, b *tsModule) int { return cmp.Compare(a.slug, b.slug) })
 
 	// Module interface names are reserved before any schema is named.
 	usedIfaces := make(map[string]bool)
@@ -393,7 +395,7 @@ func (g *Generator) build(routes []Route) *tsBuild {
 			b.schemaNames = append(b.schemaNames, name)
 		}
 	}
-	sort.Strings(b.schemaNames)
+	slices.Sort(b.schemaNames)
 
 	// A schema lives in a module file when only that module reaches it (directly or
 	// transitively); otherwise it goes to the shared file. Schemas reachable from a shared
@@ -521,19 +523,21 @@ func RunCodegen(spec Spec, args []string) (bool, error) {
 
 	for _, arg := range args {
 		switch {
-		case strings.HasPrefix(arg, "--ts-sdk="):
-			sdkDir = strings.TrimPrefix(arg, "--ts-sdk=")
-			matched = true
 		case arg == "--ts-sdk":
 			sdkDir = "./dist"
-			matched = true
-		case strings.HasPrefix(arg, "--ts-import-ext="):
-			importExt = strings.TrimPrefix(arg, "--ts-import-ext=")
-			hasImportExt = true
 			matched = true
 		case arg == "--check":
 			check = true
 			matched = true
+		default:
+			if val, ok := strings.CutPrefix(arg, "--ts-sdk="); ok {
+				sdkDir = val
+				matched = true
+			} else if val, ok := strings.CutPrefix(arg, "--ts-import-ext="); ok {
+				importExt = val
+				hasImportExt = true
+				matched = true
+			}
 		}
 	}
 
@@ -629,17 +633,8 @@ func writeTSTypeImports(sb *strings.Builder, imports map[string]map[string]bool)
 	if len(imports) == 0 {
 		return
 	}
-	specs := make([]string, 0, len(imports))
-	for spec := range imports {
-		specs = append(specs, spec)
-	}
-	sort.Strings(specs)
-	for _, spec := range specs {
-		names := make([]string, 0, len(imports[spec]))
-		for name := range imports[spec] {
-			names = append(names, name)
-		}
-		sort.Strings(names)
+	for _, spec := range slices.Sorted(maps.Keys(imports)) {
+		names := slices.Sorted(maps.Keys(imports[spec]))
 		fmt.Fprintf(sb, "import type { %s } from %q;\n", strings.Join(names, ", "), spec)
 	}
 	sb.WriteString("\n")
@@ -717,12 +712,7 @@ func (g *Generator) renderIndexFile(b *tsBuild, byOwner map[string][]string, ext
 	sb.WriteString("\n")
 
 	fmt.Fprintf(&sb, "export * from %q;\n", runtimeSpec)
-	owners := make([]string, 0, len(byOwner))
-	for owner := range byOwner {
-		owners = append(owners, owner)
-	}
-	sort.Strings(owners)
-	for _, owner := range owners {
+	for _, owner := range slices.Sorted(maps.Keys(byOwner)) {
 		fmt.Fprintf(&sb, "export type * from %q;\n", "./types/"+owner+ext)
 	}
 	if len(ifaces) > 0 {
@@ -754,12 +744,7 @@ func isManagedGeneratedTSFile(data []byte) bool {
 }
 
 func sortedMapKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(m))
 }
 
 func exportTSDir(outDir string, files map[string]string) error {
@@ -883,7 +868,7 @@ func checkTSDir(outDir string, files map[string]string) error {
 	if err != nil {
 		return err
 	}
-	sort.Strings(stale)
+	slices.Sort(stale)
 
 	if len(missing) == 0 && len(changed) == 0 && len(stale) == 0 {
 		return nil

@@ -2,6 +2,7 @@ package repr_test
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -73,10 +74,7 @@ func TestREPREndpoints_BindValidateAndRespond(t *testing.T) {
 	}).Summary("Get item").Tags("Items")
 
 	repr.Post(app, "/items", func(_ *repr.Context, req createItemReq) (createItemRes, error) {
-		p := req.Priority
-		if p == "" {
-			p = "normal"
-		}
+		p := cmp.Or(req.Priority, "normal")
 		return createItemRes{ID: "1", Title: req.Title, Priority: p}, nil
 	}).Status(http.StatusCreated).Summary("Create item").Tags("Items")
 

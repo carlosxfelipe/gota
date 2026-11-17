@@ -170,12 +170,8 @@ func TestAuditModelAndSanitizeFilename(t *testing.T) {
 	}
 }
 
-func TestDocsSecurityHeadersAndCSPEnforce(t *testing.T) {
-	app := repr.New(repr.Config{
-		Scalar: scalar.Config{
-			CSPEnforce: true,
-		},
-	})
+func TestDocsSecurityHeaders(t *testing.T) {
+	app := repr.New(repr.Config{})
 
 	docsRec := httptest.NewRecorder()
 	app.ServeHTTP(docsRec, httptest.NewRequest(http.MethodGet, "/docs", nil))
@@ -192,7 +188,21 @@ func TestDocsSecurityHeadersAndCSPEnforce(t *testing.T) {
 		t.Errorf("expected Referrer-Policy no-referrer")
 	}
 	if docsRec.Header().Get("Content-Security-Policy") == "" {
-		t.Errorf("expected enforcing Content-Security-Policy header")
+		t.Errorf("expected enforcing Content-Security-Policy header by default")
+	}
+
+	roApp := repr.New(repr.Config{
+		Scalar: scalar.Config{
+			CSPReportOnly: true,
+		},
+	})
+	roRec := httptest.NewRecorder()
+	roApp.ServeHTTP(roRec, httptest.NewRequest(http.MethodGet, "/docs", nil))
+	if roRec.Header().Get("Content-Security-Policy-Report-Only") == "" {
+		t.Errorf("expected Content-Security-Policy-Report-Only header when CSPReportOnly is true")
+	}
+	if roRec.Header().Get("Content-Security-Policy") != "" {
+		t.Errorf("expected no enforcing Content-Security-Policy header when CSPReportOnly is true")
 	}
 
 	specRec := httptest.NewRecorder()

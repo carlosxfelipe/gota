@@ -8,7 +8,6 @@ import (
 	"github.com/carlosxfelipe/gota"
 	"github.com/carlosxfelipe/gota/examples/system"
 	"github.com/carlosxfelipe/gota/examples/todos"
-	"github.com/carlosxfelipe/gota/repr"
 	"github.com/carlosxfelipe/gota/scalar"
 	"github.com/go-chi/chi/v5/middleware"
 )
@@ -37,15 +36,14 @@ func main() {
 		docsPassword = "admin123"
 	}
 
-	app := gota.New(repr.Config{
+	app := gota.New(gota.Config{
 		Title:                 "Gota API",
 		Version:               "1.0.0",
 		Description:           "Simple API for managing todo items.",
 		DisallowUnknownFields: true,
 		Scalar: scalar.Config{
-			Theme:      scalar.ThemeFastify,
-			Layout:     "classic",
-			CSPEnforce: true,
+			Theme:  scalar.ThemeFastify,
+			Layout: "classic",
 		},
 		DocsMiddlewares: []func(http.Handler) http.Handler{
 			middleware.BasicAuth("Gota API Documentation", map[string]string{"admin": docsPassword}),

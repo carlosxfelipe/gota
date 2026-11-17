@@ -81,7 +81,7 @@ func isValidRequestID(id string) bool {
 	if id == "" || len(id) > 128 {
 		return false
 	}
-	for i := 0; i < len(id); i++ {
+	for i := range len(id) {
 		if id[i] < 0x20 || id[i] == 0x7f {
 			return false
 		}
@@ -128,7 +128,7 @@ func sanitizeHeaderValue(s string) string {
 	}
 	var sb strings.Builder
 	sb.Grow(len(s))
-	for i := 0; i < len(s); i++ {
+	for i := range len(s) {
 		if ch := s[i]; ch != '\r' && ch != '\n' && ch != 0 {
 			sb.WriteByte(ch)
 		}
@@ -220,7 +220,7 @@ func IsLocalRedirectTarget(target string) bool {
 	if len(target) > 1 && (target[1] == '/' || target[1] == '\\') {
 		return false
 	}
-	for i := 0; i < len(target); i++ {
+	for i := range len(target) {
 		if ch := target[i]; ch < 0x20 || ch == 0x7f || ch == '\\' {
 			return false
 		}
@@ -296,7 +296,7 @@ func (c *Context) SSEvent(event string, data any) error {
 
 	payload = strings.ReplaceAll(payload, "\r\n", "\n")
 	payload = strings.ReplaceAll(payload, "\r", "\n")
-	for _, line := range strings.Split(payload, "\n") {
+	for line := range strings.SplitSeq(payload, "\n") {
 		sb.WriteString("data: ")
 		sb.WriteString(line)
 		sb.WriteByte('\n')

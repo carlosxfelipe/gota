@@ -3,18 +3,20 @@ package repr
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 )
 
 var (
-	emptyType        = reflect.TypeOf(Empty{})
-	emptyStructType  = reflect.TypeOf(struct{}{})
-	streamerType     = reflect.TypeOf((*Streamer)(nil)).Elem()
-	sseStreamType    = reflect.TypeOf(SSEStream{})
-	sseStreamPtrType = reflect.TypeOf(&SSEStream{})
+	emptyType        = reflect.TypeFor[Empty]()
+	emptyStructType  = reflect.TypeFor[struct{}]()
+	streamerType     = reflect.TypeFor[Streamer]()
+	sseStreamType    = reflect.TypeFor[SSEStream]()
+	sseStreamPtrType = reflect.TypeFor[*SSEStream]()
 )
 
 func isEmptyType(t reflect.Type) bool {
@@ -111,11 +113,7 @@ func (r *Route) Tags(tags ...string) *Route {
 	}
 	if r.inheritedTags > 0 && r.inheritedTags <= len(r.doc.Tags) {
 		split := len(r.doc.Tags) - r.inheritedTags
-		combined := make([]string, 0, len(r.doc.Tags)+len(tags))
-		combined = append(combined, r.doc.Tags[:split]...)
-		combined = append(combined, tags...)
-		combined = append(combined, r.doc.Tags[split:]...)
-		r.doc.Tags = combined
+		r.doc.Tags = slices.Concat(r.doc.Tags[:split], tags, r.doc.Tags[split:])
 	} else {
 		r.doc.Tags = append(r.doc.Tags, tags...)
 	}
@@ -232,23 +230,21 @@ func (r *Route) Param(in, name string, model any, required bool, description ...
 
 // WrapEndpoint converts a typed REPR EndpointFunc into a HandlerFunc + RouteDoc.
 func WrapEndpoint[Req any, Res any](handler EndpointFunc[Req, Res], defaultStatus int) (HandlerFunc, *RouteDoc, *int) {
-	reqType := reflect.TypeOf(*new(Req))
+	reqType := reflect.TypeFor[Req]()
 	if err := checkStructTags(reqType, make(map[reflect.Type]bool)); err != nil {
 		panic(fmt.Sprintf("gota: invalid tag in %T: %v", *new(Req), err))
 	}
 
 	compileBindingPlan(reqType)
 	doc := introspectEndpoint[Req, Res](defaultStatus)
-	resHasHeaders := hasResponseHeaders(reflect.TypeOf(*new(Res)))
-	statusPtr := new(int)
-	*statusPtr = defaultStatus
+	resHasHeaders := hasResponseHeaders(reflect.TypeFor[Res]())
+	statusPtr := new(defaultStatus)
 
 	h := func(ctx *Context) error {
 		var req Req
-		if !isEmptyType(reflect.TypeOf(req)) {
+		if !isEmptyType(reqType) {
 			if err := bindRequest(ctx, &req); err != nil {
-				var tooLarge *http.MaxBytesError
-				if errors.As(err, &tooLarge) {
+				if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 					return ctx.Status(http.StatusRequestEntityTooLarge).JSON(ErrorResponse{
 						Error:     "request body too large",
 						Status:    http.StatusRequestEntityTooLarge,
@@ -281,7 +277,7 @@ func WrapEndpoint[Req any, Res any](handler EndpointFunc[Req, Res], defaultStatu
 			if resHasHeaders {
 				writeResponseHeaders(ctx, reflect.ValueOf(res))
 			}
-			if isEmptyType(reflect.TypeOf(res)) {
+			if isEmptyType(reflect.TypeFor[Res]()) {
 				return ctx.NoContent()
 			}
 			status := *statusPtr
@@ -341,7 +337,7 @@ func hasResponseHeaders(t reflect.Type) bool {
 	if t == nil || t.Kind() != reflect.Struct || isEmptyType(t) {
 		return false
 	}
-	for i := 0; i < t.NumField(); i++ {
+	for i := range t.NumField() {
 		f := t.Field(i)
 		if ft, ok := embeddedStructType(f); ok {
 			if hasResponseHeaders(ft) {
@@ -367,7 +363,7 @@ func writeResponseHeaders(ctx *Context, val reflect.Value) {
 		return
 	}
 	t := val.Type()
-	for i := 0; i < t.NumField(); i++ {
+	for i := range t.NumField() {
 		f := t.Field(i)
 		fv := val.Field(i)
 		if _, ok := embeddedStructType(f); ok {
@@ -395,7 +391,7 @@ func writeResponseHeaders(ctx *Context, val reflect.Value) {
 }
 
 func hasValidateRule(tag, target string) bool {
-	for _, rule := range strings.Split(tag, ",") {
+	for rule := range strings.SplitSeq(tag, ",") {
 		if strings.TrimSpace(rule) == target {
 			return true
 		}
@@ -412,7 +408,7 @@ func introspectEndpoint[Req any, Res any](defaultStatus int) *RouteDoc {
 		Responses: make(map[int]*ResponseDoc),
 	}
 
-	reqType := reflect.TypeOf(*new(Req))
+	reqType := reflect.TypeFor[Req]()
 	for reqType != nil && reqType.Kind() == reflect.Pointer {
 		reqType = reqType.Elem()
 	}
@@ -436,7 +432,7 @@ func introspectEndpoint[Req any, Res any](defaultStatus int) *RouteDoc {
 		}
 	}
 
-	resType := reflect.TypeOf(*new(Res))
+	resType := reflect.TypeFor[Res]()
 	if isEmptyType(resType) {
 		doc.Responses[http.StatusNoContent] = &ResponseDoc{Description: "No Content"}
 	} else if resType != nil && (resType.Implements(streamerType) || reflect.PointerTo(resType).Implements(streamerType)) {
@@ -475,10 +471,8 @@ func inspectRequestStruct(t reflect.Type, params *[]ParamDoc, hasBody, hasForm, 
 	defer delete(seen, t)
 
 	merged := make(map[string]bool, len(shadowed)+t.NumField()*3)
-	for k, v := range shadowed {
-		merged[k] = v
-	}
-	for i := 0; i < t.NumField(); i++ {
+	maps.Copy(merged, shadowed)
+	for i := range t.NumField() {
 		f := t.Field(i)
 		if _, ok := embeddedStructType(f); ok {
 			continue
@@ -490,7 +484,7 @@ func inspectRequestStruct(t reflect.Type, params *[]ParamDoc, hasBody, hasForm, 
 		}
 	}
 
-	for i := 0; i < t.NumField(); i++ {
+	for i := range t.NumField() {
 		field := t.Field(i)
 		jsonTag := field.Tag.Get("json")
 		formTag := field.Tag.Get("form")
